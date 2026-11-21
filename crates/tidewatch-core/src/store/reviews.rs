@@ -164,6 +164,8 @@ pub fn save_result(
         Err(e) => Err(e.to_string()),
     };
     let raw = output.unwrap_or_default();
+    // 没有对应的运行（比如启动时补记的失败）存 NULL
+    let run_id = Some(run_id).filter(|r| !r.is_empty());
     let tx = conn.transaction()?;
     match parsed {
         Err(e) => {
