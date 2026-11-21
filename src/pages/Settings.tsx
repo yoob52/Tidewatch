@@ -68,7 +68,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>工作区目录</b>
-              <span>子任务的 worktree 建在这里；留空则放在数据目录下。Windows 上建议用短路径。</span>
+              <p>子任务的 worktree 建在这里；留空则放在数据目录下。Windows 上建议用短路径。</p>
             </div>
             <div className="sctl">
               <input
@@ -77,7 +77,7 @@ export function SettingsPage({
                 value={workspace}
                 onChange={(e) => setWorkspace(e.target.value)}
                 onBlur={() => workspace !== (settings.workspace_dir ?? '') && void save({ workspace_dir: workspace || null })}
-                placeholder="默认：数据目录/worktrees"
+                placeholder="默认：数据目录/workspace"
                 aria-label="工作区目录"
               />
               <button className="btn sm" onClick={() => void pickWorkspace()}>
@@ -88,14 +88,14 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>全局并发上限</b>
-              <span>同时运行的 Agent 数；超出的进入队列，按工单优先级和入队时间出队。</span>
+              <p>同时运行的 Agent 数；超出的进入队列，按工单优先级和入队时间出队。</p>
             </div>
             <div className="sctl">{stepper(settings.max_concurrency, 1, 8, 1, (n) => void save({ max_concurrency: n }))}</div>
           </div>
           <div className="srow">
             <div>
               <b>单次运行超时</b>
-              <span>超过这个时长，观澜会停止 Agent 并把运行记为失败。单位：分钟。</span>
+              <p>超过这个时长，观澜会停止 Agent 并把运行记为失败。单位：分钟。</p>
             </div>
             <div className="sctl">{stepper(settings.run_timeout_minutes, 10, 480, 10, (n) => void save({ run_timeout_minutes: n }))}</div>
           </div>
@@ -106,7 +106,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>默认 Agent</b>
-              <span>优先级：子任务 → 工单 → 项目 → 这里。</span>
+              <p>优先级：子任务 → 工单 → 项目 → 这里。</p>
             </div>
             <div className="sctl">
               <select className="input" style={{ width: 220 }} value={settings.default_agent} onChange={(e) => void save({ default_agent: e.target.value })}>
@@ -121,7 +121,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>默认 Provider</b>
-              <span>不选则用 Agent 在本机登录的账号。</span>
+              <p>不选则用 Agent 在本机登录的账号。</p>
             </div>
             <div className="sctl">
               <select
@@ -142,7 +142,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>默认权限档位</b>
-              <span>{PERMISSION_HINT[settings.default_permission]}。full_auto 不能设为默认，只能在子任务上单独选，每次开始都要确认。</span>
+              <p>{PERMISSION_HINT[settings.default_permission]}。full_auto 不能设为默认，只能在子任务上单独选，每次开始都要确认。</p>
             </div>
             <div className="sctl">
               <Seg
@@ -159,7 +159,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>运行结束后自动检查</b>
-              <span>依次执行项目配置的 Lint、类型检查、测试和构建命令，结果显示在验收页。</span>
+              <p>依次执行项目配置的 Lint、类型检查、测试和构建命令，结果显示在验收页。</p>
             </div>
             <div className="sctl">
               <Switch on={settings.auto_test} onChange={(v) => void save({ auto_test: v })} label="运行结束后自动检查" />
@@ -168,7 +168,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>合并方式</b>
-              <span>merge 保留子任务分支上的每个提交；squash 压成一个提交。观澜不会自动推送到远程。</span>
+              <p>merge 保留子任务分支上的每个提交；squash 压成一个提交。观澜不会自动推送到远程。</p>
             </div>
             <div className="sctl">
               <Seg
@@ -184,7 +184,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>合并后删除子任务分支</b>
-              <span>worktree 总会清理；分支默认保留。</span>
+              <p>worktree 总会清理。关闭后分支保留，需要时自己删除。</p>
             </div>
             <div className="sctl">
               <Switch on={settings.delete_branch_after_merge} onChange={(v) => void save({ delete_branch_after_merge: v })} label="合并后删除子任务分支" />
@@ -197,7 +197,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>系统通知</b>
-              <span>运行完成、失败或被中断时弹出桌面通知。</span>
+              <p>运行完成、失败或被中断时弹出桌面通知。</p>
             </div>
             <div className="sctl">
               <Switch on={settings.notifications} onChange={(v) => void save({ notifications: v })} label="系统通知" />
@@ -206,7 +206,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>外观</b>
-              <span>只保存在这台机器上。</span>
+              <p>只保存在这台机器上。</p>
             </div>
             <div className="sctl">
               <Seg
@@ -226,38 +226,38 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>观澜</b>
-              <span>{info ? `${info.version} · ${info.os}` : '读取中…'}</span>
+              <p>{info ? `${info.version} · ${info.os}` : '读取中…'}</p>
             </div>
           </div>
           <div className="srow">
             <div>
               <b>数据库</b>
-              <span className="mono">{info?.db_path ?? '—'}</span>
+              <p className="mono">{info?.db_path ?? '—'}</p>
               {info && (
-                <span>
+                <p>
                   结构第 {info.schema_version} 版 · SQLite {info.sqlite_version}
-                </span>
+                </p>
               )}
             </div>
           </div>
           <div className="srow">
             <div>
               <b>密钥存放</b>
-              <span>{info?.secret_store ?? '—'}</span>
+              <p>{info?.secret_store ?? '—'}</p>
             </div>
           </div>
           <div className="srow">
             <div>
               <b>Git</b>
-              <span>{info ? (info.git_version ?? '未安装：worktree 隔离需要 git') : '—'}</span>
-              {info?.long_paths_hint && <span>{info.long_paths_hint}</span>}
+              <p>{info ? (info.git_version ?? '未安装：worktree 隔离需要 git') : '—'}</p>
+              {info?.long_paths_hint && <p>{info.long_paths_hint}</p>}
             </div>
           </div>
           {(agents ?? []).map((a) => (
             <div className="srow" key={a.kind}>
               <div>
                 <b>{AGENTS[a.kind]?.name ?? a.kind}</b>
-                <span className="mono">{a.installed ? (a.path ?? '内置') : '未检测到'}</span>
+                <p className="mono">{a.installed ? (a.path ?? '内置') : '未检测到'}</p>
               </div>
               <div className="sctl">
                 <span className={`tag ${a.installed ? 'moss' : 'amber'}`}>
@@ -271,7 +271,7 @@ export function SettingsPage({
             <div className="srow">
               <div>
                 <b>Agent</b>
-                <span>检测中…</span>
+                <p>检测中…</p>
               </div>
             </div>
           )}

@@ -78,7 +78,7 @@ export function StatsPage() {
                 {[0, 0.25, 0.5, 0.75, 1].map((v) => (
                   <line key={v} x1="30" x2={W - 20} y1={y(v)} y2={y(v)} className="grid" />
                 ))}
-                <path d={area} className="area" />
+                {days.length > 1 && <path d={area} className="area" />}
                 <path d={line} className="line" />
                 {days.map((d, i) => (
                   <circle key={d.day} cx={x(i)} cy={y(d.cost_usd / maxCost)} r="2.5" className="pt">

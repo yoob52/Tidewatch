@@ -8,7 +8,7 @@ export const FLOW: Partial<Record<TicketStatus, Partial<Record<TicketStatus, str
   human_review: { ai_review: '重新预审', finalized: '定稿' },
   finalized: { developing: '开始开发', human_review: '发起变更' },
   developing: { acceptance: '全部子任务完成', human_review: '发起变更' },
-  acceptance: { developing: '打回', done: '验收通过' },
+  acceptance: { developing: '退回开发', done: '完成工单' },
   done: {},
 };
 

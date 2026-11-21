@@ -307,7 +307,10 @@ export function RunsPage({ id }: { id?: string }) {
               <div className="bubble">等待空闲的并发名额。</div>
             </div>
           )}
-          {detail?.events.map((e) => <LogItem key={e.seq} e={e} start={start} raw={raw} />)}
+          {detail?.events
+            // Agent 的最后一句话通常就是总结，不重复显示
+            .filter((e, i, all) => raw || e.type !== 'finished' || !all.slice(0, i).some((x) => x.type === 'text' && x.payload.text === e.payload.summary))
+            .map((e) => <LogItem key={e.seq} e={e} start={start} raw={raw} />)}
           {r.error && !active && (
             <div className="logi sys" style={{ color: 'var(--cinnabar)' }}>
               <time />

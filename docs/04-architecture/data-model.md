@@ -209,4 +209,5 @@ CREATE VIRTUAL TABLE ticket_fts USING fts5(title, content, ticket_id UNINDEXED);
 
 - `run_event` 可能很大：保留最近 N 个工单的事件明细，较早的只保留原始日志文件。
 - 数据库迁移使用版本化 SQL 脚本。
+- 实际落地的结构以 `crates/tidewatch-core/migrations/` 为准。M1 的 `0002_m1.sql` 在上面的基础上加了：`ticket.cancelled_from`（取消前的状态，用于恢复）、`task.merged_commit`、`run.number`（子任务内第几次运行）、`run.queued_at`、`run.permission`、`run.resume_session_id`、`run.error`、`run.diff_stat_json`（合并后 worktree 已清理，Diff 统计从这里读）。
 - 预留 `owner` / `assignee` 字段的扩展位，未来多人时添加。

@@ -35,13 +35,17 @@ export interface TabProps {
   reload: () => Promise<void>;
 }
 
-function Rail({ status }: { status: TicketStatus }) {
+function Rail({ status, skipped }: { status: TicketStatus; skipped: TicketStatus[] }) {
   const idx = STAGES.findIndex((s) => s.id === status);
   return (
     <div className="rail">
       {STAGES.map((s, i) => (
-        <div key={s.id} className={`rail-s ${i < idx ? 'past' : i === idx ? 'now' : ''}`}>
-          <i>{i < idx ? <Icon name="check" size={10} /> : s.num}</i>
+        <div
+          key={s.id}
+          className={`rail-s ${skipped.includes(s.id) ? '' : i < idx ? 'past' : i === idx ? 'now' : ''}`}
+          title={skipped.includes(s.id) ? 'Bug 快速通道跳过了这一步' : undefined}
+        >
+          <i>{i < idx && !skipped.includes(s.id) ? <Icon name="check" size={10} /> : s.num}</i>
           <span>{s.name}</span>
         </div>
       ))}
@@ -143,7 +147,10 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
             )}
           </div>
         </div>
-        <Rail status={t.status === 'cancelled' ? (t.cancelled_from ?? 'draft') : t.status} />
+        <Rail
+          status={t.status === 'cancelled' ? (t.cancelled_from ?? 'draft') : t.status}
+          skipped={d.timeline.some((e) => e.type === 'status' && e.payload.from === 'draft' && e.payload.to === 'developing') ? ['ai_review', 'human_review', 'finalized'] : []}
+        />
       </div>
       <nav className="tabs">
         {tabs.map(([id, name, badge, hot]) => (
