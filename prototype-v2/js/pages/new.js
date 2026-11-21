@@ -53,8 +53,8 @@ function pageNew(){
     const fill=$('#fill');if(fill)fill.onclick=()=>{recognized=true;render();toast('已识别为 Bug，并拆出复现步骤')};
     $$('.pick button').forEach(b=>b.onclick=()=>{$$('button',b.parentNode).forEach(x=>x.classList.remove('on'));b.classList.add('on')});
     $$('[data-save]').forEach(b=>b.onclick=()=>{
-      const st=b.dataset.save,key='TW-48';
-      if(!T(key))TICKETS.unshift({key,title:recognized?'订单导出 Excel 在 WPS 中表头乱码':'未命名工单',type:recognized?'bug':'feature_mixed',status:st,prio:'high',projects:['shop-api'],source:'粘贴',updated:'刚刚',labels:['导出'],running:st==='ai_review',sub:st==='developing'?[['BUG','queued']]:undefined});
+      const st=b.dataset.save,key='TW-'+(Math.max(...TICKETS.map(t=>+t.key.slice(3)))+1); // 每次保存都分配新的编号
+      TICKETS.unshift({key,title:recognized?'订单导出 Excel 在 WPS 中表头乱码':'未命名工单',type:recognized?'bug':'feature_mixed',status:st,prio:'high',projects:['shop-api'],source:'粘贴',updated:'刚刚',labels:['导出'],running:st==='ai_review',sub:st==='developing'?[['BUG','queued']]:undefined});
       toast(`已创建 ${key} · ${STAGE[st].name}`);location.hash='#/board'});
   };
   render();
