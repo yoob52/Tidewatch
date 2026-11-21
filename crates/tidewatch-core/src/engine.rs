@@ -821,6 +821,7 @@ fn slug(name: &str, id: &str) -> String {
 
 #[path = "engine_ticket.rs"]
 mod ticket_flow;
+pub use ticket_flow::Finalized;
 
 struct Finished {
     status: &'static str,

@@ -357,6 +357,67 @@ pub fn unknown_variables(name: &str, content: &str) -> crate::Result<Vec<String>
     Ok(out)
 }
 
+/// 给设置页用的模板信息：默认内容、当前内容、可用变量。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TemplateInfo {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub default: &'static str,
+    pub content: String,
+    pub customized: bool,
+    pub variables: Vec<&'static str>,
+}
+
+pub fn template_infos(ov: &Overrides) -> Vec<TemplateInfo> {
+    TEMPLATES
+        .iter()
+        .map(|t| TemplateInfo {
+            name: t.name,
+            title: t.title,
+            description: t.description,
+            default: t.default,
+            content: text(ov, t.name).to_string(),
+            customized: ov.contains_key(t.name),
+            variables: variables(t),
+        })
+        .collect()
+}
+
+/// 用示例数据把模板填出来，给用户看改完之后 Agent 实际会收到什么（含系统追加的输出格式）。
+pub fn preview(name: &str, content: &str) -> crate::Result<String> {
+    let def = template_def(name)?;
+    let sample = |var: &str| -> String {
+        match var {
+            "project.context" => "技术栈：Spring Boot 3 + MyBatis；接口统一返回 Result<T>；金额用分。",
+            "project.test_hint" => "完成后运行 `./gradlew test` 确保通过。",
+            "ticket.key" => "TW-12",
+            "ticket.title" => "优惠券叠加规则与结算页展示",
+            "ticket.type" => "feature_mixed",
+            "task.spec" => "支持满减券与折扣券同时使用，固定先折扣后满减。",
+            "task.acceptance_criteria" => "- 两张券叠加后金额不为负\n- 结算页显示逐券抵扣明细",
+            "api_doc" => "POST /api/checkout/price-preview：入参商品行与券 ID 列表，返回逐券抵扣明细与实付金额。",
+            "instruction" => "边界值没处理：满减后金额为 0 时不应再打折。",
+            "prd" | "prd.new" => "## 背景\n用户希望两张券可以叠加使用。\n\n## 规则\n先折扣、后满减。",
+            "prd.old" => "## 背景\n用户希望两张券可以叠加使用。",
+            "open_issues" => "- [I-2][major] 没有约定叠加上限",
+            "projects" => "- shop-api | kind=backend | role=backend\n- shop-web | kind=frontend | role=frontend",
+            "change.reason" => "运营要求叠加上限改为三张。",
+            "tasks" => "- 01JABC | backend | review | 后端：试算接口\n- 01JABD | frontend | pending | 前端：结算页",
+            other => return format!("（示例：{other}）"),
+        }
+        .to_string()
+    };
+    let vars: Vec<(&str, String)> = variables(def).into_iter().map(|v| (v, sample(v))).collect();
+    let suffix = match name {
+        "review" => REVIEW_OUTPUT,
+        "split" => SPLIT_OUTPUT,
+        "impact" => IMPACT_OUTPUT,
+        _ => "",
+    };
+    Ok(fill(content, &vars) + suffix)
+}
+
 fn bullets(items: &[String], empty: &str) -> String {
     if items.is_empty() {
         empty.to_string()
@@ -640,5 +701,14 @@ mod tests {
         save_override(&conn, "review", None).unwrap();
         assert!(load_overrides(&conn).unwrap().is_empty());
         assert!(save_override(&conn, "nope", Some("x")).is_err());
+
+        // 预览：每个模板的默认内容用示例数据都能填满
+        for t in template_infos(&ov) {
+            let p = preview(t.name, t.default).unwrap();
+            assert!(!p.contains("{{"), "{} 还有没填的变量：{p}", t.name);
+        }
+        assert!(preview("rework", "{{instruction}} {{nope}}")
+            .unwrap()
+            .ends_with("{{nope}}"));
     }
 }
