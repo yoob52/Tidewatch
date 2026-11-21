@@ -112,8 +112,8 @@ const actions={
  rereview:()=>{modal('重新预审',`<p>保留已处理问题与当前版本，仅检查变更内容与未关闭问题。</p><div class="note">${icon('info')}演示预审不发起模型调用，现有问题状态保持不变。</div>`,btn('模拟完成预审','finish-rereview','primary','refresh'));},
  'finish-rereview':()=>{closeDialog();toast('模拟预审完成，未发现新的阻塞问题。');},
  'export-questions':()=>{const pending=[0,1,2].filter(i=>!state.issues[i]);modal('待确认问题 · 可复制文本',`<textarea class="text-input" aria-label="待确认问题导出" style="min-height:210px" readonly>${esc(pending.length?pending.map(i=>`${i+1}. ${['标签名称最长多少字符？单张工单标签上限是多少？','多个筛选条件按交集还是并集？无结果如何展示？','标签使用预设颜色还是允许自定义？'][i]}`).join('\n\n'):'所有问题已处理，无待确认问题。')}</textarea><p class="tiny muted section-gap">选中文本即可复制。正式版支持导出为文件。</p>`);},
- 'edit-prd':()=>modal('编辑 PRD · 保存生成新版本',`<textarea id="prd-editor" class="text-input mono" aria-label="编辑 PRD" style="min-height:320px;font-size:11px">${esc(state.source)}</textarea><p class="tiny muted section-gap">保留历史版本；原型正文预览采用固定排版。</p>`,btn('保存新版本','save-prd','primary')),
- 'save-prd':()=>{state.source=$('#prd-editor').value;state.version++;closeDialog();render();toast('已保留编辑内容并创建 v'+state.version+'。');},
+ 'edit-prd':()=>modal('编辑 PRD · 保存生成新版本',`<textarea id="prd-editor" class="text-input mono" aria-label="编辑 PRD" style="min-height:320px;font-size:11px">${esc(currentTicket().body??samplePrd)}</textarea><p class="tiny muted section-gap">保留历史版本；原型正文预览采用固定排版。</p>`,btn('保存新版本','save-prd','primary')),
+ 'save-prd':()=>{currentTicket().body=$('#prd-editor').value;state.version++;closeDialog();render();toast('已保留编辑内容并创建 v'+state.version+'。');},
  'version-diff':()=>modal('PRD 版本对比 · v2 → v'+state.version,`<div class="two-equal"><div><h3>v2 · 手动编辑</h3><div class="note warning">标签名称应该适当限制长度。</div></div><div><h3>v${state.version} · 当前版本</h3><div class="note">${state.issues[0]?'标签名称 1–20 字符，单工单最多 10 个标签。':'待确认名称长度与数量上限。'}</div></div></div><p class="tiny muted section-gap">原始导入 v1 始终保留。此为版本对比布局示例。</p>`),
  'add-comment':()=>{const el=$('#ticket-comment');if(!el.value.trim()){toast('请填写记录内容。');return;}const item=document.createElement('div');item.className='timeline-item';item.textContent=el.value.trim();const small=document.createElement('small');small.textContent='刚刚 · Liu';item.append(small);$('.timeline').prepend(item);el.value='';toast('记录已添加到本页时间线。');},
  instruction:()=>modal('追加指令',`<p class="muted">将补充到当前演示会话的后续上下文。</p><textarea id="extra-instruction" class="text-input" placeholder="例如：请补充连接超时的回归测试。" style="min-height:125px"></textarea>`,btn('发送指令','send-instruction','primary','arrow')),
@@ -172,8 +172,8 @@ document.addEventListener('click',e=>{
   return;
  }
  if(a==='confirm-adopt'){resolveIssue(pendingIssue,'已采纳建议');return;}
- if(a==='confirm-ignore'){const reason=$('#issue-reason').value.trim();if(!reason){toast('忽略前请填写理由。');return;}state.source+='\n\n## 忽略说明\n'+reason;resolveIssue(pendingIssue,'已忽略：'+reason);return;}
- if(a==='confirm-manual'){const value=$('#issue-edit').value.trim();if(!value){toast('请填写修订内容。');return;}state.source+='\n\n## 人工修订\n'+value;resolveIssue(pendingIssue,'已手动修订');return;}
+ if(a==='confirm-ignore'){const reason=$('#issue-reason').value.trim();if(!reason){toast('忽略前请填写理由。');return;}currentTicket().body=(currentTicket().body??samplePrd)+'\n\n## 忽略说明\n'+reason;resolveIssue(pendingIssue,'已忽略：'+reason);return;}
+ if(a==='confirm-manual'){const value=$('#issue-edit').value.trim();if(!value){toast('请填写修订内容。');return;}currentTicket().body=(currentTicket().body??samplePrd)+'\n\n## 人工修订\n'+value;resolveIssue(pendingIssue,'已手动修订');return;}
  actions[a]?.();
 });
 document.addEventListener('input',e=>{const el=e.target;if(el.dataset.bind)state[el.dataset.bind]=el.value;if(el.id==='source-text')state.source=el.value;if(el.id==='command-search')commandResults(el.value);if(el.dataset.setting)state.settingsDraft[el.dataset.setting]=el.value;});
@@ -199,5 +199,5 @@ document.addEventListener('drop',e=>{const col=e.target.closest('[data-status]')
  toast('不能直接拖到“'+statuses[target]+'”：需按预审、定稿、开发与验收的顺序推进。');
 });
 const validRoutes=new Set(['board','tickets','new','ticket','review','runs','acceptance','projects','providers','stats','settings']);
-function route(){const r=location.hash.slice(1)||'board';state.route=validRoutes.has(r)?r:'board';render();window.scrollTo(0,0);}
+function route(){const r=location.hash.slice(1)||'board';state.route=validRoutes.has(r)?r:'board';if(state.route==='review')state.ticket=42;render();window.scrollTo(0,0);}
 window.addEventListener('hashchange',route);route();
