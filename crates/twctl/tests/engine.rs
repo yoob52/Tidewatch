@@ -537,9 +537,11 @@ fn failures_and_failed_checks_are_reported() {
         "检查没过也交给人验收，由人决定"
     );
     assert_eq!(f.ticket_status(&ticket2), "acceptance");
-    let events = f.events.lock().unwrap();
-    assert!(events.iter().any(|e| matches!(e,
-        EngineEvent::RunFinished { run_id, failed_checks, .. } if *run_id == r.id && failed_checks == &["test".to_string()])));
+    // 事件在运行落库之后才发出，等一下
+    f.wait_for("RunFinished 带上没过的检查", || {
+        f.events.lock().unwrap().iter().any(|e| matches!(e,
+            EngineEvent::RunFinished { run_id, failed_checks, .. } if *run_id == r.id && failed_checks == &["test".to_string()]))
+    });
 }
 
 #[test]
@@ -838,15 +840,19 @@ fn mixed_prd_from_draft_through_review_split_api_doc_and_rework_to_done() {
             .collect::<Vec<_>>(),
         [("I-1", "blocker"), ("I-2", "suggestion")]
     );
-    assert!(f.events.lock().unwrap().iter().any(|e| matches!(
-        e,
-        EngineEvent::ReviewFinished {
-            issues: 2,
-            blockers: 1,
-            error: None,
-            ..
-        }
-    )));
+    f.wait_for("ReviewFinished 事件", || {
+        f.events.lock().unwrap().iter().any(|e| {
+            matches!(
+                e,
+                EngineEvent::ReviewFinished {
+                    issues: 2,
+                    blockers: 1,
+                    error: None,
+                    ..
+                }
+            )
+        })
+    });
     assert!(
         git::git(&f.repo, &["status", "--porcelain"])
             .unwrap()
