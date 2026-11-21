@@ -1244,6 +1244,13 @@ fn switching_agent_starts_a_new_session_with_a_handoff_summary() {
 #[test]
 fn dependents_that_already_ran_wait_for_a_rejected_prerequisite() {
     let f = fixture(1, None);
+    // 这里手动控制后续子任务什么时候开始
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_start_unblocked = false;
+        settings::save(&conn, &st).unwrap();
+    }
     let (ticket, first) = f.bug("依赖返工", "x [mock:steps=2] [mock:delay=100]", "medium");
     let second = tasks::create(
         &mut lock(f.db()),
