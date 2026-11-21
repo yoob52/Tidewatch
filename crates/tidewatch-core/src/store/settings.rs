@@ -20,6 +20,10 @@ pub struct Settings {
     pub notifications: bool,
     /// 单次 Run 的最长时间（分钟）；0 表示不限。
     pub run_timeout_minutes: u32,
+    /// 确认拆分后自动开始开发。
+    pub auto_develop: bool,
+    /// 依赖满足（对方完成，或接口文档已产出）的子任务自动入队。
+    pub auto_start_unblocked: bool,
 }
 
 impl Default for Settings {
@@ -35,6 +39,8 @@ impl Default for Settings {
             delete_branch_after_merge: true,
             notifications: true,
             run_timeout_minutes: 60,
+            auto_develop: false,
+            auto_start_unblocked: true,
         }
     }
 }

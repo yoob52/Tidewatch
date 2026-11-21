@@ -6,6 +6,7 @@ use std::path::Path;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_m1.sql"),
+    include_str!("../migrations/0003_m2.sql"),
 ];
 
 /// 多线程共用的连接：调度线程、运行线程和界面命令都经它读写。

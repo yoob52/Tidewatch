@@ -46,6 +46,31 @@ pub enum EngineEvent {
         status: String,
         failed_checks: Vec<String>,
     },
+    /// AI 预审结束（用于系统通知）。
+    ReviewFinished {
+        ticket_id: String,
+        ticket_key: String,
+        ticket_title: String,
+        issues: usize,
+        blockers: usize,
+        error: Option<String>,
+    },
+    /// 拆分建议 / 变更影响分析出来了，等人确认。
+    ProposalReady {
+        ticket_id: String,
+        ticket_key: String,
+        ticket_title: String,
+        /// split | impact
+        kind: String,
+        error: Option<String>,
+    },
+    /// 后端子任务产出了接口文档，等它的子任务解锁。
+    ApiDocReady {
+        ticket_key: String,
+        task_title: String,
+        path: String,
+        unblocked: usize,
+    },
 }
 
 pub type Listener = Arc<dyn Fn(EngineEvent) + Send + Sync>;
@@ -89,6 +114,33 @@ pub struct RunPlan {
     /// 续接的会话：(来源 Run, 会话 id)。
     pub resume: Option<(String, String)>,
     pub prompt: String,
+    /// 没法续接会话时（换了 Agent、要求新开会话、上一轮没留下会话），附在 Prompt 里的上一轮摘要。
+    pub handoff: Option<Handoff>,
+}
+
+/// 新会话接手已有工作时的上下文交接。
+#[derive(Debug, Clone, Serialize)]
+pub struct Handoff {
+    pub from_run_id: String,
+    pub summary_md: String,
+}
+
+/// 打回时写在 Diff 某一行上的评论。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InlineComment {
+    pub file_path: String,
+    pub line: Option<i64>,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct RejectInput {
+    pub note: String,
+    pub comments: Vec<InlineComment>,
+    /// 打回后立刻入队返工。
+    pub rerun: bool,
 }
 
 const MAX_PATCH_BYTES: usize = 2 * 1024 * 1024;
@@ -121,6 +173,7 @@ impl Engine {
         listener: Listener,
     ) -> Result<Engine> {
         runs::recover_orphans(&mut lock(&db))?;
+        ticket_flow::recover(&mut lock(&db))?;
         let inner = Arc::new(Inner {
             db,
             secrets,
@@ -160,92 +213,7 @@ impl Engine {
 
     /// 让子任务开始一轮运行（入队）。停止 / 失败 / 打回后再次调用即续接上一轮会话。
     pub fn start_task(&self, task_id: &str, opts: StartOptions) -> Result<Run> {
-        let run = {
-            let mut conn = lock(&self.inner.db);
-            if let Some(cid) = &opts.command_id {
-                let prior: Option<String> = conn
-                    .query_row(
-                        "SELECT result_json FROM command_receipt WHERE command_id = ?1",
-                        [cid],
-                        |r| r.get(0),
-                    )
-                    .ok();
-                if let Some(run_id) = prior {
-                    return runs::get(&conn, &run_id);
-                }
-            }
-            let task = tasks::get(&conn, task_id)?;
-            workflow::check_task_can_start(&task.status)?;
-            let ticket = tickets::get(&conn, &task.ticket_id)?;
-            let plan = plan_run(&conn, &task, &ticket, &opts)?;
-            match ticket.status.as_str() {
-                "developing" => {}
-                "acceptance" | "finalized" => {
-                    tickets::transition(&mut conn, &ticket.id, "developing")?;
-                }
-                "draft" if ticket.kind == "bug" => {
-                    tickets::transition(&mut conn, &ticket.id, "developing")?;
-                }
-                other => {
-                    return Err(Error::invalid(format!(
-                        "工单处于「{}」，还不能开始开发。",
-                        workflow::ticket_status_label(other)
-                    )))
-                }
-            }
-            let tx = conn.transaction()?;
-            let run = runs::enqueue(
-                &tx,
-                runs::NewRun {
-                    task_id: Some(&task.id),
-                    ticket_id: &ticket.id,
-                    purpose: if plan.resume.is_some()
-                        || opts.instruction.is_some()
-                        || task.status == "changes_requested"
-                    {
-                        "rework"
-                    } else {
-                        "dev"
-                    },
-                    parent_run_id: plan.resume.as_ref().map(|(r, _)| r.as_str()),
-                    agent: &plan.agent,
-                    provider_id: plan.provider_id.as_deref(),
-                    model: plan.model.as_deref(),
-                    permission: &plan.permission,
-                    resume_session_id: plan.resume.as_ref().map(|(_, s)| s.as_str()),
-                    prompt: &plan.prompt,
-                },
-            )?;
-            tasks::set_status(&tx, &task.id, "queued")?;
-            tasks::refresh_blocked(&tx, &ticket.id)?;
-            let now = crate::util::now();
-            tx.execute(
-                "INSERT INTO pending_effect (id, kind, payload_json, status, attempts, created_at, updated_at)
-                 VALUES (?1, 'run', ?2, 'pending', 0, ?3, ?3)",
-                rusqlite::params![run.id, json!({ "run_id": run.id }).to_string(), now],
-            )?;
-            if let Some(cid) = &opts.command_id {
-                tx.execute(
-                    "INSERT INTO command_receipt (command_id, result_json, created_at) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![cid, run.id, now],
-                )?;
-            }
-            add_timeline(
-                &tx,
-                &ticket.id,
-                "run_queued",
-                json!({ "task_id": task.id, "run_id": run.id, "number": run.number, "agent": run.agent }),
-            )?;
-            tx.commit()?;
-            run
-        };
-        self.inner.changed(
-            run.ticket_id.clone(),
-            run.task_id.clone(),
-            Some(run.id.clone()),
-        );
-        self.inner.wake();
-        Ok(run)
+        self.inner.enqueue_task(task_id, opts)
     }
 
     /// 停止一轮运行：排队中的直接撤掉，运行中的结束整棵进程树后照常收尾。
@@ -264,6 +232,11 @@ impl Engine {
                         tasks::set_status(&conn, t, "stopped")?;
                     }
                     set_effect(&conn, run_id, "done")?;
+                    if run.task_id.is_none() {
+                        drop(conn);
+                        self.inner
+                            .conclude_ticket_run(&run, Err("在开始前被停止。"));
+                    }
                 }
                 "starting" | "running" | "finalizing" | "stopping" => {
                     if let Some(flag) = self.inner.cancels.lock().unwrap().get(run_id) {
@@ -307,6 +280,17 @@ impl Engine {
 
     /// 打回：记下意见，子任务变为"已打回"，工单回到开发中。之后用 [`Engine::start_task`] 带意见返工。
     pub fn reject_task(&self, task_id: &str, note: &str) -> Result<Task> {
+        self.reject_task_with(
+            task_id,
+            RejectInput {
+                note: note.into(),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// 打回，可以带 Diff 上的行内评论；`rerun` 时立刻入队返工（优先续接原会话）。
+    pub fn reject_task_with(&self, task_id: &str, input: RejectInput) -> Result<Task> {
         let mut conn = lock(&self.inner.db);
         let task = tasks::get(&conn, task_id)?;
         if !matches!(task.status.as_str(), "review" | "accepted") {
@@ -315,25 +299,71 @@ impl Engine {
                 workflow::task_status_label(&task.status)
             )));
         }
-        let note = note.trim();
-        if note.is_empty() {
+        let note = input.note.trim();
+        let comments: Vec<&InlineComment> = input
+            .comments
+            .iter()
+            .filter(|c| !c.body.trim().is_empty())
+            .collect();
+        if note.is_empty() && comments.is_empty() {
             return Err(Error::invalid("请写明打回的原因，Agent 返工时会看到它。"));
         }
-        tasks::set_status(&conn, task_id, "changes_requested")?;
+        // Agent 看到的返工意见：总体意见 + 每条行内评论
+        let mut instruction = note.to_string();
+        if !comments.is_empty() {
+            if !instruction.is_empty() {
+                instruction.push_str("\n\n");
+            }
+            instruction.push_str("行内评论：");
+            for c in &comments {
+                let at = match c.line {
+                    Some(l) => format!("{}:{l}", c.file_path),
+                    None => c.file_path.clone(),
+                };
+                instruction.push_str(&format!("\n- `{at}`：{}", c.body.trim()));
+            }
+        }
+        let batch = crate::util::new_id();
+        let last_run: Option<String> = runs::list_for_task(&conn, task_id)?
+            .last()
+            .map(|r| r.id.clone());
+        let tx = conn.transaction()?;
+        for c in &comments {
+            tx.execute(
+                "INSERT INTO comment (id, ticket_id, task_id, run_id, kind, file_path, line, body_md, created_at, batch_id)
+                 VALUES (?1, ?2, ?3, ?4, 'inline', ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    crate::util::new_id(),
+                    task.ticket_id,
+                    task_id,
+                    last_run,
+                    c.file_path,
+                    c.line,
+                    c.body.trim(),
+                    crate::util::now(),
+                    batch
+                ],
+            )?;
+        }
+        tasks::set_status(&tx, task_id, "changes_requested")?;
         // 依赖它的子任务回到"等依赖"，返工完成前不能开始
-        tasks::refresh_blocked(&conn, &task.ticket_id)?;
+        tasks::refresh_blocked(&tx, &task.ticket_id)?;
         add_timeline(
-            &conn,
+            &tx,
             &task.ticket_id,
             "task_rejected",
-            json!({ "task_id": task_id, "note": note }),
+            json!({ "task_id": task_id, "note": note, "instruction": instruction, "batch_id": batch, "comments": comments.len() }),
         )?;
+        tx.commit()?;
         if tickets::get(&conn, &task.ticket_id)?.status == "acceptance" {
             tickets::transition(&mut conn, &task.ticket_id, "developing")?;
         }
         drop(conn);
         self.inner
             .changed(Some(task.ticket_id.clone()), Some(task_id.into()), None);
+        if input.rerun {
+            self.inner.enqueue_task(task_id, StartOptions::default())?;
+        }
         tasks::get(&lock(&self.inner.db), task_id)
     }
 
@@ -554,7 +584,8 @@ fn last_rejection_note(
     use rusqlite::OptionalExtension;
     Ok(conn
         .query_row(
-            "SELECT json_extract(payload_json, '$.note') FROM timeline_event
+            "SELECT COALESCE(json_extract(payload_json, '$.instruction'), json_extract(payload_json, '$.note'))
+                 FROM timeline_event
              WHERE ticket_id = ?1 AND type = 'task_rejected'
                AND json_extract(payload_json, '$.task_id') = ?2
              ORDER BY ts DESC, rowid DESC LIMIT 1",
@@ -612,9 +643,16 @@ fn plan_run(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .or(rejection.as_deref());
+    let ov = crate::prompt::load_overrides(conn)?;
+    // 没有会话可续接、但这个子任务已经跑过：新会话要知道上一轮做了什么
+    let handoff = if resume.is_none() {
+        handoff_from_last_run(conn, task)?
+    } else {
+        None
+    };
     let prompt = match (&opts.prompt_override, &resume, instruction) {
         (Some(p), _, _) if !p.trim().is_empty() => p.clone(),
-        (_, Some(_), Some(i)) => crate::prompt::rework_prompt(&project, ticket, i),
+        (_, Some(_), Some(i)) => crate::prompt::rework_prompt(&ov, &project, ticket, i),
         (_, Some(_), None) => {
             "请从上次停下的地方继续，把任务完成；最后用简短中文总结做了什么。".to_string()
         }
@@ -622,7 +660,12 @@ fn plan_run(
             let prd = tickets::current_prd(conn, &ticket.id)?
                 .map(|v| v.content_md)
                 .unwrap_or_default();
-            let mut p = crate::prompt::dev_prompt(&project, ticket, task, &prd);
+            let api_doc = api_docs_for(conn, task)?;
+            let mut p =
+                crate::prompt::dev_prompt(&ov, &project, ticket, task, &prd, api_doc.as_deref());
+            if let Some(h) = &handoff {
+                p.push_str(&format!("\n## 上一轮的情况\n{}\n", h.summary_md));
+            }
             if let Some(i) = i {
                 p.push_str(&format!("\n## 补充说明\n{i}\n"));
             }
@@ -636,7 +679,80 @@ fn plan_run(
         permission,
         resume,
         prompt,
+        handoff,
     })
+}
+
+/// 上一轮运行的摘要，给接手的新会话看。
+fn handoff_from_last_run(conn: &rusqlite::Connection, task: &Task) -> Result<Option<Handoff>> {
+    let Some(last) = runs::list_for_task(conn, &task.id)?
+        .into_iter()
+        .rfind(|r| r.agent_finished_at.is_some())
+    else {
+        return Ok(None);
+    };
+    let mut md = format!(
+        "这个子任务之前已经运行过（第 {} 轮，Agent：{}，结果：{}），当前 worktree 里保留着之前已提交的改动。\n请先用 `git log` 和 `git status` 了解现状，在此基础上继续，不要从头重做。\n",
+        last.number, last.agent, last.status
+    );
+    if let Some(summary) = last.summary.as_deref().filter(|s| !s.trim().is_empty()) {
+        md.push_str("\n上一轮结束时的总结：\n");
+        for line in summary.trim().lines() {
+            md.push_str(&format!("> {line}\n"));
+        }
+    }
+    if !last.diff_stat.is_empty() {
+        let files: Vec<&str> = last.diff_stat.iter().map(|f| f.path.as_str()).collect();
+        md.push_str(&format!("\n已经改动的文件：{}\n", files.join("、")));
+    }
+    Ok(Some(Handoff {
+        from_run_id: last.id,
+        summary_md: md,
+    }))
+}
+
+const MAX_API_DOC_BYTES: usize = 60 * 1024;
+
+/// 依赖的子任务产出的接口文档全文（前端子任务的 Prompt 用）。文档还在对方的 worktree 里就读文件，
+/// 否则从含有它的提交里取。读的都是本地小文件，所以允许在持有数据库锁时做。
+fn api_docs_for(conn: &rusqlite::Connection, task: &Task) -> Result<Option<String>> {
+    let mut out = String::new();
+    for dep_id in &task.depends_on {
+        let Some(a) = tasks::artifact(conn, dep_id, "api_doc")? else {
+            continue;
+        };
+        let dep = tasks::get(conn, dep_id)?;
+        let from_worktree = dep
+            .worktree_path
+            .as_deref()
+            .and_then(|w| std::fs::read_to_string(Path::new(w).join(&a.path)).ok());
+        let text = match (from_worktree, &a.commit_sha) {
+            (Some(t), _) => Some(t),
+            (None, Some(commit)) => {
+                let repo = projects::get(conn, &dep.project_id)?.local_path;
+                git::git(Path::new(&repo), &["show", &format!("{commit}:{}", a.path)]).ok()
+            }
+            (None, None) => None,
+        };
+        let Some(mut text) = text.filter(|t| !t.trim().is_empty()) else {
+            continue;
+        };
+        if text.len() > MAX_API_DOC_BYTES {
+            let mut cut = MAX_API_DOC_BYTES;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+            text.push_str("\n\n（文档太长，后面的部分省略了）\n");
+        }
+        out.push_str(&format!(
+            "来自后端子任务「{}」（`{}`）：\n\n{}\n",
+            dep.title,
+            a.path,
+            text.trim()
+        ));
+    }
+    Ok(Some(out).filter(|o| !o.is_empty()))
 }
 
 /// worktree 与分支的名字：`<工单编号>-<类型>`，同一工单下同类型的第二个起加序号。
@@ -680,6 +796,9 @@ fn slug(name: &str, id: &str) -> String {
     }
 }
 
+#[path = "engine_ticket.rs"]
+mod ticket_flow;
+
 struct Finished {
     status: &'static str,
     error: Option<String>,
@@ -687,6 +806,114 @@ struct Finished {
 }
 
 impl Inner {
+    /// 子任务入队一轮运行。
+    pub(crate) fn enqueue_task(&self, task_id: &str, opts: StartOptions) -> Result<Run> {
+        let run = {
+            let mut conn = lock(&self.db);
+            if let Some(cid) = &opts.command_id {
+                let prior: Option<String> = conn
+                    .query_row(
+                        "SELECT result_json FROM command_receipt WHERE command_id = ?1",
+                        [cid],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if let Some(run_id) = prior {
+                    return runs::get(&conn, &run_id);
+                }
+            }
+            let task = tasks::get(&conn, task_id)?;
+            workflow::check_task_can_start(&task.status)?;
+            let ticket = tickets::get(&conn, &task.ticket_id)?;
+            let plan = plan_run(&conn, &task, &ticket, &opts)?;
+            if ticket.status == "finalized" {
+                ticket_flow::check_no_open_proposal(&conn, &ticket.id)?;
+            }
+            match ticket.status.as_str() {
+                "developing" => {}
+                "acceptance" | "finalized" => {
+                    tickets::transition(&mut conn, &ticket.id, "developing")?;
+                }
+                "draft" if ticket.kind == "bug" => {
+                    tickets::transition(&mut conn, &ticket.id, "developing")?;
+                }
+                other => {
+                    return Err(Error::invalid(format!(
+                        "工单处于「{}」，还不能开始开发。",
+                        workflow::ticket_status_label(other)
+                    )))
+                }
+            }
+            let tx = conn.transaction()?;
+            let run = runs::enqueue(
+                &tx,
+                runs::NewRun {
+                    task_id: Some(&task.id),
+                    ticket_id: &ticket.id,
+                    purpose: if plan.resume.is_some()
+                        || opts.instruction.is_some()
+                        || task.status == "changes_requested"
+                    {
+                        "rework"
+                    } else {
+                        "dev"
+                    },
+                    parent_run_id: plan.resume.as_ref().map(|(r, _)| r.as_str()),
+                    agent: &plan.agent,
+                    provider_id: plan.provider_id.as_deref(),
+                    model: plan.model.as_deref(),
+                    permission: &plan.permission,
+                    resume_session_id: plan.resume.as_ref().map(|(_, s)| s.as_str()),
+                    prompt: &plan.prompt,
+                },
+            )?;
+            tasks::set_status(&tx, &task.id, "queued")?;
+            tasks::refresh_blocked(&tx, &ticket.id)?;
+            if let Some(h) = &plan.handoff {
+                tx.execute(
+                    "INSERT INTO context_handoff (id, task_id, target_run_id, from_run_ids_json, strategy, summary_md,
+                     created_by, status, created_at)
+                     VALUES (?1, ?2, ?3, ?4, 'full_summary', ?5, 'system', 'ready', ?6)",
+                    rusqlite::params![
+                        crate::util::new_id(),
+                        task.id,
+                        run.id,
+                        json!([h.from_run_id]).to_string(),
+                        h.summary_md,
+                        crate::util::now()
+                    ],
+                )?;
+            }
+            let now = crate::util::now();
+            tx.execute(
+                "INSERT INTO pending_effect (id, kind, payload_json, status, attempts, created_at, updated_at)
+                 VALUES (?1, 'run', ?2, 'pending', 0, ?3, ?3)",
+                rusqlite::params![run.id, json!({ "run_id": run.id }).to_string(), now],
+            )?;
+            if let Some(cid) = &opts.command_id {
+                tx.execute(
+                    "INSERT INTO command_receipt (command_id, result_json, created_at) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![cid, run.id, now],
+                )?;
+            }
+            add_timeline(
+                &tx,
+                &ticket.id,
+                "run_queued",
+                json!({ "task_id": task.id, "run_id": run.id, "number": run.number, "agent": run.agent }),
+            )?;
+            tx.commit()?;
+            run
+        };
+        self.changed(
+            run.ticket_id.clone(),
+            run.task_id.clone(),
+            Some(run.id.clone()),
+        );
+        self.wake();
+        Ok(run)
+    }
+
     fn emit(&self, ev: EngineEvent) {
         (self.listener)(ev);
     }
@@ -777,6 +1004,9 @@ impl Inner {
 
     /// 跑完一轮并把最终状态写回。任何一步出错都记为失败，不让 Run 卡在中间状态。
     fn execute(&self, run: &Run, cancel: &AtomicBool) {
+        if run.task_id.is_none() {
+            return self.execute_ticket_run(run, cancel);
+        }
         let task_id = run.task_id.clone().unwrap_or_default();
         let fin = match self.execute_steps(run, &task_id, cancel) {
             Ok(f) => f,
@@ -800,6 +1030,7 @@ impl Inner {
         };
         let mut ticket_key = String::new();
         let mut task_title = String::new();
+        let mut unblocked = vec![];
         let res: Result<()> = (|| {
             let mut conn = lock(&self.db);
             runs::set_fields(
@@ -831,7 +1062,7 @@ impl Inner {
                 "run_finished",
                 json!({ "task_id": task_id, "run_id": run.id, "number": run.number, "status": fin.status, "failed_checks": fin.failed_checks }),
             )?;
-            tasks::refresh_blocked(&conn, &ticket.id)?;
+            unblocked = tasks::refresh_blocked(&conn, &ticket.id)?;
             let all = tasks::list_for_ticket(&conn, &ticket.id)?;
             if ticket.status == "developing"
                 && workflow::all_tasks_ready_for_acceptance(all.iter().map(|t| t.status.as_str()))
@@ -849,6 +1080,7 @@ impl Inner {
             run.task_id.clone(),
             Some(run.id.clone()),
         );
+        self.auto_start(&unblocked);
         self.emit(EngineEvent::RunFinished {
             run_id: run.id.clone(),
             task_id,
@@ -896,7 +1128,36 @@ impl Inner {
 
         // 2. Agent
         let logs = self.cfg.data_dir.join("logs");
-        let outcome = self.agent_phase(run, kind, &worktree, &project, &st, &provider, cancel)?;
+        // 后端子任务：Agent 一写出接口文档就解锁等它的子任务，不用等整轮跑完
+        let doc_rel = format!("docs/api/{}.md", ticket.key);
+        let doc_file = worktree.join(&doc_rel);
+        let mut doc_known = task.kind != "backend"
+            || tasks::artifact(&lock(&self.db), &task.id, "api_doc")?.is_some();
+        let mut last_check = Instant::now();
+        let mut last_size = 0u64;
+        let mut watch_doc = || {
+            if doc_known || last_check.elapsed() < Duration::from_millis(500) {
+                return;
+            }
+            last_check = Instant::now();
+            let size = std::fs::metadata(&doc_file).map(|m| m.len()).unwrap_or(0);
+            // 连续两次大小不变才算写完
+            if size > 0 && size == last_size {
+                doc_known = true;
+                self.api_doc_ready(&task, &ticket, &doc_rel, None);
+            }
+            last_size = size;
+        };
+        let outcome = self.agent_phase(
+            run,
+            kind,
+            &worktree,
+            &project,
+            &st,
+            &provider,
+            cancel,
+            &mut watch_doc,
+        )?;
         let agent_ok = outcome.succeeded();
 
         let message = format!("tw({}): {} · 第 {} 轮", ticket.key, task.title, run.number);
@@ -909,6 +1170,10 @@ impl Inner {
         }
         let end_commit = git::rev_parse(&worktree, "HEAD")?;
         git::save_checkpoint(&repo, &format!("{}/{}-end", task.id, run.id), &end_commit)?;
+        if task.kind == "backend" && doc_file.is_file() {
+            // 提交之后记下含有文档的提交：worktree 清理后还能从提交里取到
+            self.api_doc_ready(&task, &ticket, &doc_rel, Some(&end_commit));
+        }
         let stat = git::diff_stat(&worktree, &base, Some("HEAD"))?;
         runs::set_fields(
             &lock(&self.db),
@@ -985,6 +1250,67 @@ impl Inner {
         })
     }
 
+    /// 接口文档出现（或已提交）：记为产物，解锁只等文档的子任务。
+    fn api_doc_ready(&self, task: &Task, ticket: &Ticket, path: &str, commit: Option<&str>) {
+        let res: Result<Option<Vec<String>>> = (|| {
+            let conn = lock(&self.db);
+            let first = tasks::artifact(&conn, &task.id, "api_doc")?.is_none();
+            tasks::record_artifact(&conn, &task.id, "api_doc", path, commit)?;
+            if !first {
+                return Ok(None);
+            }
+            let unblocked = tasks::refresh_blocked(&conn, &ticket.id)?;
+            add_timeline(
+                &conn,
+                &ticket.id,
+                "api_doc_ready",
+                json!({ "task_id": task.id, "path": path, "unblocked": unblocked }),
+            )?;
+            Ok(Some(unblocked))
+        })();
+        match res {
+            Ok(Some(unblocked)) => {
+                self.changed(Some(ticket.id.clone()), Some(task.id.clone()), None);
+                self.emit(EngineEvent::ApiDocReady {
+                    ticket_key: ticket.key.clone(),
+                    task_title: task.title.clone(),
+                    path: path.into(),
+                    unblocked: unblocked.len(),
+                });
+                self.auto_start(&unblocked);
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("记录接口文档失败：{e}"),
+        }
+    }
+
+    /// 刚解锁的子任务自动入队（设置里可以关）。
+    pub(crate) fn auto_start(&self, task_ids: &[String]) {
+        if task_ids.is_empty() {
+            return;
+        }
+        let on = settings::get(&lock(&self.db))
+            .map(|s| s.auto_start_unblocked)
+            .unwrap_or(false);
+        if !on {
+            return;
+        }
+        for id in task_ids {
+            let developing = (|| -> Result<bool> {
+                let conn = lock(&self.db);
+                let task = tasks::get(&conn, id)?;
+                Ok(tickets::get(&conn, &task.ticket_id)?.status == "developing")
+            })()
+            .unwrap_or(false);
+            if !developing {
+                continue;
+            }
+            if let Err(e) = self.enqueue_task(id, StartOptions::default()) {
+                eprintln!("自动开始子任务 {id} 失败：{e}");
+            }
+        }
+    }
+
     /// 在 `worktree` 里启动 Agent 并等它结束：事件写库并推给界面，用量、费用、摘要记到 Run 上，
     /// Run 进入 finalizing。子任务运行和工单级运行（预审 / 拆分 / 影响分析）共用。
     #[allow(clippy::too_many_arguments)]
@@ -997,6 +1323,7 @@ impl Inner {
         st: &Settings,
         provider: &Option<providers::Provider>,
         cancel: &AtomicBool,
+        on_event: &mut dyn FnMut(),
     ) -> Result<crate::runner::RunOutcome> {
         if cancel.load(Ordering::SeqCst) {
             return Err(Error::invalid("在 Agent 启动前被停止。"));
@@ -1085,6 +1412,7 @@ impl Inner {
                 );
             }
             RunnerEvent::Agent(ev) => {
+                on_event();
                 if let AgentEvent::SessionStarted { session_id, .. } = &ev {
                     // 立刻记下会话 id：即使观澜中途退出，下一轮也能续接
                     let _ = runs::set_fields(

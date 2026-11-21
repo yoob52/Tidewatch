@@ -34,8 +34,11 @@ const FRONTEND_DEV: &str = r#"你是本项目的前端开发者。请在当前�
 ## 验收标准
 {{task.acceptance_criteria}}
 
+## 接口文档
+{{api_doc}}
+
 ## 工作要求
-1. 如果任务说明里给了接口文档，严格按文档对接，不要自行假设接口。
+1. 上面给了接口文档时，严格按文档对接，不要自行假设接口。
 2. 实现界面与交互，并补充必要的测试。
 3. {{project.test_hint}}
 4. 不要修改与本任务无关的文件；不要推送到远程。
@@ -72,6 +75,351 @@ const REWORK: &str = r#"上一轮的结果没有通过验收，请在当前 work
 3. 最后用简短中文总结这一轮改了什么。
 "#;
 
+const REVIEW: &str = r#"你是一名资深的需求评审者。请审阅下面这份需求文档（PRD），找出开发前必须澄清或补充的问题。
+你可以只读地查看当前目录里的项目代码，用来发现"与现有实现冲突"的问题；不要修改任何文件。
+
+## 项目背景
+{{project.context}}
+
+## 需求（{{ticket.key}} {{ticket.title}}，类型：{{ticket.type}}）
+{{prd}}
+
+## 上一轮还没处理完的问题
+{{open_issues}}
+
+## 检查维度
+- 完整性：背景 / 目标、用户角色、功能点、验收标准是否齐全
+- 歧义：模糊词（"适当""尽快""类似 xx"）、未定义的名词
+- 数据：字段名、类型、长度、必填、默认值、枚举值
+- 流程：异常流程、边界条件、空状态、并发、幂等
+- 接口：前后端交互点是否明确，是否需要新接口或修改旧接口
+- 权限与安全：谁能操作、越权、敏感数据
+- 非功能：性能、分页、兼容性
+- 一致性：PRD 内部前后矛盾；与现有代码或已有功能冲突
+- 可测试性：验收标准是否可以验证
+- 拆分：涉及前端、后端还是两者
+
+严重程度：blocker（不解决无法开发）、major（很可能返工）、minor（细节）、suggestion（建议）。
+已经在上一轮列出、现在仍未解决的问题不要换个说法重复提出。
+"#;
+
+const SPLIT: &str = r#"下面这份需求已经定稿。请把它拆成可以分别交给编码 Agent 的子任务。
+你可以只读地查看当前目录里的项目代码；不要修改任何文件。
+
+## 需求（{{ticket.key}} {{ticket.title}}，类型：{{ticket.type}}）
+{{prd}}
+
+## 验收标准
+{{ticket.acceptance_criteria}}
+
+## 可用的项目
+{{projects}}
+
+## 拆分要求
+- 后端子任务：数据模型、接口、业务逻辑、单元测试；第一步先产出接口文档。
+- 前端子任务：页面、组件、状态管理、接口对接；依赖后端的接口文档（dependency_kind 用 api_doc）。
+- 只涉及一端的需求不要硬拆成两端；子任务数量尽量少，每个都能独立验收。
+- 每个子任务写清：标题、需求摘录（只摘与它有关的部分）、它自己的验收标准。
+- project 必须是上面"可用的项目"里的名字。
+"#;
+
+const IMPACT: &str = r#"下面这份需求在定稿后发生了变更。请对比新旧两版，判断每个已有子任务受到的影响。
+你可以只读地查看当前目录里的项目代码；不要修改任何文件。
+
+## 变更原因
+{{change.reason}}
+
+## 旧版需求
+{{prd.old}}
+
+## 新版需求
+{{prd.new}}
+
+## 已有的子任务
+{{tasks}}
+
+## 要求
+- 对每个已有子任务给出 impact：none（不受影响）或 rework（需要追加工作），rework 时写明要追加做什么。
+- 已有子任务覆盖不了的新增内容，放进 new_tasks。
+- 不要因为措辞调整就判定为 rework；只看行为、数据、接口、验收标准上的变化。
+"#;
+
+const REVIEW_OUTPUT: &str = r#"
+<!-- tw:purpose=review -->
+## 输出格式
+最后一条消息只输出一个 JSON 对象（可以放在 ```json 代码块里），不要有其它文字：
+{
+  "summary": "一句话评价这份 PRD",
+  "scope": { "backend": true, "frontend": true },
+  "issues": [
+    {
+      "id": "I-1",
+      "severity": "blocker | major | minor | suggestion",
+      "category": "completeness | ambiguity | data | flow | api | security | nonfunctional | consistency | testability | split",
+      "location": "PRD 中的原文片段或章节名",
+      "problem": "问题描述",
+      "question": "需要向需求方确认的问题（没有就省略）",
+      "suggestion": "建议写进 PRD 的文字（可直接采纳）"
+    }
+  ],
+  "acceptance_criteria_draft": ["可验证的验收标准"]
+}
+"#;
+
+const SPLIT_OUTPUT: &str = r#"
+<!-- tw:purpose=split -->
+## 输出格式
+最后一条消息只输出一个 JSON 对象（可以放在 ```json 代码块里），不要有其它文字：
+{
+  "tasks": [
+    {
+      "ref": "T1",
+      "kind": "backend | frontend",
+      "project": "项目名",
+      "title": "子任务标题",
+      "spec": "需求摘录（Markdown）",
+      "acceptance_criteria": ["这个子任务自己的验收标准"],
+      "depends_on": ["它依赖的子任务的 ref"],
+      "dependency_kind": "api_doc | done"
+    }
+  ]
+}
+"#;
+
+const IMPACT_OUTPUT: &str = r#"
+<!-- tw:purpose=impact -->
+## 输出格式
+最后一条消息只输出一个 JSON 对象（可以放在 ```json 代码块里），不要有其它文字：
+{
+  "summary": "一句话说明这次变更影响了什么",
+  "tasks": [
+    { "task_id": "已有子任务的 id", "impact": "none | rework", "instruction": "rework 时要追加做的事" }
+  ],
+  "new_tasks": [
+    { "ref": "N1", "kind": "backend | frontend", "project": "项目名", "title": "", "spec": "", "acceptance_criteria": [], "depends_on": [], "dependency_kind": "done" }
+  ]
+}
+"#;
+
+/// 可编辑的模板。输出格式（JSON 结构）由系统固定追加，不在模板里，改模板不会让解析失效。
+pub struct TemplateDef {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub default: &'static str,
+    pub variables: &'static [&'static str],
+}
+
+const COMMON_VARS: &[&str] = &[
+    "project.context",
+    "project.test_hint",
+    "ticket.key",
+    "ticket.title",
+];
+
+pub const TEMPLATES: &[TemplateDef] = &[
+    TemplateDef {
+        name: "backend_dev",
+        title: "后端开发",
+        description: "后端子任务的首轮 Prompt",
+        default: BACKEND_DEV,
+        variables: &["task.spec", "task.acceptance_criteria"],
+    },
+    TemplateDef {
+        name: "frontend_dev",
+        title: "前端开发",
+        description: "前端子任务的首轮 Prompt",
+        default: FRONTEND_DEV,
+        variables: &["task.spec", "task.acceptance_criteria", "api_doc"],
+    },
+    TemplateDef {
+        name: "bug_fix",
+        title: "Bug 修复",
+        description: "Bug 工单的首轮 Prompt",
+        default: BUG_FIX,
+        variables: &["task.spec", "task.acceptance_criteria"],
+    },
+    TemplateDef {
+        name: "rework",
+        title: "返工 / 追加指令",
+        description: "打回或追加指令时，续接原会话发送的增量 Prompt",
+        default: REWORK,
+        variables: &["instruction"],
+    },
+    TemplateDef {
+        name: "review",
+        title: "PRD 预审",
+        description: "AI 预审；输出格式由系统固定追加",
+        default: REVIEW,
+        variables: &["ticket.type", "prd", "open_issues"],
+    },
+    TemplateDef {
+        name: "split",
+        title: "拆分子任务",
+        description: "定稿后生成拆分建议；输出格式由系统固定追加",
+        default: SPLIT,
+        variables: &[
+            "ticket.type",
+            "prd",
+            "ticket.acceptance_criteria",
+            "projects",
+        ],
+    },
+    TemplateDef {
+        name: "impact",
+        title: "变更影响分析",
+        description: "定稿后变更、再次定稿时生成；输出格式由系统固定追加",
+        default: IMPACT,
+        variables: &["change.reason", "prd.old", "prd.new", "tasks"],
+    },
+];
+
+/// 用户改过的模板：模板名 → 内容。没改过的不在里面。
+pub type Overrides = std::collections::HashMap<String, String>;
+
+pub fn template_def(name: &str) -> crate::Result<&'static TemplateDef> {
+    TEMPLATES
+        .iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| crate::Error::invalid(format!("没有名为 {name} 的 Prompt 模板。")))
+}
+
+pub fn variables(def: &TemplateDef) -> Vec<&'static str> {
+    let mut v: Vec<&str> = match def.name {
+        "review" | "split" => vec!["project.context", "ticket.key", "ticket.title"],
+        "impact" => vec![],
+        _ => COMMON_VARS.to_vec(),
+    };
+    v.extend(def.variables);
+    v
+}
+
+pub fn load_overrides(conn: &rusqlite::Connection) -> crate::Result<Overrides> {
+    let mut st = conn.prepare("SELECT key, value_json FROM setting WHERE key LIKE 'prompt:%'")?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out = Overrides::new();
+    for row in rows {
+        let (k, v) = row?;
+        if let Ok(text) = serde_json::from_str::<String>(&v) {
+            out.insert(k["prompt:".len()..].to_string(), text);
+        }
+    }
+    Ok(out)
+}
+
+/// 保存自定义模板；`None` 或空白恢复默认。
+pub fn save_override(
+    conn: &rusqlite::Connection,
+    name: &str,
+    content: Option<&str>,
+) -> crate::Result<()> {
+    let def = template_def(name)?;
+    let key = format!("prompt:{name}");
+    match content.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(c) if c != def.default.trim() => {
+            conn.execute(
+                "INSERT INTO setting (key, value_json) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+                rusqlite::params![key, serde_json::to_string(c)?],
+            )?;
+        }
+        _ => {
+            conn.execute("DELETE FROM setting WHERE key = ?1", [key])?;
+        }
+    }
+    Ok(())
+}
+
+fn text<'a>(ov: &'a Overrides, name: &str) -> &'a str {
+    match ov.get(name) {
+        Some(t) => t.as_str(),
+        None => TEMPLATES
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.default)
+            .unwrap_or(""),
+    }
+}
+
+/// 模板里出现、但这个模板不认识的 `{{变量}}`（多半是拼错了）。
+pub fn unknown_variables(name: &str, content: &str) -> crate::Result<Vec<String>> {
+    let known = variables(template_def(name)?);
+    let mut out = Vec::new();
+    let mut rest = content;
+    while let Some(i) = rest.find("{{") {
+        let Some(j) = rest[i..].find("}}") else { break };
+        let var = rest[i + 2..i + j].trim().to_string();
+        if !known.contains(&var.as_str()) && !out.contains(&var) {
+            out.push(var);
+        }
+        rest = &rest[i + j + 2..];
+    }
+    Ok(out)
+}
+
+fn bullets(items: &[String], empty: &str) -> String {
+    if items.is_empty() {
+        empty.to_string()
+    } else {
+        items
+            .iter()
+            .map(|c| format!("- {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// AI 预审。`open_issues`：上一轮还没处理完的问题（每条一行）。
+pub fn review_prompt(
+    ov: &Overrides,
+    project: &Project,
+    ticket: &Ticket,
+    prd: &str,
+    open_issues: &[String],
+) -> String {
+    let mut vars = common_vars(project, ticket);
+    vars.push(("ticket.type", ticket.kind.clone()));
+    vars.push(("prd", or_placeholder(prd, "（正文为空）")));
+    vars.push(("open_issues", bullets(open_issues, "（没有）")));
+    fill(text(ov, "review"), &vars) + REVIEW_OUTPUT
+}
+
+/// 定稿后的拆分。`projects`：每个可用项目一行（名字、类型、在工单里的角色）。
+pub fn split_prompt(
+    ov: &Overrides,
+    project: &Project,
+    ticket: &Ticket,
+    prd: &str,
+    projects: &[String],
+) -> String {
+    let mut vars = common_vars(project, ticket);
+    vars.push(("ticket.type", ticket.kind.clone()));
+    vars.push(("prd", or_placeholder(prd, "（正文为空）")));
+    vars.push((
+        "ticket.acceptance_criteria",
+        bullets(&ticket.acceptance_criteria, "（未列出）"),
+    ));
+    vars.push(("projects", bullets(projects, "（没有绑定项目）")));
+    fill(text(ov, "split"), &vars) + SPLIT_OUTPUT
+}
+
+/// 变更影响分析。`tasks`：每个已有子任务一行（id、类型、状态、标题）。
+pub fn impact_prompt(
+    ov: &Overrides,
+    reason: &str,
+    old_prd: &str,
+    new_prd: &str,
+    tasks: &[String],
+) -> String {
+    let vars = vec![
+        ("change.reason", or_placeholder(reason, "（未填写）")),
+        ("prd.old", or_placeholder(old_prd, "（空）")),
+        ("prd.new", or_placeholder(new_prd, "（空）")),
+        ("tasks", bullets(tasks, "（还没有子任务）")),
+    ];
+    fill(text(ov, "impact"), &vars) + IMPACT_OUTPUT
+}
+
 fn or_placeholder(s: &str, placeholder: &str) -> String {
     if s.trim().is_empty() {
         placeholder.to_string()
@@ -80,11 +428,12 @@ fn or_placeholder(s: &str, placeholder: &str) -> String {
     }
 }
 
-fn template(task_kind: &str, ticket_type: &str) -> &'static str {
+/// 子任务首轮开发用哪个模板。
+pub fn dev_template_name(task_kind: &str, ticket_type: &str) -> &'static str {
     match (task_kind, ticket_type) {
-        ("bug", _) | (_, "bug") => BUG_FIX,
-        ("frontend", _) => FRONTEND_DEV,
-        _ => BACKEND_DEV,
+        ("bug", _) | (_, "bug") => "bug_fix",
+        ("frontend", _) => "frontend_dev",
+        _ => "backend_dev",
     }
 }
 
@@ -116,7 +465,15 @@ fn common_vars(project: &Project, ticket: &Ticket) -> Vec<(&'static str, String)
 }
 
 /// 首轮开发的 Prompt。`prd` 是工单当前正文；子任务自己写了说明时，正文作为背景附在后面。
-pub fn dev_prompt(project: &Project, ticket: &Ticket, task: &Task, prd: &str) -> String {
+/// `api_doc`：依赖的后端子任务产出的接口文档（前端子任务用）。
+pub fn dev_prompt(
+    ov: &Overrides,
+    project: &Project,
+    ticket: &Ticket,
+    task: &Task,
+    prd: &str,
+    api_doc: Option<&str>,
+) -> String {
     let spec = match (task.spec_md.trim(), prd.trim()) {
         ("", "") => task.title.clone(),
         ("", prd) => prd.to_string(),
@@ -140,14 +497,26 @@ pub fn dev_prompt(project: &Project, ticket: &Ticket, task: &Task, prd: &str) ->
     let mut vars = common_vars(project, ticket);
     vars.push(("task.spec", spec));
     vars.push(("task.acceptance_criteria", criteria));
-    fill(template(&task.kind, &ticket.kind), &vars)
+    vars.push((
+        "api_doc",
+        or_placeholder(
+            api_doc.unwrap_or(""),
+            "（没有提供接口文档；需要接口时先查看后端代码，不要自行假设。）",
+        ),
+    ));
+    fill(text(ov, dev_template_name(&task.kind, &ticket.kind)), &vars)
 }
 
 /// 返工 / 追加指令的 Prompt：续接原会话时只传增量。
-pub fn rework_prompt(project: &Project, ticket: &Ticket, instruction: &str) -> String {
+pub fn rework_prompt(
+    ov: &Overrides,
+    project: &Project,
+    ticket: &Ticket,
+    instruction: &str,
+) -> String {
     let mut vars = common_vars(project, ticket);
     vars.push(("instruction", instruction.trim().to_string()));
-    fill(REWORK, &vars)
+    fill(text(ov, "rework"), &vars)
 }
 
 #[cfg(test)]
@@ -198,10 +567,12 @@ mod tests {
     #[test]
     fn dev_prompt_fills_every_variable() {
         let p = dev_prompt(
+            &Overrides::new(),
             &project(),
             &ticket("feature_backend"),
             &task("backend", ""),
             "支持两张券叠加",
+            None,
         );
         assert!(p.contains("Rust + axum"));
         assert!(p.contains("TW-7 优惠券叠加"));
@@ -214,16 +585,60 @@ mod tests {
 
     #[test]
     fn picks_template_by_kind() {
-        let bug = dev_prompt(&project(), &ticket("bug"), &task("bug", "金额为负"), "");
+        let bug = dev_prompt(
+            &Overrides::new(),
+            &project(),
+            &ticket("bug"),
+            &task("bug", "金额为负"),
+            "",
+            None,
+        );
         assert!(bug.contains("修复下面这个 Bug") && bug.contains("金额为负"));
         let fe = dev_prompt(
+            &Overrides::new(),
             &project(),
             &ticket("feature_mixed"),
             &task("frontend", "结算页"),
             "正文",
+            Some("GET /coupons"),
         );
         assert!(fe.contains("前端开发者") && fe.contains("### 工单正文（背景）"));
-        let r = rework_prompt(&project(), &ticket("bug"), " 边界值没处理 ");
+        assert!(fe.contains("## 接口文档\nGET /coupons") && !fe.contains("{{"));
+        let r = rework_prompt(
+            &Overrides::new(),
+            &project(),
+            &ticket("bug"),
+            " 边界值没处理 ",
+        );
         assert!(r.contains("边界值没处理") && !r.contains("{{"));
+    }
+
+    #[test]
+    fn custom_templates_replace_defaults_and_flag_unknown_variables() {
+        let conn = crate::db::open_in_memory().unwrap();
+        assert!(load_overrides(&conn).unwrap().is_empty());
+        save_override(
+            &conn,
+            "rework",
+            Some("请处理：{{instruction}}（{{ticket.key}}）"),
+        )
+        .unwrap();
+        let ov = load_overrides(&conn).unwrap();
+        let r = rework_prompt(&ov, &project(), &ticket("bug"), "边界值");
+        assert_eq!(r, "请处理：边界值（TW-7）");
+        assert_eq!(
+            unknown_variables("rework", "{{instruction}} {{task.spec}} {{ nope }}").unwrap(),
+            vec!["task.spec", "nope"]
+        );
+        // 输出格式由系统追加，改模板不影响解析
+        save_override(&conn, "review", Some("只看数据定义：{{prd}}")).unwrap();
+        let ov = load_overrides(&conn).unwrap();
+        let p = review_prompt(&ov, &project(), &ticket("feature_mixed"), "正文", &[]);
+        assert!(p.starts_with("只看数据定义：正文") && p.contains("tw:purpose=review"));
+        // 存回默认内容或空白 = 恢复默认
+        save_override(&conn, "rework", Some("  ")).unwrap();
+        save_override(&conn, "review", None).unwrap();
+        assert!(load_overrides(&conn).unwrap().is_empty());
+        assert!(save_override(&conn, "nope", Some("x")).is_err());
     }
 }

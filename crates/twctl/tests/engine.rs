@@ -527,6 +527,13 @@ fn rejection_sends_the_note_back_to_the_same_session() {
 #[test]
 fn rejecting_a_task_blocks_its_dependents_again() {
     let f = fixture(2, None);
+    // 这里要看"解锁"本身，不让解锁的子任务自动入队
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_start_unblocked = false;
+        settings::save(&conn, &st).unwrap();
+    }
     let (ticket, first) = f.bug("依赖", "x [mock:steps=1] [mock:delay=50]", "medium");
     let second = tasks::create(
         &mut lock(f.db()),
