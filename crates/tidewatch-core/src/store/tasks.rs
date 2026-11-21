@@ -265,6 +265,20 @@ pub fn set_merged(conn: &Connection, id: &str, commit: &str) -> Result<()> {
     Ok(())
 }
 
+/// 还没满足的第一个依赖：依赖的子任务没到待验收 / 已通过 / 已合并；只等接口文档的，文档还没出。
+/// 不只看"等依赖"状态：依赖被打回时，后面的子任务可能正处于已停止 / 失败 / 排队。
+pub fn unmet_dependency(conn: &Connection, task: &Task) -> Result<Option<Task>> {
+    for d in &task.depends_on {
+        let dep = get(conn, d)?;
+        let met = workflow::task_satisfies_dependency(&dep.status)
+            || (task.api_doc_deps.contains(d) && artifact(conn, d, "api_doc")?.is_some());
+        if !met {
+            return Ok(Some(dep));
+        }
+    }
+    Ok(None)
+}
+
 /// 按依赖是否满足，在"待开始"和"等依赖"之间切换该工单下的子任务。返回这次解锁的子任务 id。
 pub fn refresh_blocked(conn: &Connection, ticket_id: &str) -> Result<Vec<String>> {
     let mut unblocked = Vec::new();

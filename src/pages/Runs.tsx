@@ -126,7 +126,7 @@ function RunItem({ r, on, now }: { r: RunRow; on: boolean; now: number }) {
       <div className="row sub">
         {active ? <Ripple /> : <span className={`dot st-${r.status === 'succeeded' ? 'done' : r.status}`} />}
         <span className="grow ell">{r.error ?? r.summary ?? ''}</span>
-        <span className="mono">{fmtTok(r.input_tokens + r.output_tokens)}</span>
+        <span className="mono">{fmtTok(r.input_tokens + r.cache_tokens + r.output_tokens)}</span>
       </div>
     </a>
   );
@@ -361,6 +361,12 @@ export function RunsPage({ id }: { id?: string }) {
             <i>输入</i>
             <b>{fmtTok(r.input_tokens)}</b>
           </span>
+          {r.cache_tokens > 0 && (
+            <span title="从缓存读取的输入，不计入「输入」">
+              <i>缓存读取</i>
+              <b>{fmtTok(r.cache_tokens)}</b>
+            </span>
+          )}
           <span>
             <i>输出</i>
             <b>{fmtTok(r.output_tokens)}</b>

@@ -478,7 +478,7 @@ function RunsTab({ d }: { d: TicketDetail }) {
       </div>
     );
   const tot = d.runs.reduce(
-    (a, r) => ({ c: a.c + (r.cost_usd ?? 0), t: a.t + r.input_tokens + r.output_tokens, s: a.s + runSeconds(r) }),
+    (a, r) => ({ c: a.c + (r.cost_usd ?? 0), t: a.t + r.input_tokens + r.cache_tokens + r.output_tokens, s: a.s + runSeconds(r) }),
     { c: 0, t: 0, s: 0 },
   );
   return (
@@ -534,7 +534,7 @@ function RunsTab({ d }: { d: TicketDetail }) {
                     <RunStatusTag status={r.status} />
                   </td>
                   <td className="num">{fmtDur(runSeconds(r))}</td>
-                  <td className="num">{fmtTok(r.input_tokens + r.output_tokens)}</td>
+                  <td className="num">{fmtTok(r.input_tokens + r.cache_tokens + r.output_tokens)}</td>
                   <td className="num">{fmtCost(r.cost_usd)}</td>
                 </tr>
               );

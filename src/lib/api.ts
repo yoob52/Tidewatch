@@ -329,6 +329,7 @@ export interface AgentStat {
   stopped: number;
   input_tokens: number;
   output_tokens: number;
+  cache_tokens: number;
   cost_usd: number;
   agent_seconds: number;
 }
@@ -341,6 +342,7 @@ export interface Stats {
   cost_usd: number;
   input_tokens: number;
   output_tokens: number;
+  cache_tokens: number;
   agents: AgentStat[];
   days: { day: string; runs: number; cost_usd: number; tokens: number }[];
   providers: [string | null, number, number][];

@@ -777,6 +777,18 @@ fn unfinished_runs_become_orphans_on_restart() {
         Arc::new(|_| {}),
     )
     .unwrap();
+    // 同一个数据目录不能再起第二个引擎：否则它会把这边正在跑的运行当成孤儿收掉
+    let second = Engine::start(
+        db::shared(db::open(&root.join("data/tidewatch.db")).unwrap()),
+        Box::new(MemoryStore::default()),
+        EngineConfig {
+            data_dir: root.join("data"),
+            mock_binary: None,
+        },
+        Arc::new(|_| {}),
+    );
+    assert!(second.err().unwrap().to_string().contains("已经在运行"));
+
     let conn = lock(engine.db());
     let run = runs::get(&conn, &run.id).unwrap();
     assert_eq!(run.status, "orphaned");
@@ -1227,4 +1239,71 @@ fn switching_agent_starts_a_new_session_with_a_handoff_summary() {
         .unwrap();
     assert!(recorded.contains(&r1.id));
     f.wait_done(&r2.id);
+}
+
+#[test]
+fn dependents_that_already_ran_wait_for_a_rejected_prerequisite() {
+    let f = fixture(1, None);
+    let (ticket, first) = f.bug("依赖返工", "x [mock:steps=2] [mock:delay=100]", "medium");
+    let second = tasks::create(
+        &mut lock(f.db()),
+        tasks::TaskInput {
+            ticket_id: ticket.clone(),
+            kind: "bug".into(),
+            project_id: f.project_id.clone(),
+            title: "后续".into(),
+            depends_on: vec![first.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .id;
+    let run = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+
+    // 后续子任务跑过一轮后停下（已停止，不是"等依赖"），这时前置被打回
+    let r2 = f
+        .engine
+        .start_task(&second, StartOptions::default())
+        .unwrap();
+    f.wait_run(&r2.id, "后续开始运行", |r| r.status == "running");
+    f.engine.stop_run(&r2.id).unwrap();
+    f.wait_done(&r2.id);
+    assert_eq!(f.task(&second).status, "stopped");
+    f.engine.reject_task(&first, "还差一步").unwrap();
+    let err = f
+        .engine
+        .start_task(&second, StartOptions::default())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("还没完成"), "{err}");
+
+    // 前置返工完成后，后续可以续接；它在排队时前置又被打回，这一轮就留在队列里
+    let rework = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&rework.id);
+    let busy = f
+        .bug("占住并发", "x [mock:steps=6] [mock:delay=150]", "urgent")
+        .1;
+    let busy = f.engine.start_task(&busy, StartOptions::default()).unwrap();
+    let r3 = f
+        .engine
+        .start_task(&second, StartOptions::default())
+        .unwrap();
+    assert_eq!(f.run(&r3.id).status, "queued");
+    f.engine.reject_task(&first, "又差一步").unwrap();
+    f.wait_done(&busy.id);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(f.run(&r3.id).status, "queued", "前置没完成，不调度");
+    let rework = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&rework.id);
+    assert_eq!(f.wait_done(&r3.id).status, "succeeded");
 }

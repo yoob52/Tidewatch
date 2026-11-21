@@ -130,6 +130,13 @@ const SYSTEM_ENV: &[&str] = &[
 ];
 const SYSTEM_ENV_PREFIXES: &[&str] = &["LC_", "XDG_", "NVM_"];
 
+/// 系统变量（PATH、用户目录、代理、证书、工具链位置）。项目的初始化 / 检查命令只继承这些：
+/// 它们跑的是仓库里的脚本，Agent 改得到，不能让脚本读到没给 Agent 的密钥。
+pub fn is_system_env(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    SYSTEM_ENV.contains(&name.as_str()) || SYSTEM_ENV_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
 /// 子进程能从观澜自身环境里继承哪些变量。
 ///
 /// 只放行系统变量、Agent 自己的配置变量和用户点名的变量（`passthrough`）；启动观澜的 shell 里
@@ -142,10 +149,7 @@ pub fn inherits_env(
     passthrough: &[String],
 ) -> bool {
     let name = name.to_ascii_uppercase();
-    if SYSTEM_ENV.contains(&name.as_str())
-        || SYSTEM_ENV_PREFIXES.iter().any(|p| name.starts_with(p))
-        || passthrough.iter().any(|p| p.eq_ignore_ascii_case(&name))
-    {
+    if is_system_env(&name) || passthrough.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
         return true;
     }
     let (config, credentials): (&[&str], &[&str]) = match kind {

@@ -178,10 +178,16 @@ pub fn count_running(conn: &Connection) -> Result<u32> {
 
 /// 队首：工单优先级高的先，其次先入队的先；同一子任务已有 Run 在跑则跳过。
 pub fn next_queued(conn: &Connection) -> Result<Option<Run>> {
+    // 依赖的子任务在排队期间被打回了：这一轮留在队列里，等依赖重新完成后再跑
     let runs = query(
         conn,
         "WHERE status = 'queued' AND (task_id IS NULL OR task_id NOT IN
            (SELECT task_id FROM run WHERE status IN ('starting', 'running', 'finalizing', 'stopping') AND task_id IS NOT NULL))
+         AND NOT EXISTS
+           (SELECT 1 FROM task_dependency d JOIN task p ON p.id = d.depends_on_task_id
+            WHERE d.task_id = run.task_id AND p.status NOT IN ('review', 'accepted', 'merged')
+              AND NOT (COALESCE(d.artifact_kind, '') = 'api_doc'
+                       AND EXISTS (SELECT 1 FROM artifact a WHERE a.task_id = p.id AND a.kind = 'api_doc')))
          ORDER BY (SELECT CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
                    FROM ticket t WHERE t.id = run.ticket_id), queued_at, id LIMIT 1",
         &[],

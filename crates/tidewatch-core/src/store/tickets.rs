@@ -578,7 +578,13 @@ pub fn list(conn: &Connection, query: Option<&str>) -> Result<Vec<Ticket>> {
             rows
         }
         Some(q) => {
-            let like = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
+            // 反斜杠是转义符，本身也要转义：否则搜 `C:\code` 这样的路径匹配不到
+            let like = format!(
+                "%{}%",
+                q.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
             let mut st = conn.prepare(&format!(
                 "SELECT {COLS} FROM ticket WHERE key LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\'
                  OR id IN (SELECT ticket_id FROM ticket_fts WHERE content LIKE ?1 ESCAPE '\\')
@@ -664,6 +670,38 @@ pub fn draft_from_markdown(md: &str) -> Draft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_matches_backslashes_and_wildcards_literally() {
+        let mut conn = crate::db::open_in_memory().unwrap();
+        for (title, body) in [
+            ("打不开 C:\\code\\app", "正文"),
+            ("另一个", "日志在 D:\\logs\\a_b.txt，进度 100%"),
+            ("无关", "C:code"),
+        ] {
+            create(
+                &mut conn,
+                TicketInput {
+                    title: title.into(),
+                    kind: "bug".into(),
+                    content_md: body.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let titles = |q: &str| -> Vec<String> {
+            list(&conn, Some(q))
+                .unwrap()
+                .into_iter()
+                .map(|t| t.title)
+                .collect()
+        };
+        assert_eq!(titles("C:\\code"), ["打不开 C:\\code\\app"]);
+        assert_eq!(titles("D:\\logs\\a_b"), ["另一个"]);
+        assert_eq!(titles("100%"), ["另一个"]);
+        assert!(titles("a%b").is_empty());
+    }
 
     fn bug(title: &str) -> TicketInput {
         TicketInput {
