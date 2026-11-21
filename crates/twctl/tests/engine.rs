@@ -1276,6 +1276,72 @@ fn start_development_queues_reworked_dependents_after_their_prerequisite() {
 }
 
 #[test]
+fn deferred_task_switched_to_full_auto_waits_for_the_user() {
+    let f = fixture(2, None);
+    let (ticket, first) = f.bug("先后", "x [mock:steps=1] [mock:delay=300]", "medium");
+    let second = tasks::create(
+        &mut lock(f.db()),
+        tasks::TaskInput {
+            ticket_id: ticket.clone(),
+            kind: "bug".into(),
+            project_id: f.project_id.clone(),
+            title: "后续".into(),
+            depends_on: vec![first.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .id;
+    let run = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+    f.wait_for("后续自动入队", || {
+        !runs::list_for_task(&lock(f.db()), &second)
+            .unwrap()
+            .is_empty()
+    });
+    f.wait_idle(&ticket);
+    f.engine.reject_task(&second, "跟着改").unwrap();
+    f.engine.reject_task(&first, "还差一步").unwrap();
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert_eq!(started.len(), 1);
+
+    // 等前一个返工的时候把后续改成 full_auto
+    tasks::update(
+        &lock(f.db()),
+        &second,
+        tasks::TaskInput {
+            title: "后续".into(),
+            permission_profile: Some("full_auto".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(f.run(&started[0].id).finished_at, None, "前一个还在返工");
+    assert_eq!(f.wait_done(&started[0].id).status, "succeeded");
+    // 依赖方的入队发生在 RunFinished 事件之前
+    f.wait_for("前一个返工的 RunFinished", || {
+        f.events.lock().unwrap().iter().any(
+            |e| matches!(e, EngineEvent::RunFinished { run_id, .. } if *run_id == started[0].id),
+        )
+    });
+    assert_eq!(
+        runs::list_for_task(&lock(f.db()), &second).unwrap().len(),
+        1,
+        "full_auto 不会被自动入队"
+    );
+    assert_eq!(f.task(&second).status, "changes_requested");
+    // 用户自己点开始（界面上会先确认）还是可以的
+    let run = f
+        .engine
+        .start_task(&second, StartOptions::default())
+        .unwrap();
+    assert_eq!(f.wait_done(&run.id).status, "succeeded");
+}
+
+#[test]
 fn full_auto_tasks_are_never_started_without_the_user() {
     let f = fixture(2, None);
     let (ticket, first) = f.bug("权限", "x [mock:steps=1] [mock:delay=50]", "medium");

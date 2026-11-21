@@ -1376,7 +1376,15 @@ impl Inner {
             if tickets::get(&conn, ticket_id)?.status != "developing" {
                 return Ok(vec![]);
             }
-            tasks::ready_deferred(&conn, ticket_id)
+            // 等的时候权限被改成 full_auto 的不再自动入队，要用户自己点开始并确认
+            let default_permission = settings::get(&conn)?.default_permission;
+            let mut ready = vec![];
+            for id in tasks::ready_deferred(&conn, ticket_id)? {
+                if !needs_confirmation(&tasks::get(&conn, &id)?, &default_permission) {
+                    ready.push(id);
+                }
+            }
+            Ok(ready)
         })()
         .unwrap_or_default();
         for id in ready {
