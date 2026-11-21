@@ -439,6 +439,41 @@ fn failures_and_failed_checks_are_reported() {
 }
 
 #[test]
+fn failed_setup_is_run_again_on_retry() {
+    let f = fixture(2, None);
+    let set_setup = |command: &str| {
+        lock(f.db())
+            .execute(
+                "UPDATE project SET commands_json = ?1 WHERE id = ?2",
+                [
+                    serde_json::json!({ "setup": command }).to_string(),
+                    f.project_id.clone(),
+                ],
+            )
+            .unwrap();
+    };
+    set_setup("git no-such-subcommand");
+    let (_, task) = f.bug("准备失败", "x [mock:steps=1] [mock:delay=50]", "medium");
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "failed");
+    assert!(r.error.as_ref().is_some_and(|e| e.contains("准备命令失败")));
+    let t = f.task(&task);
+    assert_eq!(t.worktree_path, None, "准备没做完的 worktree 不留");
+    assert!(t.branch.is_some());
+
+    set_setup("git --version");
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "succeeded", "{:?}", r.error);
+    let kinds = f.event_kinds(&r.id);
+    assert!(
+        kinds.iter().any(|k| k == "check_started"),
+        "重试时要重新跑准备命令：{kinds:?}"
+    );
+}
+
+#[test]
 fn rejection_sends_the_note_back_to_the_same_session() {
     let f = fixture(2, None);
     let (ticket, task) = f.bug("打回", "x [mock:steps=1] [mock:delay=50]", "medium");

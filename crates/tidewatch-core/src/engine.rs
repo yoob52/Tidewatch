@@ -1203,30 +1203,44 @@ impl Inner {
             json!({ "path": path.display().to_string(), "branch": branch, "base": base }),
         );
         if let Some(setup) = &project.commands.setup {
-            self.log(
-                &run.id,
-                "check_started",
-                json!({ "name": "setup", "command": setup }),
-            );
-            let out = self
-                .cfg
-                .data_dir
-                .join("logs")
-                .join(format!("{}-setup.log", run.id));
-            let res = run_shell(setup, &path, &out, cancel, CHECK_TIMEOUT)?;
-            self.log(
-                &run.id,
-                "check_finished",
-                json!({ "name": "setup", "command": setup, "exit_code": res.exit_code, "duration_ms": res.duration_ms, "timed_out": res.timed_out, "tail": res.tail }),
-            );
-            if res.exit_code != Some(0) {
-                return Err(Error::invalid(format!(
-                    "准备命令失败（退出码 {:?}）：{setup}\n{}",
-                    res.exit_code, res.tail
-                )));
+            if let Err(e) = self.run_setup(run, setup, &path, cancel) {
+                // 准备没做完的 worktree 不留：重试时重新创建并再跑一遍准备命令。
+                // 此时 Agent 还没运行过，目录里没有要保留的改动。
+                let _ = git::worktree_remove(&repo, &path, true);
+                let _ = lock(&self.db).execute(
+                    "UPDATE task SET worktree_path = NULL WHERE id = ?1",
+                    [&task.id],
+                );
+                return Err(e);
             }
         }
         Ok((path, base))
+    }
+
+    fn run_setup(&self, run: &Run, setup: &str, path: &Path, cancel: &AtomicBool) -> Result<()> {
+        self.log(
+            &run.id,
+            "check_started",
+            json!({ "name": "setup", "command": setup }),
+        );
+        let out = self
+            .cfg
+            .data_dir
+            .join("logs")
+            .join(format!("{}-setup.log", run.id));
+        let res = run_shell(setup, path, &out, cancel, CHECK_TIMEOUT)?;
+        self.log(
+            &run.id,
+            "check_finished",
+            json!({ "name": "setup", "command": setup, "exit_code": res.exit_code, "duration_ms": res.duration_ms, "timed_out": res.timed_out, "tail": res.tail }),
+        );
+        if res.exit_code != Some(0) {
+            return Err(Error::invalid(format!(
+                "准备命令失败（退出码 {:?}）：{setup}\n{}",
+                res.exit_code, res.tail
+            )));
+        }
+        Ok(())
     }
 }
 
