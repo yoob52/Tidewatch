@@ -275,6 +275,8 @@ pub fn create(conn: &mut Connection, input: TicketInput) -> Result<Ticket> {
 /// 改标题、类型、优先级、标签、项目等管理字段；正文走 [`save_prd`]。
 pub fn update(conn: &mut Connection, id: &str, input: TicketInput) -> Result<Ticket> {
     let old = get(conn, id)?;
+    // 调用方可以传编号（TW-1）；下面一律用内部 id
+    let id = old.id.as_str();
     let c = check(conn, &input)?;
     if c.kind != old.kind && old.status != "draft" {
         return Err(Error::invalid("只有草稿状态可以改工单类型。"));
@@ -315,6 +317,7 @@ pub fn save_prd(
     note: Option<&str>,
 ) -> Result<PrdVersion> {
     let t = get(conn, ticket_id)?;
+    let ticket_id = t.id.as_str();
     let editable = matches!(t.status.as_str(), "draft" | "human_review")
         || (t.kind == "bug" && matches!(t.status.as_str(), "developing" | "acceptance"));
     if !editable {
@@ -371,6 +374,7 @@ pub fn transition(conn: &mut Connection, id: &str, to: &str) -> Result<Ticket> {
     if t.status == to {
         return Ok(t);
     }
+    let id = t.id.as_str();
     workflow::check_ticket_transition(&t.kind, &t.status, to, t.cancelled_from.as_deref())?;
     if to == "acceptance" || to == "done" {
         let statuses = task_statuses(conn, id)?;
@@ -549,6 +553,27 @@ mod tests {
         assert_eq!(list(&conn, Some("优惠券")).unwrap().len(), 2);
         assert_eq!(list(&conn, Some("另一个")).unwrap().len(), 1);
         assert_eq!(list(&conn, Some("TW-1")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn key_works_wherever_an_id_does() {
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let t = create(&mut conn, bug("按编号操作")).unwrap();
+        let v = save_prd(&mut conn, &t.key, "新的正文", None).unwrap();
+        assert_eq!((v.version, v.ticket_id.as_str()), (2, t.id.as_str()));
+        let mut input = bug("改了标题");
+        input.priority = Some("urgent".into());
+        let u = update(&mut conn, &t.key, input).unwrap();
+        assert_eq!(
+            (u.title.as_str(), u.priority.as_str()),
+            ("改了标题", "urgent")
+        );
+        assert_eq!(
+            transition(&mut conn, &t.key, "developing").unwrap().status,
+            "developing"
+        );
+        assert_eq!(get(&conn, &t.id).unwrap().status, "developing");
+        assert_eq!(timeline(&conn, &t.id).unwrap().len(), 3);
     }
 
     #[test]
