@@ -686,7 +686,7 @@ impl Inner {
     /// 在并发上限内，把排队的 Run 逐个交给工作线程。
     fn dispatch(self: &Arc<Self>) -> Result<()> {
         loop {
-            let run = {
+            let (run, cancel) = {
                 let conn = lock(&self.db);
                 let max = settings::get(&conn)?.max_concurrency;
                 if runs::count_running(&conn)? >= max {
@@ -695,6 +695,13 @@ impl Inner {
                 let Some(run) = runs::next_queued(&conn)? else {
                     return Ok(());
                 };
+                // 取消标记要在持有数据库锁时登记：stop_run 也是先拿这把锁再查标记，
+                // 否则"已是 starting、标记还没登记"的空档里点停止会被漏掉。
+                let cancel = Arc::new(AtomicBool::new(false));
+                self.cancels
+                    .lock()
+                    .unwrap()
+                    .insert(run.id.clone(), cancel.clone());
                 runs::set_fields(
                     &conn,
                     &run.id,
@@ -704,13 +711,8 @@ impl Inner {
                     tasks::set_status(&conn, t, "running")?;
                 }
                 set_effect(&conn, &run.id, "running")?;
-                run
+                (run, cancel)
             };
-            let cancel = Arc::new(AtomicBool::new(false));
-            self.cancels
-                .lock()
-                .unwrap()
-                .insert(run.id.clone(), cancel.clone());
             self.changed(
                 run.ticket_id.clone(),
                 run.task_id.clone(),
@@ -857,6 +859,9 @@ impl Inner {
         runs::set_fields(&lock(&self.db), &run.id, &[("start_commit", &start_commit)])?;
 
         // 2. Agent
+        if cancel.load(Ordering::SeqCst) {
+            return Err(Error::invalid("在 Agent 启动前被停止。"));
+        }
         let logs = self.cfg.data_dir.join("logs");
         std::fs::create_dir_all(&logs)?;
         let raw_log = logs.join(format!("{}.jsonl", run.id));
