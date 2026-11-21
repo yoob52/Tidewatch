@@ -3,11 +3,11 @@
 > 估时按"一人业余 / 借助 Agent 开发"粗估，仅供排期参考。
 
 ## M0 · 技术验证（约 1 周）
-- [ ] Tauri 2 空壳 + React + SQLite 跑通
-- [ ] Windows 下 spawn `claude -p --output-format stream-json` 并实时解析，Job Object 停止进程树
-- [ ] spawn `codex exec --json`，解析事件与 session id，验证 `resume`
-- [ ] 通过环境变量让 Claude Code 使用 DeepSeek Anthropic 兼容端点
-- [ ] git worktree 创建 / 删除，长路径验证
+- [x] Tauri 2 空壳 + React + SQLite 跑通
+- [ ] Windows 下 spawn `claude -p --output-format stream-json` 并实时解析，Job Object 停止进程树（Linux 上用真实 Claude Code 跑通改动 / 停止 / 续接；Windows 上 Job Object 与演示 Agent 由 CI 验证，真实 Claude Code 还没在 Windows 上跑过）
+- [x] spawn `codex exec --json`，解析事件与 session id，验证 `resume`（Linux，经自定义 Provider）
+- [ ] 通过环境变量让 Claude Code 使用 DeepSeek Anthropic 兼容端点（同一套注入已用另一个 Anthropic 兼容中转站跑通；DeepSeek 本身还没有 Key 实测）
+- [x] git worktree 创建 / 删除，长路径验证
 - [ ] 【建议】`CLAUDE_CONFIG_DIR` / `CODEX_HOME` 多实例隔离与登录；录制两种 Agent 的真实会话作为回放测试样本（见 [Agent 管理](../03-agent/agent-management.md)）
 
 **验收**：命令行级 Demo 能在一个 worktree 中让两种 Agent 各完成一个小改动并可中途停止。

@@ -8,7 +8,38 @@
 
 ## 当前状态
 
-📐 **设计阶段**。本仓库目前只包含设计文档，尚未开始编码。
+🚧 **开发中**。M0 技术验证已落地（Tauri 2 壳 + React + SQLite、两个 Agent 的适配器、进程树停止、worktree、命令行演示），后续阶段见 [路线图](docs/06-roadmap/roadmap.md)。
+
+## 开发
+
+代码结构：
+
+| 路径 | 内容 |
+| --- | --- |
+| `crates/tidewatch-core` | Rust 核心（不依赖 Tauri）：SQLite 迁移、Agent 适配器（Claude Code / Codex / 演示 Agent）、进程树、git worktree、Provider 注入 |
+| `crates/twctl` | 命令行：`doctor`、`run`、`plan`、`demo`、`worktree`，以及内置的演示 Agent |
+| `src-tauri` | Tauri 2 桌面壳，把核心暴露成命令 |
+| `src` | React + TypeScript 前端，样式沿用 `prototype-v2/` |
+
+```bash
+npm install
+npm run tauri dev          # 启动桌面应用（开发）
+npm run tauri build        # 打包（Windows 上产出 NSIS 安装包）
+cargo test -p tidewatch-core -p twctl
+```
+
+命令行演示（M0）：在一个 git 仓库里建 worktree，让 Agent 做小改动，中途停止再续接，提交后看 diff 并清理。
+
+```bash
+cargo run -p twctl -- doctor
+cargo run -p twctl -- demo --repo <仓库路径> --agents mock                # 不需要账号
+cargo run -p twctl -- demo --repo <仓库路径> --agents claude_code,codex   # 需要本机已登录
+DEEPSEEK_API_KEY=... cargo run -p twctl -- run --agent claude_code --deepseek --cwd <目录> --prompt "..."
+# 其它兼容端点（中转站等）：Claude Code 走 Anthropic 协议，Codex 走 OpenAI Responses 协议
+MY_KEY=... cargo run -p twctl -- run --agent codex --base-url https://example.com/v1 --api-key-env MY_KEY --model <模型> --cwd <目录> --prompt "..."
+```
+
+Agent 子进程只继承系统变量（PATH、用户目录、代理、工具链位置等）和它自己的配置变量；shell 里的其它变量不会传过去，需要时用 `--pass-env NAME` 点名放行。
 
 ## 文档导航
 

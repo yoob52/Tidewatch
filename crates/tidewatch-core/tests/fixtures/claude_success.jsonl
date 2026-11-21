@@ -1,0 +1,8 @@
+{"type": "system", "subtype": "init", "cwd": "/repo", "session_id": "11111111-2222-3333-4444-555555555555", "model": "claude-sonnet-4-5", "permissionMode": "acceptEdits"}
+{"type": "assistant", "session_id": "11111111-2222-3333-4444-555555555555", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "先看一下文件"}, {"type": "text", "text": "我来修改 README。"}]}}
+{"type": "assistant", "session_id": "11111111-2222-3333-4444-555555555555", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Edit", "input": {"file_path": "/repo/README.md", "old_string": "a", "new_string": "b"}}]}}
+{"type": "user", "session_id": "11111111-2222-3333-4444-555555555555", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": [{"type": "text", "text": "The file has been updated."}]}]}}
+{"type": "assistant", "session_id": "11111111-2222-3333-4444-555555555555", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "npm test"}}]}}
+{"type": "user", "session_id": "11111111-2222-3333-4444-555555555555", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_02", "content": "1 failed", "is_error": true}]}}
+{"type": "result", "subtype": "success", "is_error": false, "duration_ms": 4200, "num_turns": 3, "result": "已完成修改。", "session_id": "11111111-2222-3333-4444-555555555555", "total_cost_usd": 0.0123, "usage": {"input_tokens": 1200, "cache_creation_input_tokens": 300, "cache_read_input_tokens": 5000, "output_tokens": 210}}
+not json at all
