@@ -6,6 +6,9 @@ pub mod git;
 pub mod process;
 pub mod provider;
 pub mod runner;
+pub mod secrets;
+pub mod store;
 pub mod util;
+pub mod workflow;
 
 pub use error::{Error, Result};
