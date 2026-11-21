@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, onEngine, type RunDetail, type RunEvent, type RunRow } from '../lib/api';
 import { useData } from '../lib/data';
+import { useStartTask } from '../lib/start';
 import { Icon } from '../lib/Icon';
 import { AgentTag, Empty, Inline, Ripple, RunStatusTag, fmtCost, fmtDur, fmtTok, parseTs, runActive, runSeconds, useNow, useUi } from '../lib/ui';
 
@@ -134,9 +135,12 @@ function RunItem({ r, on, now }: { r: RunRow; on: boolean; now: number }) {
 export function RunsPage({ id }: { id?: string }) {
   const { runs, providers, reload } = useData();
   const ui = useUi();
-  const current = runs.find((r) => r.id === id) ?? runs[0];
-  const runId = current?.id;
+  const startTask = useStartTask();
   const [detail, setDetail] = useState<RunDetail | null>(null);
+  const runId = id ?? runs[0]?.id;
+  // 列表只装最近的运行；链接指向更早的一轮时，用单独取回的那一轮，不拿别的运行顶替
+  const current: RunRow | undefined =
+    runs.find((r) => r.id === runId) ?? (detail?.run.id === runId ? detail.run : undefined);
   const [raw, setRaw] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -187,7 +191,11 @@ export function RunsPage({ id }: { id?: string }) {
     return (
       <div className="page">
         <div className="card">
-          <Empty icon="runs" title="还没有运行" body="在工单的「子任务」页开始一个子任务，运行会出现在这里。" />
+          {id ? (
+            <Empty icon="runs" title="正在读取这轮运行" body="如果一直没有出现，这轮运行可能已经随工单删除。" />
+          ) : (
+            <Empty icon="runs" title="还没有运行" body="在工单的「子任务」页开始一个子任务，运行会出现在这里。" />
+          )}
         </div>
       </div>
     );
@@ -210,11 +218,9 @@ export function RunsPage({ id }: { id?: string }) {
       if (!v) return;
       instruction = v;
     }
-    const run = await ui.attempt(api.taskStart(r.task_id, { instruction, command_id: crypto.randomUUID() }), '已入队');
-    if (run) {
-      await reload();
-      window.location.hash = `#/runs/${run.id}`;
-    }
+    // 和子任务页走同一个入口：full_auto 每次都要重新确认
+    const run = await startTask({ id: r.task_id }, instruction);
+    if (run) window.location.hash = `#/runs/${run.id}`;
   };
 
   return (

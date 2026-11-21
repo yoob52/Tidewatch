@@ -1,7 +1,8 @@
 // 工单详情里的「子任务」与「验收」两页
 import { useEffect, useMemo, useState } from 'react';
-import { api, type RunDetail, type Task, type TaskDiff, type TaskInput } from '../lib/api';
+import { api, type RunDetail, type TaskDiff, type TaskInput } from '../lib/api';
 import { useData } from '../lib/data';
+import { useStartTask } from '../lib/start';
 import { Icon } from '../lib/Icon';
 import {
   AGENTS,
@@ -149,26 +150,6 @@ function TaskForm({ d, onDone }: { d: TabProps['d']; onDone: (created: boolean) 
       </div>
     </section>
   );
-}
-
-/** 开始 / 恢复一个子任务。full_auto 每次都要二次确认。 */
-export function useStartTask(reload: () => Promise<void>) {
-  const ui = useUi();
-  const data = useData();
-  return async (task: Task, instruction?: string) => {
-    const plan = await ui.attempt(api.taskPlan(task.id, { instruction }));
-    if (!plan) return;
-    if (
-      plan.permission === 'full_auto' &&
-      !(await ui.confirm('以 full_auto 运行', 'Agent 将不经确认执行任意命令。建议只在可丢弃的 worktree 中使用。', '我了解风险，开始', true))
-    )
-      return;
-    const run = await ui.attempt(api.taskStart(task.id, { instruction, command_id: crypto.randomUUID() }));
-    if (run) {
-      ui.toast(plan.resume ? `已入队，将续接会话 ${plan.resume[1].slice(0, 8)}` : '已入队，有空闲并发时自动开始');
-      await Promise.all([reload(), data.reload()]);
-    }
-  };
 }
 
 export function TasksTab({ d, reload }: TabProps) {

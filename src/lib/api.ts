@@ -316,7 +316,7 @@ export interface TicketDetail {
 }
 
 export interface RunDetail {
-  run: Run;
+  run: RunRow;
   events: RunEvent[];
   reports: TestReport[];
 }

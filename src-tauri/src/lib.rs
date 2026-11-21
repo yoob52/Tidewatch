@@ -347,6 +347,23 @@ struct RunRow {
     task_title: Option<String>,
 }
 
+fn run_row(conn: &db::Connection, run: runs::Run) -> RunRow {
+    let ticket = run
+        .ticket_id
+        .as_deref()
+        .and_then(|id| tickets::get(conn, id).ok());
+    let task = run
+        .task_id
+        .as_deref()
+        .and_then(|id| tasks::get(conn, id).ok());
+    RunRow {
+        ticket_key: ticket.as_ref().map(|t| t.key.clone()),
+        ticket_title: ticket.map(|t| t.title),
+        task_title: task.map(|t| t.title),
+        run,
+    }
+}
+
 #[tauri::command]
 fn run_list(state: State, limit: Option<u32>) -> CmdResult<Vec<RunRow>> {
     let conn = lock(state.engine.db());
@@ -356,27 +373,14 @@ fn run_list(state: State, limit: Option<u32>) -> CmdResult<Vec<RunRow>> {
         .map(|mut run| {
             // 列表不需要 Prompt 全文
             run.prompt = String::new();
-            let ticket = run
-                .ticket_id
-                .as_deref()
-                .and_then(|id| tickets::get(&conn, id).ok());
-            let task = run
-                .task_id
-                .as_deref()
-                .and_then(|id| tasks::get(&conn, id).ok());
-            RunRow {
-                ticket_key: ticket.as_ref().map(|t| t.key.clone()),
-                ticket_title: ticket.map(|t| t.title),
-                task_title: task.map(|t| t.title),
-                run,
-            }
+            run_row(&conn, run)
         })
         .collect())
 }
 
 #[derive(Serialize)]
 struct RunDetail {
-    run: runs::Run,
+    run: RunRow,
     events: Vec<runs::RunEventRow>,
     reports: Vec<runs::TestReport>,
 }
@@ -386,7 +390,7 @@ struct RunDetail {
 fn run_get(state: State, id: String, after: Option<i64>) -> CmdResult<RunDetail> {
     let conn = lock(state.engine.db());
     Ok(RunDetail {
-        run: runs::get(&conn, &id).map_err(err)?,
+        run: run_row(&conn, runs::get(&conn, &id).map_err(err)?),
         events: runs::events(&conn, &id, after.unwrap_or(0)).map_err(err)?,
         reports: runs::test_reports(&conn, &id).map_err(err)?,
     })
