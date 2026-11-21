@@ -1254,6 +1254,7 @@ pub struct ShellResult {
 }
 
 /// 在 `cwd` 里用系统 shell 执行一条命令，输出（stdout + stderr）写到 `log`。
+/// 只继承系统变量：启动观澜的 shell 里的其它变量（各种密钥）不传给项目脚本。
 pub fn run_shell(
     command: &str,
     cwd: &Path,
@@ -1278,7 +1279,12 @@ pub fn run_shell(
         c.arg("-c").arg(command);
         c
     };
-    cmd.current_dir(cwd);
+    cmd.current_dir(cwd).env_clear();
+    for (k, v) in std::env::vars_os() {
+        if k.to_str().is_some_and(crate::runner::is_system_env) {
+            cmd.env(k, v);
+        }
+    }
     let started = Instant::now();
     let mut tree = crate::process::spawn(cmd)?;
     drop(tree.take_stdin());
@@ -1364,6 +1370,33 @@ mod tests {
         assert!(ok.tail.contains("hello"));
         let bad = run_shell("exit 3", dir.path(), &log, &cancel, Duration::from_secs(20)).unwrap();
         assert_eq!(bad.exit_code, Some(3));
+    }
+
+    #[test]
+    fn shell_does_not_inherit_unrelated_variables() {
+        std::env::set_var("TW_TEST_SHELL_SECRET", "leaked-value");
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("out.log");
+        let command = if cfg!(windows) {
+            "echo [%TW_TEST_SHELL_SECRET%] && where cmd"
+        } else {
+            "echo \"[$TW_TEST_SHELL_SECRET]\" && command -v sh"
+        };
+        let res = run_shell(
+            command,
+            dir.path(),
+            &log,
+            &AtomicBool::new(false),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert_eq!(
+            res.exit_code,
+            Some(0),
+            "PATH 还在，系统命令找得到：{}",
+            res.tail
+        );
+        assert!(!res.tail.contains("leaked-value"), "{}", res.tail);
     }
 
     #[test]
