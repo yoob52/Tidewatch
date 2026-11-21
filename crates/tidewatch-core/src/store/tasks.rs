@@ -233,6 +233,18 @@ pub fn set_merged(conn: &Connection, id: &str, commit: &str) -> Result<()> {
     Ok(())
 }
 
+/// 还没满足的第一个依赖（依赖的子任务没到待验收 / 已通过 / 已合并）。
+/// 不只看"等依赖"状态：依赖被打回时，后面的子任务可能正处于已停止 / 失败 / 排队。
+pub fn unmet_dependency(conn: &Connection, task: &Task) -> Result<Option<Task>> {
+    for d in &task.depends_on {
+        let dep = get(conn, d)?;
+        if !workflow::task_satisfies_dependency(&dep.status) {
+            return Ok(Some(dep));
+        }
+    }
+    Ok(None)
+}
+
 /// 按依赖是否满足，在"待开始"和"等依赖"之间切换该工单下的子任务。
 pub fn refresh_blocked(conn: &Connection, ticket_id: &str) -> Result<()> {
     for t in list_for_ticket(conn, ticket_id)? {

@@ -183,6 +183,13 @@ impl Engine {
             }
             let task = tasks::get(&conn, task_id)?;
             workflow::check_task_can_start(&task.status)?;
+            if let Some(dep) = tasks::unmet_dependency(&conn, &task)? {
+                return Err(Error::invalid(format!(
+                    "依赖的子任务「{}」还没完成（现在是「{}」），等它完成后再开始。",
+                    dep.title,
+                    workflow::task_status_label(&dep.status)
+                )));
+            }
             let ticket = tickets::get(&conn, &task.ticket_id)?;
             let plan = plan_run(&conn, &task, &ticket, &opts)?;
             match ticket.status.as_str() {
