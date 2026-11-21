@@ -47,9 +47,9 @@ export function StatsPage() {
         </div>
         <div>
           <span>Token</span>
-          <b>{fmtTok(stats.input_tokens + stats.output_tokens)}</b>
+          <b>{fmtTok(stats.input_tokens + stats.cache_tokens + stats.output_tokens)}</b>
           <small>
-            输入 {fmtTok(stats.input_tokens)} · 输出 {fmtTok(stats.output_tokens)}
+            输入 {fmtTok(stats.input_tokens)} · 缓存读取 {fmtTok(stats.cache_tokens)} · 输出 {fmtTok(stats.output_tokens)}
           </small>
         </div>
         <div>
@@ -140,7 +140,7 @@ export function StatsPage() {
                     <td className="num">{a.failed}</td>
                     <td className="num">{a.stopped}</td>
                     <td className="num">{a.runs ? fmtDur(a.agent_seconds / a.runs) : '—'}</td>
-                    <td className="num">{fmtTok(a.input_tokens + a.output_tokens)}</td>
+                    <td className="num">{fmtTok(a.input_tokens + a.cache_tokens + a.output_tokens)}</td>
                     <td className="num">{fmtCost(a.cost_usd)}</td>
                   </tr>
                 );
