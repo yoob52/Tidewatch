@@ -23,14 +23,15 @@ function pageNew(){
       form:`<div class="form-grid" style="grid-template-columns:1fr"><div class="field"><label>标题</label><input class="input" id="ftitle" value="${esc(d.formTitle)}" placeholder="一句话说明要做什么"></div>
         <div class="field"><label>需求正文 <small>Markdown</small></label><textarea class="textarea" id="fbody" rows="13" placeholder="## 背景与目标\n\n## 功能需求\n\n## 验收标准">${esc(d.formBody)}</textarea></div></div>`,
     }[mode];
-    const rec=recognized?`
-      <div class="field"><label>标题</label><input class="input" id="rtitle" value="${esc(d.title)}"></div>
+    const manual=mode==='form'; // 表单模式没有识别结果，属性由用户直接选
+    const rec=recognized||manual?`
+      ${manual?'':`<div class="field"><label>标题</label><input class="input" id="rtitle" value="${esc(d.title)}"></div>`}
       <div class="form-grid" style="grid-template-columns:1fr">
         <div class="field"><label>类型</label><div class="pick">${Object.entries(TYPES).map(([k,v])=>`<button class="${k===d.type?'on':''}" data-pk="type" data-v="${k}">${stamp(k)}${v.name}</button>`).join('')}</div></div>
         <div class="field"><label>优先级</label><div class="pick">${Object.entries(PRIO).map(([k,v])=>`<button class="${k===d.prio?'on':''}" data-pk="prio" data-v="${k}">${prio(k)}</button>`).join('')}</div></div>
       </div>
-      <div class="field"><label>绑定项目 <small>可多选 · 依据「shop-api 2.14.0」「导出」</small></label><div class="pick">${PROJECTS.map(p=>`<button class="${d.projects.includes(p.id)?'on':''}" data-pk="projects" data-v="${p.id}">${I('folder',13)}${p.name}<span class="dim">${p.kindName}</span></button>`).join('')}</div></div>
-      ${d.type!=='bug'?'':`<div class="bugbox"><div class="bugbox-h">${stamp('bug')}已拆出 Bug 信息</div>
+      <div class="field"><label>绑定项目 <small>可多选${manual?'':' · 依据「shop-api 2.14.0」「导出」'}</small></label><div class="pick">${PROJECTS.map(p=>`<button class="${d.projects.includes(p.id)?'on':''}" data-pk="projects" data-v="${p.id}">${I('folder',13)}${p.name}<span class="dim">${p.kindName}</span></button>`).join('')}</div></div>
+      ${d.type!=='bug'||manual?'':`<div class="bugbox"><div class="bugbox-h">${stamp('bug')}已拆出 Bug 信息</div>
         <dl><dt>复现步骤</dt><dd>1. 后台 订单管理 → 勾选任意订单 → 导出<br>2. 用 WPS 11.1 打开下载的 xlsx</dd>
         <dt>期望</dt><dd>表头显示「订单号 / 下单时间 / 门店」</dd><dt>实际</dt><dd>显示为乱码 <code>è®¢å•å·</code></dd><dt>环境</dt><dd>生产 · shop-api 2.14.0</dd></dl></div>`}
       <div class="form-grid"><div class="field"><label>Agent</label><div class="input fake">${agentTag('claude')}<span class="dim" style="margin-left:auto">项目默认</span></div></div>
@@ -42,15 +43,15 @@ function pageNew(){
         <div class="new-body">${left}</div>
       </div>
       <aside class="new-r">
-        <div class="sec-title">${I('spark',15)}智能识别${recognized?'<small>已根据原文预填，可修改</small>':''}</div>
+        <div class="sec-title">${I('spark',15)}${manual?'工单属性':'智能识别'}${manual?'':recognized?'<small>已根据原文预填，可修改</small>':''}</div>
         <div class="rec">${rec}</div>
       </aside>
       <footer class="new-f">
-        <span class="dim">${recognized&&d.type==='bug'?'Bug 走快速通道：跳过 AI 预审与人工审核，直接进入开发':'需求工单会先经过 AI 预审与人工审核'}</span><span class="grow"></span>
+        <span class="dim">${(recognized||manual)&&d.type==='bug'?'Bug 走快速通道：跳过 AI 预审与人工审核，直接进入开发':'需求工单会先经过 AI 预审与人工审核'}</span><span class="grow"></span>
         <a class="btn ghost" href="#/board">取消</a>
         <button class="btn" data-save="draft">保存为草稿</button>
         <button class="btn" data-save="ai_review">保存并提交预审</button>
-        ${recognized&&d.type==='bug'?`<button class="btn primary" data-save="developing">${I('zap',14)}保存并开始修复</button>`:''}
+        ${(recognized||manual)&&d.type==='bug'?`<button class="btn primary" data-save="developing">${I('zap',14)}保存并开始修复</button>`:''}
       </footer></div>`;
     $$('[data-m]').forEach(b=>b.onclick=()=>{keep();mode=b.dataset.m;render()});
     const fill=$('#fill');if(fill)fill.onclick=()=>{recognized=true;Object.assign(d,{raw:SAMPLE_PASTE,title:'订单导出 Excel 在 WPS 中表头乱码',type:'bug',prio:'high',projects:['shop-api']});render();toast('已识别为 Bug，并拆出复现步骤')};
@@ -60,11 +61,12 @@ function pageNew(){
       keep();const st=b.dataset.save,body=mode==='form'?d.formBody:d.raw;
       const title=(mode==='form'?d.formTitle:recognized?d.title:(d.raw.split('\n').find(l=>l.trim())||'')).trim().slice(0,60);
       if(!title){toast(mode==='form'?'请先填写标题':'请先粘贴或输入需求内容');return}
-      if(!d.projects.length&&recognized){toast('请至少绑定一个项目');return}
-      const projects=d.projects.length?d.projects:['shop-api'],type=recognized?d.type:'feature_mixed';
+      const set=recognized||mode==='form'; // 右侧属性可见时，以用户选的为准
+      if(!d.projects.length&&set){toast('请至少绑定一个项目');return}
+      const projects=d.projects.length?d.projects:['shop-api'],type=set?d.type:'feature_mixed';
       if(st==='developing'&&type!=='bug'){toast('只有 Bug 可以跳过审核直接开始');return}
       const key='TW-'+(Math.max(...TICKETS.map(t=>+t.key.slice(3)))+1); // 每次保存都分配新的编号
-      TICKETS.unshift({key,title,type,status:st,prio:recognized?d.prio:'medium',projects,source:mode==='form'?'表单':mode==='file'?'发票需求v2.docx':'粘贴',updated:'刚刚',labels:[],body,running:st==='ai_review',sub:st==='developing'?[['BUG','queued']]:undefined});
+      TICKETS.unshift({key,title,type,status:st,prio:set?d.prio:'medium',projects,source:mode==='form'?'表单':mode==='file'?'发票需求v2.docx':'粘贴',updated:'刚刚',labels:[],body,running:st==='ai_review',sub:st==='developing'?[['BUG','queued']]:undefined});
       toast(`已创建 ${key}「${title}」· ${STAGE[st].name}`);location.hash='#/board'});
   };
   render();
