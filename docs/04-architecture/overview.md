@@ -50,7 +50,7 @@
 
 ## 3. 领域事件
 
-模块间通过事件解耦（进程内事件总线），同时写入工单时间线：
+模块间通过事件解耦（进程内事件总线），同时写入工单时间线。【建议】有外部副作用的操作（启动 / 停止 Run、回复审批、打检查点）改为"命令 + 事件 + 待执行副作用同一事务落盘，再由 worker 执行"，命令可幂等重试，重启后据此恢复，见 [Agent 管理 §10](../03-agent/agent-management.md)：
 
 `TicketCreated`、`PrdVersionCreated`、`ReviewCompleted`、`TicketFinalized`、`TaskUnblocked`、`RunStarted`、`RunEvent`、`RunFinished`、`TestsFinished`、`TaskRejected`、`TaskAccepted`、`TicketMerged`、`ChangeRequested`。
 

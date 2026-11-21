@@ -9,3 +9,4 @@
 | [0003](0003-worktree-per-ticket.md) | 每个子任务一个 git worktree | 已接受 |
 | [0004](0004-provider-injection-per-process.md) | Provider 按进程注入，不改全局配置 | 已接受 |
 | [0005](0005-local-first-sqlite.md) | 本地优先，SQLite 存储 | 已接受 |
+| [0006](0006-agent-instances-and-capabilities.md) | Agent 实例 + 能力声明 + 应用自有运行模型 | 提议 |

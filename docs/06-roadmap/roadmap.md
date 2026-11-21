@@ -8,6 +8,7 @@
 - [ ] spawn `codex exec --json`，解析事件与 session id，验证 `resume`
 - [ ] 通过环境变量让 Claude Code 使用 DeepSeek Anthropic 兼容端点
 - [ ] git worktree 创建 / 删除，长路径验证
+- [ ] 【建议】`CLAUDE_CONFIG_DIR` / `CODEX_HOME` 多实例隔离与登录；录制两种 Agent 的真实会话作为回放测试样本（见 [Agent 管理](../03-agent/agent-management.md)）
 
 **验收**：命令行级 Demo 能在一个 worktree 中让两种 Agent 各完成一个小改动并可中途停止。
 
@@ -18,6 +19,7 @@
 - [ ] 子任务手动创建 → worktree → 运行 → 实时日志 → 停止 / 恢复
 - [ ] 自动提交、自动测试、Diff 视图、合并、清理
 - [ ] 成本与耗时统计、Windows 通知
+- [ ] 【建议】Agent 实例与能力声明、Run / Attempt、完成屏障（"收尾中"）、命令落盘与孤儿恢复、检查点 ref
 
 **验收**：可以把一个 Bug 工单从创建跑到合并。
 
@@ -29,6 +31,7 @@
 - [ ] 验收打回（行内评论 → 返工 Run，优先 resume）
 - [ ] 定稿后变更流程与影响分析
 - [ ] Prompt 模板可编辑与预览
+- [ ] 【建议】换 Agent / resume 失败时的显式上下文交接；追加指令的分发方式
 
 **验收**：一个前后端混合 PRD 走完 草稿 → 预审 → 定稿 → BE 先出 API 文档 → FE 跟进 → 验收打回一次 → 完成。
 
@@ -40,11 +43,12 @@
 - [ ] 推送分支与 `gh pr create`
 - [ ] 统计仪表盘、备份导出、自动更新
 - [ ] LiteLLM 桥接引导
+- [ ] 【建议】交互通道（`codex app-server` 等）：逐项审批、结构化提问、`supervised` 档位、运行中引导、会话回滚
 
 ## M4 · V2 探索
 - [ ] 飞书、GitHub Issues 同步
 - [ ] 更多 Agent（Gemini CLI、Aider、OpenCode…）
 - [ ] 多 Agent 同题对比
-- [ ] 本地 HTTP / MCP 接口
+- [ ] 本地 HTTP / MCP 接口（【建议】含 Agent 委派工具，见 [Agent 管理 §12](../03-agent/agent-management.md)）
 - [ ] 自定义工作流
 - [ ] 轻量协作（多人、远程访问）
