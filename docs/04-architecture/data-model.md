@@ -157,6 +157,7 @@ CREATE TABLE provider (
 CREATE TABLE attachment (
   id TEXT PRIMARY KEY, ticket_id TEXT, file_name TEXT, path TEXT, mime TEXT, description TEXT, created_at TEXT
 );
+-- 图片附件的来源、效力与按版本的引用索引（prd_image）见 02-workflow/prd-images.md
 
 CREATE TABLE setting (key TEXT PRIMARY KEY, value_json TEXT);
 
