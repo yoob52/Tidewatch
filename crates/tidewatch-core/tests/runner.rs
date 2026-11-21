@@ -160,3 +160,34 @@ fn missing_binary_is_reported() {
     )
     .is_err());
 }
+
+#[test]
+fn slow_consumer_still_gets_final_result() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let bin = script(
+        dir.path(),
+        r#"i=0; while [ $i -lt 30 ]; do echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"$i\"}]}}"; i=$((i+1)); done
+echo '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-3"}'"#,
+    );
+    let mut texts = 0;
+    let out = run_agent(
+        adapter(AgentKind::ClaudeCode).as_ref(),
+        &spec(dir.path(), bin),
+        &RunOptions::default(),
+        &mut |e| {
+            if let RunnerEvent::Agent(AgentEvent::Text { .. }) = e {
+                texts += 1;
+                std::thread::sleep(Duration::from_millis(60));
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(texts, 30);
+    assert_eq!(
+        out.finished_ok,
+        Some(true),
+        "进程退出超过 1 秒后，排队中的 result 仍要处理"
+    );
+    assert_eq!(out.summary, "done");
+}

@@ -135,8 +135,14 @@ pub fn run_agent(
     let mut err_closed = false;
     let mut exited_at: Option<Instant> = None;
 
+    let mut last_msg = Instant::now();
+
     loop {
-        match rx.recv_timeout(Duration::from_millis(50)) {
+        let msg = rx.recv_timeout(Duration::from_millis(50));
+        if msg.is_ok() {
+            last_msg = Instant::now();
+        }
+        match msg {
             Ok(Msg::Out(line)) => {
                 if let Some(f) = raw.as_mut() {
                     let _ = writeln!(f, "{line}");
@@ -194,20 +200,15 @@ pub fn run_agent(
                 exited_at = Some(Instant::now());
             }
         }
-        // 进程已退出：等 stdout 和 stderr 都读完；若有脱离进程树的后代仍占着管道，最多再等 1 秒。
-        if let Some(t) = exited_at {
-            if (out_closed && err_closed) || t.elapsed() > Duration::from_secs(1) {
-                break;
-            }
+        // 进程已退出：等 stdout 和 stderr 都读完。若有脱离进程树的后代仍占着管道，
+        // 则在管道连续 1 秒没有新内容后放弃等待；已排队的输出总会先处理完。
+        if exited_at.is_some()
+            && ((out_closed && err_closed) || last_msg.elapsed() > Duration::from_secs(1))
+        {
+            break;
         }
     }
 
-    // 收尾：把通道里剩下的 stderr 取完
-    while let Ok(msg) = rx.try_recv() {
-        if let Msg::Err(line) = msg {
-            stderr_lines.push(line);
-        }
-    }
     let n = stderr_lines.len();
     outcome.stderr_tail = stderr_lines[n.saturating_sub(20)..].join("\n");
     outcome.duration_ms = started.elapsed().as_millis() as u64;
