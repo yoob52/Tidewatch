@@ -1,9 +1,11 @@
 //! 观澜 Tidewatch 核心：不依赖 Tauri，可被桌面壳与 `twctl` 命令行共用。
 pub mod agent;
 pub mod db;
+pub mod engine;
 pub mod error;
 pub mod git;
 pub mod process;
+pub mod prompt;
 pub mod provider;
 pub mod runner;
 pub mod secrets;

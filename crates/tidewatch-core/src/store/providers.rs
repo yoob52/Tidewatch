@@ -78,7 +78,9 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Provider> {
     Ok(Provider {
         id: r.get(0)?,
         name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-        protocol: r.get::<_, Option<String>>(2)?.unwrap_or_else(|| "native".into()),
+        protocol: r
+            .get::<_, Option<String>>(2)?
+            .unwrap_or_else(|| "native".into()),
         base_url: r.get(3)?,
         secret_ref: r.get(4)?,
         models: from_json(r.get(5)?),
@@ -189,19 +191,47 @@ pub fn set_secret_ref(conn: &Connection, id: &str, secret_ref: Option<&str>) -> 
     Ok(())
 }
 
+/// 保存（`Some`）或清除（`None` / 空串）Provider 的密钥：密钥进凭据管理器，库里只记条目名。
+pub fn store_secret(
+    conn: &Connection,
+    secrets: &dyn crate::secrets::SecretStore,
+    id: &str,
+    secret: Option<&str>,
+) -> Result<Provider> {
+    get(conn, id)?;
+    let name = secret_name(id);
+    match secret.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => {
+            secrets.set(&name, s)?;
+            set_secret_ref(conn, id, Some(&name))?;
+        }
+        None => {
+            secrets.delete(&name)?;
+            set_secret_ref(conn, id, None)?;
+        }
+    }
+    get(conn, id)
+}
+
 /// 凭据管理器里的条目名。
 pub fn secret_name(id: &str) -> String {
     format!("tidewatch/provider/{id}")
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Provider> {
-    conn.query_row(&format!("SELECT {COLS} FROM provider WHERE id = ?1"), [id], row)
-        .map_err(|_| not_found(" Provider", id))
+    conn.query_row(
+        &format!("SELECT {COLS} FROM provider WHERE id = ?1"),
+        [id],
+        row,
+    )
+    .map_err(|_| not_found(" Provider", id))
 }
 
 pub fn list(conn: &Connection) -> Result<Vec<Provider>> {
     let mut st = conn.prepare(&format!("SELECT {COLS} FROM provider ORDER BY created_at"))?;
-    let rows = st.query_map([], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = st
+        .query_map([], row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -214,7 +244,18 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     if active > 0 {
         return Err(Error::invalid("有正在使用这个 Provider 的运行，不能删除。"));
     }
-    conn.execute("UPDATE project SET default_provider_id = NULL WHERE default_provider_id = ?1", [id])?;
+    conn.execute(
+        "UPDATE project SET default_provider_id = NULL WHERE default_provider_id = ?1",
+        [id],
+    )?;
+    conn.execute(
+        "UPDATE ticket SET default_provider_id = NULL WHERE default_provider_id = ?1",
+        [id],
+    )?;
+    conn.execute(
+        "UPDATE task SET provider_id = NULL WHERE provider_id = ?1 AND status NOT IN ('merged', 'cancelled')",
+        [id],
+    )?;
     conn.execute("DELETE FROM provider WHERE id = ?1", [id])?;
     Ok(())
 }
@@ -259,6 +300,39 @@ mod tests {
         // 库里任何一列都不该出现密钥：这里只有条目名
         delete(&conn, &p.id).unwrap();
         assert!(list(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn secret_never_reaches_the_database() {
+        use crate::secrets::SecretStore;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tw.db");
+        let conn = crate::db::open(&path).unwrap();
+        let secrets = crate::secrets::MemoryStore::default();
+        let p = create(
+            &conn,
+            ProviderInput {
+                name: "中转".into(),
+                protocol: "anthropic".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let p = store_secret(&conn, &secrets, &p.id, Some(" sk-top-secret-0123456789 ")).unwrap();
+        let name = p.secret_ref.clone().unwrap();
+        assert_eq!(
+            secrets.get(&name).unwrap().as_deref(),
+            Some("sk-top-secret-0123456789")
+        );
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("sk-top-secret"));
+        }
+        let p = store_secret(&conn, &secrets, &p.id, Some("")).unwrap();
+        assert_eq!(p.secret_ref, None);
+        assert_eq!(secrets.get(&name).unwrap(), None);
     }
 
     #[test]

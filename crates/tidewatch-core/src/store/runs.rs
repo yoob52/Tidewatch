@@ -49,7 +49,9 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Run> {
         task_id: r.get(1)?,
         ticket_id: r.get(2)?,
         number: r.get::<_, Option<i64>>(3)?.unwrap_or(1),
-        purpose: r.get::<_, Option<String>>(4)?.unwrap_or_else(|| "dev".into()),
+        purpose: r
+            .get::<_, Option<String>>(4)?
+            .unwrap_or_else(|| "dev".into()),
         parent_run_id: r.get(5)?,
         agent: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
         provider_id: r.get(7)?,
@@ -130,7 +132,9 @@ pub fn get(conn: &Connection, id: &str) -> Result<Run> {
 
 fn query(conn: &Connection, tail: &str, params: &[&dyn rusqlite::ToSql]) -> Result<Vec<Run>> {
     let mut st = conn.prepare(&format!("SELECT {COLS} FROM run {tail}"))?;
-    let rows = st.query_map(params, row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = st
+        .query_map(params, row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -139,7 +143,11 @@ pub fn list_for_task(conn: &Connection, task_id: &str) -> Result<Vec<Run>> {
 }
 
 pub fn list_for_ticket(conn: &Connection, ticket_id: &str) -> Result<Vec<Run>> {
-    query(conn, "WHERE ticket_id = ?1 ORDER BY queued_at, id", &[&ticket_id])
+    query(
+        conn,
+        "WHERE ticket_id = ?1 ORDER BY queued_at, id",
+        &[&ticket_id],
+    )
 }
 
 /// 最近的运行，未结束的排前面。
@@ -172,25 +180,36 @@ pub fn next_queued(conn: &Connection) -> Result<Option<Run>> {
     Ok(runs.into_iter().next())
 }
 
-/// 该子任务最近一次拿到的 Agent 会话 id（续接用）。
-pub fn last_session(conn: &Connection, task_id: &str) -> Result<Option<(String, String)>> {
+/// 该子任务最近一次用同一种 Agent 拿到的会话 id（续接用）：(Run id, 会话 id)。
+pub fn last_session(
+    conn: &Connection,
+    task_id: &str,
+    agent: &str,
+) -> Result<Option<(String, String)>> {
     Ok(conn
         .query_row(
-            "SELECT id, agent_session_id FROM run WHERE task_id = ?1 AND agent_session_id IS NOT NULL
+            "SELECT id, agent_session_id FROM run WHERE task_id = ?1 AND agent = ?2 AND agent_session_id IS NOT NULL
              ORDER BY number DESC LIMIT 1",
-            [task_id],
+            [task_id, agent],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok())
 }
 
 pub fn set_status(conn: &Connection, id: &str, status: &str) -> Result<()> {
-    conn.execute("UPDATE run SET status = ?2 WHERE id = ?1", rusqlite::params![id, status])?;
+    conn.execute(
+        "UPDATE run SET status = ?2 WHERE id = ?1",
+        rusqlite::params![id, status],
+    )?;
     Ok(())
 }
 
 /// 更新若干列；列名只来自代码里的常量。
-pub fn set_fields(conn: &Connection, id: &str, fields: &[(&str, &dyn rusqlite::ToSql)]) -> Result<()> {
+pub fn set_fields(
+    conn: &Connection,
+    id: &str,
+    fields: &[(&str, &dyn rusqlite::ToSql)],
+) -> Result<()> {
     if fields.is_empty() {
         return Ok(());
     }
@@ -201,7 +220,10 @@ pub fn set_fields(conn: &Connection, id: &str, fields: &[(&str, &dyn rusqlite::T
         .collect();
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&id];
     params.extend(fields.iter().map(|(_, v)| *v));
-    conn.execute(&format!("UPDATE run SET {} WHERE id = ?1", sets.join(", ")), params.as_slice())?;
+    conn.execute(
+        &format!("UPDATE run SET {} WHERE id = ?1", sets.join(", ")),
+        params.as_slice(),
+    )?;
     Ok(())
 }
 
@@ -215,7 +237,12 @@ pub struct RunEventRow {
     pub payload: serde_json::Value,
 }
 
-pub fn add_event(conn: &Connection, run_id: &str, kind: &str, payload: &serde_json::Value) -> Result<RunEventRow> {
+pub fn add_event(
+    conn: &Connection,
+    run_id: &str,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> Result<RunEventRow> {
     let seq: i64 = conn.query_row(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM run_event WHERE run_id = ?1",
         [run_id],
@@ -254,7 +281,12 @@ pub fn events(conn: &Connection, run_id: &str, after_seq: i64) -> Result<Vec<Run
 }
 
 /// 一次 Agent 进程。返回 attempt id。
-pub fn start_attempt(conn: &Connection, run_id: &str, reason: &str, raw_log: Option<&str>) -> Result<String> {
+pub fn start_attempt(
+    conn: &Connection,
+    run_id: &str,
+    reason: &str,
+    raw_log: Option<&str>,
+) -> Result<String> {
     let id = crate::util::new_id();
     conn.execute(
         "INSERT INTO run_attempt (id, run_id, ordinal, reason, transport, status, started_at, raw_log_path)
@@ -265,7 +297,12 @@ pub fn start_attempt(conn: &Connection, run_id: &str, reason: &str, raw_log: Opt
     Ok(id)
 }
 
-pub fn finish_attempt(conn: &Connection, id: &str, status: &str, session: Option<&str>) -> Result<()> {
+pub fn finish_attempt(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    session: Option<&str>,
+) -> Result<()> {
     conn.execute(
         "UPDATE run_attempt SET status = ?2, agent_session_id = ?3, finished_at = ?4 WHERE id = ?1",
         rusqlite::params![id, status, session, crate::util::now()],

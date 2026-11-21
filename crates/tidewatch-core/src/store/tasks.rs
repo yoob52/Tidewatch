@@ -71,7 +71,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Task> {
 }
 
 fn with_deps(conn: &Connection, mut t: Task) -> Result<Task> {
-    let mut st = conn.prepare("SELECT depends_on_task_id FROM task_dependency WHERE task_id = ?1 ORDER BY 1")?;
+    let mut st = conn
+        .prepare("SELECT depends_on_task_id FROM task_dependency WHERE task_id = ?1 ORDER BY 1")?;
     t.depends_on = st
         .query_map([&t.id], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -137,7 +138,12 @@ pub fn create(conn: &mut Connection, input: TaskInput) -> Result<Task> {
             rusqlite::params![id, d],
         )?;
     }
-    add_timeline(&tx, &ticket.id, "task_created", serde_json::json!({ "task_id": id, "title": title }))?;
+    add_timeline(
+        &tx,
+        &ticket.id,
+        "task_created",
+        serde_json::json!({ "task_id": id, "title": title }),
+    )?;
     tx.commit()?;
     refresh_blocked(conn, &ticket.id)?;
     get(conn, &id)
@@ -179,14 +185,20 @@ pub fn get(conn: &Connection, id: &str) -> Result<Task> {
 }
 
 pub fn list_for_ticket(conn: &Connection, ticket_id: &str) -> Result<Vec<Task>> {
-    let mut st = conn.prepare(&format!("SELECT {COLS} FROM task WHERE ticket_id = ?1 ORDER BY created_at, id"))?;
-    let rows = st.query_map([ticket_id], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut st = conn.prepare(&format!(
+        "SELECT {COLS} FROM task WHERE ticket_id = ?1 ORDER BY created_at, id"
+    ))?;
+    let rows = st
+        .query_map([ticket_id], row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter().map(|t| with_deps(conn, t)).collect()
 }
 
 pub fn list_all(conn: &Connection) -> Result<Vec<Task>> {
     let mut st = conn.prepare(&format!("SELECT {COLS} FROM task ORDER BY created_at, id"))?;
-    let rows = st.query_map([], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = st
+        .query_map([], row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter().map(|t| with_deps(conn, t)).collect()
 }
 
@@ -199,7 +211,13 @@ pub fn set_status(conn: &Connection, id: &str, status: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn set_workspace(conn: &Connection, id: &str, branch: &str, worktree: &str, base_commit: &str) -> Result<()> {
+pub fn set_workspace(
+    conn: &Connection,
+    id: &str,
+    branch: &str,
+    worktree: &str,
+    base_commit: &str,
+) -> Result<()> {
     conn.execute(
         "UPDATE task SET branch = ?2, worktree_path = ?3, base_commit = ?4, updated_at = ?5 WHERE id = ?1",
         rusqlite::params![id, branch, worktree, base_commit, crate::util::now()],
@@ -223,7 +241,8 @@ pub fn refresh_blocked(conn: &Connection, ticket_id: &str) -> Result<()> {
         }
         let mut ready = true;
         for d in &t.depends_on {
-            let s: String = conn.query_row("SELECT status FROM task WHERE id = ?1", [d], |r| r.get(0))?;
+            let s: String =
+                conn.query_row("SELECT status FROM task WHERE id = ?1", [d], |r| r.get(0))?;
             ready &= workflow::task_satisfies_dependency(&s);
         }
         let want = if ready { "pending" } else { "blocked" };
@@ -281,7 +300,10 @@ mod tests {
         let mut i = input(&t, &p, "前端");
         i.depends_on = vec![a.id.clone()];
         let b = create(&mut conn, i).unwrap();
-        assert_eq!((a.status.as_str(), b.status.as_str()), ("pending", "blocked"));
+        assert_eq!(
+            (a.status.as_str(), b.status.as_str()),
+            ("pending", "blocked")
+        );
         assert_eq!(b.depends_on, vec![a.id.clone()]);
         set_status(&conn, &a.id, "review").unwrap();
         refresh_blocked(&conn, &t).unwrap();

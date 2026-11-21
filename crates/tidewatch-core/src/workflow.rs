@@ -166,13 +166,19 @@ mod tests {
 
     #[test]
     fn cancelled_restores_only_to_previous_status() {
-        assert!(check_ticket_transition("bug", "cancelled", "developing", Some("developing")).is_ok());
+        assert!(
+            check_ticket_transition("bug", "cancelled", "developing", Some("developing")).is_ok()
+        );
         assert!(check_ticket_transition("bug", "cancelled", "draft", Some("developing")).is_err());
     }
 
     #[test]
     fn acceptance_needs_every_live_task_done() {
-        assert!(all_tasks_ready_for_acceptance(["review", "accepted", "cancelled"]));
+        assert!(all_tasks_ready_for_acceptance([
+            "review",
+            "accepted",
+            "cancelled"
+        ]));
         assert!(!all_tasks_ready_for_acceptance(["review", "running"]));
         assert!(!all_tasks_ready_for_acceptance(["cancelled"]));
         assert!(!all_tasks_ready_for_acceptance([]));

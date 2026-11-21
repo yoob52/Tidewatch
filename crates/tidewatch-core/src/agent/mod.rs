@@ -2,6 +2,7 @@
 pub mod claude;
 pub mod codex;
 pub mod mock;
+pub mod mock_process;
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};

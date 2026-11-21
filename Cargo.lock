@@ -4111,6 +4111,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "serde_json",
+ "tempfile",
  "tidewatch-core",
 ]
 

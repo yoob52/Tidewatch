@@ -80,7 +80,9 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Project> {
         kind: r.get(2)?,
         local_path: r.get(3)?,
         git_url: r.get(4)?,
-        default_branch: r.get::<_, Option<String>>(5)?.unwrap_or_else(|| "main".into()),
+        default_branch: r
+            .get::<_, Option<String>>(5)?
+            .unwrap_or_else(|| "main".into()),
         context_md: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
         commands: from_json(r.get(7)?),
         default_agent: r.get(8)?,
@@ -197,13 +199,19 @@ pub fn update(conn: &Connection, id: &str, input: ProjectInput) -> Result<Projec
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Project> {
-    conn.query_row(&format!("SELECT {COLS} FROM project WHERE id = ?1"), [id], row)
-        .map_err(|_| not_found("项目", id))
+    conn.query_row(
+        &format!("SELECT {COLS} FROM project WHERE id = ?1"),
+        [id],
+        row,
+    )
+    .map_err(|_| not_found("项目", id))
 }
 
 pub fn list(conn: &Connection) -> Result<Vec<Project>> {
     let mut st = conn.prepare(&format!("SELECT {COLS} FROM project ORDER BY created_at"))?;
-    let rows = st.query_map([], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = st
+        .query_map([], row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -265,10 +273,16 @@ mod tests {
         let conn = crate::db::open_in_memory().unwrap();
         let dir = repo();
         let p = create(&conn, input(dir.path())).unwrap();
-        assert_eq!(p.default_branch, crate::git::current_branch(dir.path()).unwrap());
+        assert_eq!(
+            p.default_branch,
+            crate::git::current_branch(dir.path()).unwrap()
+        );
         assert_eq!(p.commands.test.as_deref(), Some("cargo test"));
         assert_eq!(p.commands.lint, None);
-        assert_eq!(p.commands.checks(), vec![("test", "cargo test".to_string())]);
+        assert_eq!(
+            p.commands.checks(),
+            vec![("test", "cargo test".to_string())]
+        );
 
         let mut i = input(dir.path());
         i.name = "商城 API".into();

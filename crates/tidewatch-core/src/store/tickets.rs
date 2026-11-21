@@ -95,10 +95,14 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Ticket> {
         title: r.get(2)?,
         kind: r.get(3)?,
         status: r.get(4)?,
-        priority: r.get::<_, Option<String>>(5)?.unwrap_or_else(|| "medium".into()),
+        priority: r
+            .get::<_, Option<String>>(5)?
+            .unwrap_or_else(|| "medium".into()),
         labels: from_json(r.get(6)?),
         due_date: r.get(7)?,
-        source_kind: r.get::<_, Option<String>>(8)?.unwrap_or_else(|| "manual".into()),
+        source_kind: r
+            .get::<_, Option<String>>(8)?
+            .unwrap_or_else(|| "manual".into()),
         current_version_id: r.get(9)?,
         finalized_version_id: r.get(10)?,
         acceptance_criteria: from_json(r.get(11)?),
@@ -170,9 +174,16 @@ fn check(conn: &Connection, input: &TicketInput) -> Result<Checked> {
 }
 
 fn set_projects(conn: &Connection, ticket_id: &str, projects: &[TicketProject]) -> Result<()> {
-    conn.execute("DELETE FROM ticket_project WHERE ticket_id = ?1", [ticket_id])?;
+    conn.execute(
+        "DELETE FROM ticket_project WHERE ticket_id = ?1",
+        [ticket_id],
+    )?;
     for p in projects {
-        let role = if p.role.trim().is_empty() { "backend" } else { p.role.trim() };
+        let role = if p.role.trim().is_empty() {
+            "backend"
+        } else {
+            p.role.trim()
+        };
         conn.execute(
             "INSERT OR IGNORE INTO ticket_project (ticket_id, project_id, role, subdir) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![ticket_id, p.project_id, role, clean(p.subdir.clone())],
@@ -288,14 +299,21 @@ pub fn update(conn: &mut Connection, id: &str, input: TicketInput) -> Result<Tic
         ],
     )?;
     set_projects(&tx, id, &input.projects)?;
-    let content = current_prd(&tx, id)?.map(|v| v.content_md).unwrap_or_default();
+    let content = current_prd(&tx, id)?
+        .map(|v| v.content_md)
+        .unwrap_or_default();
     index(&tx, id, &c.title, &content)?;
     tx.commit()?;
     get(conn, id)
 }
 
 /// 保存正文为新版本（版本不可变）。定稿后不能直接改。
-pub fn save_prd(conn: &mut Connection, ticket_id: &str, content: &str, note: Option<&str>) -> Result<PrdVersion> {
+pub fn save_prd(
+    conn: &mut Connection,
+    ticket_id: &str,
+    content: &str,
+    note: Option<&str>,
+) -> Result<PrdVersion> {
     let t = get(conn, ticket_id)?;
     let editable = matches!(t.status.as_str(), "draft" | "human_review")
         || (t.kind == "bug" && matches!(t.status.as_str(), "developing" | "acceptance"));
@@ -311,7 +329,12 @@ pub fn save_prd(conn: &mut Connection, ticket_id: &str, content: &str, note: Opt
     let tx = conn.transaction()?;
     let v = insert_version(&tx, ticket_id, content, "edit", note)?;
     index(&tx, ticket_id, &t.title, content)?;
-    add_timeline(&tx, ticket_id, "prd_version", serde_json::json!({ "version": v.version, "note": note }))?;
+    add_timeline(
+        &tx,
+        ticket_id,
+        "prd_version",
+        serde_json::json!({ "version": v.version, "note": note }),
+    )?;
     tx.commit()?;
     Ok(v)
 }
@@ -355,7 +378,11 @@ pub fn transition(conn: &mut Connection, id: &str, to: &str) -> Result<Ticket> {
         if to == "acceptance" && !workflow::all_tasks_ready_for_acceptance(refs) {
             return Err(Error::invalid("还有子任务没有完成，工单不能进入验收。"));
         }
-        if to == "done" && statuses.iter().any(|s| !matches!(s.as_str(), "merged" | "cancelled")) {
+        if to == "done"
+            && statuses
+                .iter()
+                .any(|s| !matches!(s.as_str(), "merged" | "cancelled"))
+        {
             return Err(Error::invalid("还有子任务没有合并，工单不能完成。"));
         }
     }
@@ -365,7 +392,12 @@ pub fn transition(conn: &mut Connection, id: &str, to: &str) -> Result<Ticket> {
         "UPDATE ticket SET status = ?2, cancelled_from = ?3, updated_at = ?4 WHERE id = ?1",
         rusqlite::params![id, to, cancelled_from, crate::util::now()],
     )?;
-    add_timeline(&tx, id, "status", serde_json::json!({ "from": t.status, "to": to }))?;
+    add_timeline(
+        &tx,
+        id,
+        "status",
+        serde_json::json!({ "from": t.status, "to": to }),
+    )?;
     tx.commit()?;
     get(conn, id)
 }
@@ -394,8 +426,12 @@ pub fn list(conn: &Connection, query: Option<&str>) -> Result<Vec<Ticket>> {
     let q = query.map(str::trim).filter(|q| !q.is_empty());
     let tickets = match q {
         None => {
-            let mut st = conn.prepare(&format!("SELECT {COLS} FROM ticket ORDER BY created_at DESC"))?;
-            let rows = st.query_map([], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut st = conn.prepare(&format!(
+                "SELECT {COLS} FROM ticket ORDER BY created_at DESC"
+            ))?;
+            let rows = st
+                .query_map([], row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         }
         Some(q) => {
@@ -405,11 +441,16 @@ pub fn list(conn: &Connection, query: Option<&str>) -> Result<Vec<Ticket>> {
                  OR id IN (SELECT ticket_id FROM ticket_fts WHERE content LIKE ?1 ESCAPE '\\')
                  ORDER BY created_at DESC"
             ))?;
-            let rows = st.query_map([like], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = st
+                .query_map([like], row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         }
     };
-    tickets.into_iter().map(|t| with_projects(conn, t)).collect()
+    tickets
+        .into_iter()
+        .map(|t| with_projects(conn, t))
+        .collect()
 }
 
 pub fn timeline(conn: &Connection, ticket_id: &str) -> Result<Vec<TimelineEvent>> {
@@ -440,7 +481,11 @@ pub struct Draft {
 
 pub fn draft_from_markdown(md: &str) -> Draft {
     let md = md.trim_start_matches('\u{feff}').trim();
-    let first = md.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let first = md
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
     let title: String = first
         .trim_start_matches('#')
         .trim()
@@ -448,12 +493,18 @@ pub fn draft_from_markdown(md: &str) -> Draft {
         .take(80)
         .collect();
     let lower = md.to_lowercase();
-    let bug_words = ["bug", "报错", "异常", "崩溃", "复现", "修复", "错误", "失败", "闪退"];
+    let bug_words = [
+        "bug", "报错", "异常", "崩溃", "复现", "修复", "错误", "失败", "闪退",
+    ];
     let kind = if bug_words.iter().any(|w| lower.contains(w)) {
         "bug"
     } else {
-        let fe = ["前端", "页面", "界面", "样式", "组件"].iter().any(|w| lower.contains(w));
-        let be = ["后端", "接口", "数据库", "api", "服务端"].iter().any(|w| lower.contains(w));
+        let fe = ["前端", "页面", "界面", "样式", "组件"]
+            .iter()
+            .any(|w| lower.contains(w));
+        let be = ["后端", "接口", "数据库", "api", "服务端"]
+            .iter()
+            .any(|w| lower.contains(w));
         match (fe, be) {
             (true, true) => "feature_mixed",
             (true, false) => "feature_frontend",
@@ -490,7 +541,10 @@ mod tests {
         assert_eq!(a.status, "draft");
         assert_eq!(a.labels, vec!["支付"]);
         let v = current_prd(&conn, &a.id).unwrap().unwrap();
-        assert_eq!((v.version, v.content_md.as_str()), (1, "结算页优惠券叠加后金额为负"));
+        assert_eq!(
+            (v.version, v.content_md.as_str()),
+            (1, "结算页优惠券叠加后金额为负")
+        );
         assert_eq!(get(&conn, "TW-2").unwrap().id, b.id);
         assert_eq!(list(&conn, Some("优惠券")).unwrap().len(), 2);
         assert_eq!(list(&conn, Some("另一个")).unwrap().len(), 1);
@@ -502,7 +556,13 @@ mod tests {
         let mut conn = crate::db::open_in_memory().unwrap();
         let t = create(&mut conn, bug("x")).unwrap();
         assert!(save_prd(&mut conn, &t.id, "结算页优惠券叠加后金额为负", None).is_err());
-        let v2 = save_prd(&mut conn, &t.id, "补充：只在叠加两张时出现", Some("补充复现条件")).unwrap();
+        let v2 = save_prd(
+            &mut conn,
+            &t.id,
+            "补充：只在叠加两张时出现",
+            Some("补充复现条件"),
+        )
+        .unwrap();
         assert_eq!(v2.version, 2);
         let all = prd_versions(&conn, &t.id).unwrap();
         assert_eq!(all.len(), 2);
@@ -522,8 +582,17 @@ mod tests {
         let c = transition(&mut conn, &t.id, "cancelled").unwrap();
         assert_eq!(c.cancelled_from.as_deref(), Some("developing"));
         assert!(transition(&mut conn, &t.id, "draft").is_err());
-        assert_eq!(transition(&mut conn, &t.id, "developing").unwrap().cancelled_from, None);
-        let kinds: Vec<_> = timeline(&conn, &t.id).unwrap().into_iter().map(|e| e.kind).collect();
+        assert_eq!(
+            transition(&mut conn, &t.id, "developing")
+                .unwrap()
+                .cancelled_from,
+            None
+        );
+        let kinds: Vec<_> = timeline(&conn, &t.id)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.kind)
+            .collect();
         assert_eq!(kinds, vec!["created", "status", "status", "status"]);
 
         let mut f = bug("需求");
@@ -535,7 +604,10 @@ mod tests {
     #[test]
     fn markdown_draft_guesses_title_and_type() {
         let d = draft_from_markdown("# 登录页点击按钮报错\n\n复现步骤：...");
-        assert_eq!((d.title.as_str(), d.kind.as_str()), ("登录页点击按钮报错", "bug"));
+        assert_eq!(
+            (d.title.as_str(), d.kind.as_str()),
+            ("登录页点击按钮报错", "bug")
+        );
         let d = draft_from_markdown("优惠券叠加规则\n后端接口需要支持……前端页面展示……");
         assert_eq!(d.kind, "feature_mixed");
     }
