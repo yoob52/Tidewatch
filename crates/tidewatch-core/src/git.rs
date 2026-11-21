@@ -111,13 +111,25 @@ pub fn worktree_remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
     }
     args.push(&p);
     let res = git(repo, &args);
-    if res.is_err() && force && path.exists() {
-        // 文件被占用等情况：手动删目录再 prune
+    if res.is_err() && force && path.exists() && is_linked_worktree(repo, path) {
+        // 文件被占用等情况：手动删目录再 prune。只对登记过的附加 worktree 这么做，绝不删主检出或无关目录。
         std::fs::remove_dir_all(path)?;
         git(repo, &["worktree", "prune"])?;
         return Ok(());
     }
     res.map(|_| ())
+}
+
+/// `path` 是否是 `repo` 登记过的附加 worktree（列表第一项是主检出，不算）。
+fn is_linked_worktree(repo: &Path, path: &Path) -> bool {
+    let Ok(target) = crate::util::canonical(path) else {
+        return false;
+    };
+    worktree_list(repo).is_ok_and(|list| {
+        list.iter()
+            .skip(1)
+            .any(|w| crate::util::canonical(&w.path).is_ok_and(|p| p == target))
+    })
 }
 
 pub fn worktree_list(repo: &Path) -> Result<Vec<Worktree>> {
@@ -343,6 +355,22 @@ mod tests {
         commit_all(&repo, "main").unwrap();
         assert!(merge(&repo, "tw/x", false, "m").is_err());
         assert!(!is_dirty(&repo).unwrap(), "冲突后应恢复干净");
+    }
+
+    #[test]
+    fn force_remove_never_deletes_non_worktrees() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("keep.txt"), "x").unwrap();
+
+        assert!(worktree_remove(&repo, &repo, true).is_err());
+        assert!(repo.join("README.md").exists(), "主检出不能被删");
+        assert!(worktree_remove(&repo, &other, true).is_err());
+        assert!(other.join("keep.txt").exists(), "无关目录不能被删");
     }
 
     /// 长路径：worktree 内的文件全路径超过 260 字符时，创建 / 提交 / 清理都应成功。
