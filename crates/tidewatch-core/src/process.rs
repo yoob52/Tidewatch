@@ -24,13 +24,24 @@ pub fn spawn(mut cmd: Command) -> Result<ProcessTree> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        // 挂起启动：先放进 Job 再恢复运行，这样它一个后代都逃不出 Job。
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
     #[cfg(windows)]
     let job = win::Job::new()?;
-    let child = cmd.spawn()?;
     #[cfg(windows)]
-    job.assign(&child)?;
+    let child = {
+        let mut child = cmd.spawn()?;
+        if let Err(e) = job.assign(&child).and_then(|_| win::resume(&child)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e.into());
+        }
+        child
+    };
+    #[cfg(not(windows))]
+    let child = cmd.spawn()?;
     Ok(ProcessTree {
         child,
         #[cfg(windows)]
@@ -88,13 +99,13 @@ impl Drop for ProcessTree {
     fn drop(&mut self) {
         if let Ok(None) = self.child.try_wait() {
             let _ = self.kill_tree(Duration::from_millis(200));
-            return;
-        }
-        // 主进程已自行退出：清掉它留在进程组里的后台后代。
-        // Windows 上由 Job 的 KILL_ON_JOB_CLOSE 在句柄关闭时完成同样的事。
-        #[cfg(unix)]
-        unsafe {
-            libc::killpg(self.child.id() as libc::pid_t, libc::SIGKILL);
+        } else {
+            // 主进程已自行退出：清掉它留在进程组里的后台后代。
+            // Windows 上由 Job 的 KILL_ON_JOB_CLOSE 在句柄关闭时完成同样的事。
+            #[cfg(unix)]
+            unsafe {
+                libc::killpg(self.child.id() as libc::pid_t, libc::SIGKILL);
+            }
         }
     }
 }
@@ -126,15 +137,52 @@ mod win {
     use std::io;
     use std::os::windows::io::AsRawHandle;
     use std::process::Child;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, STILL_ACTIVE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetExitCodeProcess, OpenProcess, OpenThread, ResumeThread,
+        PROCESS_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
     };
+
+    /// 恢复以 `CREATE_SUSPENDED` 启动的进程（std 不暴露主线程句柄，所以按进程 id 找它的线程）。
+    pub fn resume(child: &Child) -> io::Result<()> {
+        let pid = child.id();
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snap == INVALID_HANDLE_VALUE {
+                return Err(io::Error::last_os_error());
+            }
+            let mut entry: THREADENTRY32 = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            let mut resumed = 0;
+            let mut more = Thread32First(snap, &mut entry);
+            while more != 0 {
+                if entry.th32OwnerProcessID == pid {
+                    let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                    if !thread.is_null() {
+                        if ResumeThread(thread) != u32::MAX {
+                            resumed += 1;
+                        }
+                        CloseHandle(thread);
+                    }
+                }
+                more = Thread32Next(snap, &mut entry);
+            }
+            CloseHandle(snap);
+            if resumed == 0 {
+                return Err(io::Error::other("无法恢复挂起的子进程"));
+            }
+            Ok(())
+        }
+    }
 
     pub struct Job(HANDLE);
     unsafe impl Send for Job {}
