@@ -217,6 +217,7 @@ impl Engine {
                 },
             )?;
             tasks::set_status(&tx, &task.id, "queued")?;
+            tasks::refresh_blocked(&tx, &ticket.id)?;
             let now = crate::util::now();
             tx.execute(
                 "INSERT INTO pending_effect (id, kind, payload_json, status, attempts, created_at, updated_at)
@@ -319,6 +320,8 @@ impl Engine {
             return Err(Error::invalid("请写明打回的原因，Agent 返工时会看到它。"));
         }
         tasks::set_status(&conn, task_id, "changes_requested")?;
+        // 依赖它的子任务回到"等依赖"，返工完成前不能开始
+        tasks::refresh_blocked(&conn, &task.ticket_id)?;
         add_timeline(
             &conn,
             &task.ticket_id,

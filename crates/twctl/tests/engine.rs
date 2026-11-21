@@ -490,6 +490,46 @@ fn rejection_sends_the_note_back_to_the_same_session() {
 }
 
 #[test]
+fn rejecting_a_task_blocks_its_dependents_again() {
+    let f = fixture(2, None);
+    let (ticket, first) = f.bug("依赖", "x [mock:steps=1] [mock:delay=50]", "medium");
+    let second = tasks::create(
+        &mut lock(f.db()),
+        tasks::TaskInput {
+            ticket_id: ticket.clone(),
+            kind: "bug".into(),
+            project_id: f.project_id.clone(),
+            title: "后续".into(),
+            depends_on: vec![first.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .id;
+    assert_eq!(f.task(&second).status, "blocked");
+    let run = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+    assert_eq!(f.task(&second).status, "pending");
+
+    f.engine.reject_task(&first, "还差一步").unwrap();
+    assert_eq!(f.task(&second).status, "blocked");
+    assert!(f
+        .engine
+        .start_task(&second, StartOptions::default())
+        .is_err());
+
+    let run = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+    assert_eq!(f.task(&second).status, "pending");
+}
+
+#[test]
 fn feature_tickets_cannot_skip_review() {
     let f = fixture(2, None);
     let (ticket, task) = {
