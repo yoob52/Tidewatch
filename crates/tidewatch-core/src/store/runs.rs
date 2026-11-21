@@ -145,7 +145,7 @@ pub fn list_for_task(conn: &Connection, task_id: &str) -> Result<Vec<Run>> {
 pub fn list_for_ticket(conn: &Connection, ticket_id: &str) -> Result<Vec<Run>> {
     query(
         conn,
-        "WHERE ticket_id = ?1 ORDER BY queued_at, id",
+        "WHERE ticket_id = ?1 ORDER BY queued_at, rowid",
         &[&ticket_id],
     )
 }
@@ -342,7 +342,7 @@ pub fn add_test_report(
 pub fn test_reports(conn: &Connection, run_id: &str) -> Result<Vec<TestReport>> {
     let mut st = conn.prepare(
         "SELECT id, run_id, task_id, command, exit_code, output_path, duration_ms, created_at
-         FROM test_report WHERE run_id = ?1 ORDER BY created_at, id",
+         FROM test_report WHERE run_id = ?1 ORDER BY created_at, rowid",
     )?;
     let rows = st
         .query_map([run_id], |r| {

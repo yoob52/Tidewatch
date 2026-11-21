@@ -459,7 +459,7 @@ pub fn list(conn: &Connection, query: Option<&str>) -> Result<Vec<Ticket>> {
 
 pub fn timeline(conn: &Connection, ticket_id: &str) -> Result<Vec<TimelineEvent>> {
     let mut st = conn.prepare(
-        "SELECT id, ts, type, payload_json FROM timeline_event WHERE ticket_id = ?1 ORDER BY ts, id",
+        "SELECT id, ts, type, payload_json FROM timeline_event WHERE ticket_id = ?1 ORDER BY ts, rowid",
     )?;
     let rows = st
         .query_map([ticket_id], |r| {
