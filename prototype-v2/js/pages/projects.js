@@ -12,6 +12,6 @@ function pageProjects(id){
         <div class="card span2"><div class="card-h"><h3>上下文卡片</h3><span class="dim">每次运行自动拼入 Prompt，不改写仓库里的 CLAUDE.md / AGENTS.md</span><span class="grow"></span><button class="btn sm" data-toast="演示：读取仓库中的 AGENTS.md / CLAUDE.md 并填入">${I('upload',13)}从 AGENTS.md / CLAUDE.md 导入</button><button class="btn sm" data-toast="演示：进入 Markdown 编辑">${I('edit',13)}编辑</button></div>
           <div class="card-b prose sm">${md(p.context)}</div></div>
         <div class="card span2"><div class="card-h"><h3>命令配置</h3><span class="dim">运行结束后在 worktree 中依次执行；同时作为 workspace_write 档位的命令白名单</span></div>
-          <div class="card-b cmds">${[['准备','prepare','worktree 首次创建后'],['Lint','lint','自动测试'],['测试','test','自动测试'],['构建','build','自动测试']].map(([n,k,h])=>`<div><label>${n}<small>${h}</small></label><div class="input mono fake">${p.cmds[k]}</div><span class="switch on" data-sw></span></div>`).join('')}</div></div>
+          <div class="card-b cmds">${[['准备','prepare','worktree 首次创建后'],['Lint','lint','自动测试'],['测试','test','自动测试'],['构建','build','自动测试']].map(([n,k,h])=>`<div><label>${n}<small>${h}</small></label><div class="input mono fake">${p.cmds[k]}</div><span class="switch ${state.sw[p.id+k]===false?'':'on'}" data-sw data-k="${p.id+k}"></span></div>`).join('')}</div></div>
       </div></section></div>`;
 }

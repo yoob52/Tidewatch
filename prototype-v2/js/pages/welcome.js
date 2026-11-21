@@ -19,6 +19,7 @@ function pageWelcome(step){
       <p class="motto">观水有术，<br>必观其澜。</p><p class="dim">把需求、Agent 和代码改动放在同一条水流里看：你守住定稿与合并两道闸，其余交给 Agent。</p>
       <ol class="wsteps">${steps.map((s,i)=>`<li class="${i+1<step?'past':i+1===step?'now':''}"><i>${i+1<step?I('check',11):i+1}</i>${s}</li>`).join('')}</ol></aside>
     <main><div class="wbody">${body}</div><footer>${step>1?`<a class="btn" href="#/welcome/${step-1}">上一步</a>`:''}<span class="grow"></span><a class="btn ghost" href="#/board">跳过向导</a>
-      <a class="btn primary lg" href="${step<5?`#/welcome/${step+1}`:'#/board'}">${step<5?'下一步':'创建并进入看板'}${I('arrow',14)}</a></footer></main></div>`;
+      <a class="btn primary lg" id="wnext" href="${step<5?`#/welcome/${step+1}`:'#/board'}">${step<5?'下一步':'创建并进入看板'}${I('arrow',14)}</a></footer></main></div>`;
+  if(step===5)$('#wnext').onclick=()=>{if(!T('TW-1'))TICKETS.push({key:'TW-1',title:'示例：修正 README 中的错别字',type:'bug',status:'developing',prio:'low',projects:['shop-api'],source:'首次启动向导',updated:'刚刚',sub:[['BUG','queued']],labels:['示例']});toast('已创建示例工单 TW-1，已加入运行队列')};
   $$('.pick.col button').forEach(b=>b.onclick=()=>{$$('button',b.parentNode).forEach(x=>x.classList.remove('on'));b.classList.add('on')});
 }

@@ -25,7 +25,7 @@ document.addEventListener('click',e=>{
   const t=e.target.closest('[data-toast]');if(t){toast(t.dataset.toast);return}
   const act=e.target.closest('[data-act]');
   if(act){({cmd:openCmd,notes:openNotes,theme:()=>{setTheme(state.theme==='dark'?'light':'dark');route()}})[act.dataset.act]();return}
-  const sw=e.target.closest('[data-sw]');if(sw){sw.classList.toggle('on');return}
+  const sw=e.target.closest('[data-sw]');if(sw){const on=sw.classList.toggle('on');if(sw.dataset.k)state.sw[sw.dataset.k]=on;return}
   const go=e.target.closest('[data-go]');if(go&&!e.target.closest('a,button'))location.hash=go.dataset.go;
 });
 document.addEventListener('keydown',e=>{
