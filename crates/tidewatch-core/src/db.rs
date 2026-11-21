@@ -1,6 +1,6 @@
 //! SQLite：打开、迁移。迁移为版本化 SQL 脚本，版本记录在 `PRAGMA user_version`。
 use crate::Result;
-use rusqlite::Connection;
+pub use rusqlite::Connection;
 use std::path::Path;
 
 const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
@@ -27,6 +27,10 @@ fn init(mut conn: Connection) -> Result<Connection> {
 
 pub fn schema_version(conn: &Connection) -> Result<u32> {
     Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+pub fn sqlite_version(conn: &Connection) -> Result<String> {
+    Ok(conn.query_row("SELECT sqlite_version()", [], |r| r.get(0))?)
 }
 
 fn migrate(conn: &mut Connection) -> Result<()> {

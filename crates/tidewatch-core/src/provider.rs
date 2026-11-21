@@ -32,12 +32,16 @@ impl Protocol {
         }
     }
     pub fn supports(self, kind: AgentKind) -> bool {
-        match (self, kind) {
-            (_, AgentKind::Mock) | (Protocol::Native, _) => true,
-            (Protocol::Anthropic, AgentKind::ClaudeCode) => true,
-            (Protocol::OpenaiResponses | Protocol::OpenaiChat, AgentKind::Codex) => true,
-            _ => false,
-        }
+        matches!(
+            (self, kind),
+            (_, AgentKind::Mock)
+                | (Protocol::Native, _)
+                | (Protocol::Anthropic, AgentKind::ClaudeCode)
+                | (
+                    Protocol::OpenaiResponses | Protocol::OpenaiChat,
+                    AgentKind::Codex
+                )
+        )
     }
 }
 

@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: 核心测试 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 单元与回放测试
+        run: cargo test -p tidewatch-core -p twctl
+      - name: 命令行演示（worktree → 演示 Agent 中途停止 → 续接 → 提交 → 清理）
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/demo" && cd "$RUNNER_TEMP/demo"
+          git init -q -b main && echo "# demo" > README.md && git add -A
+          git -c user.name=ci -c user.email=ci@localhost commit -qm init
+          cargo run -q --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" -p twctl -- doctor
+          cargo run -q --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" -p twctl -- demo --repo . --agents mock
+
+  frontend:
+    name: 前端构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  windows-app:
+    name: Windows 安装包
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npx tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tidewatch-windows-installer
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
