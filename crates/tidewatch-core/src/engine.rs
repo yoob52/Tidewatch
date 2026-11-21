@@ -423,25 +423,41 @@ impl Engine {
 
     /// 取消子任务：保留分支，删除 worktree（未提交的改动先提交到分支上）。
     pub fn cancel_task(&self, task_id: &str) -> Result<Task> {
-        let (task, ticket, project, _) = self.load(task_id)?;
-        if matches!(task.status.as_str(), "queued" | "running") {
-            return Err(Error::invalid("子任务在排队或运行中，请先停止。"));
-        }
-        if matches!(task.status.as_str(), "merged" | "cancelled") {
-            return Err(Error::invalid("子任务已经结束。"));
-        }
-        if let Some(wt) = task
-            .worktree_path
-            .as_ref()
-            .map(PathBuf::from)
-            .filter(|p| p.exists())
-        {
-            git::commit_all(&wt, &format!("tw({}): 取消前的未提交改动", ticket.key))?;
-            git::worktree_remove(Path::new(&project.local_path), &wt, true)?;
+        // 校验和改状态在同一次加锁里完成：之后再点"开始"会被拒绝，
+        // 不会出现这边删 worktree、那边新一轮的 Agent 正在里面写文件的情况。
+        let (task, ticket, project) = {
+            let conn = lock(&self.inner.db);
+            let task = tasks::get(&conn, task_id)?;
+            if matches!(task.status.as_str(), "queued" | "running") {
+                return Err(Error::invalid("子任务在排队或运行中，请先停止。"));
+            }
+            if matches!(task.status.as_str(), "merged" | "cancelled") {
+                return Err(Error::invalid("子任务已经结束。"));
+            }
+            let ticket = tickets::get(&conn, &task.ticket_id)?;
+            let project = projects::get(&conn, &task.project_id)?;
+            tasks::set_status(&conn, task_id, "cancelled")?;
+            (task, ticket, project)
+        };
+        let removed: Result<()> = (|| {
+            if let Some(wt) = task
+                .worktree_path
+                .as_ref()
+                .map(PathBuf::from)
+                .filter(|p| p.exists())
+            {
+                git::commit_all(&wt, &format!("tw({}): 取消前的未提交改动", ticket.key))?;
+                git::worktree_remove(Path::new(&project.local_path), &wt, true)?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = removed {
+            // worktree 没删成：子任务回到原来的状态
+            tasks::set_status(&lock(&self.inner.db), task_id, &task.status)?;
+            return Err(e);
         }
         {
             let conn = lock(&self.inner.db);
-            tasks::set_status(&conn, task_id, "cancelled")?;
             conn.execute(
                 "UPDATE task SET worktree_path = NULL WHERE id = ?1",
                 [task_id],
