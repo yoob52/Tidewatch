@@ -640,7 +640,7 @@ fn unfinished_runs_become_orphans_on_restart() {
     let run = runs::enqueue(
         &conn,
         runs::NewRun {
-            task_id: &task.id,
+            task_id: Some(&task.id),
             ticket_id: &ticket.id,
             purpose: "dev",
             parent_run_id: None,

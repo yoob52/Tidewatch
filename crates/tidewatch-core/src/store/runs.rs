@@ -82,7 +82,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Run> {
 }
 
 pub struct NewRun<'a> {
-    pub task_id: &'a str,
+    /// 预审、拆分、影响分析这类工单级运行没有子任务。
+    pub task_id: Option<&'a str>,
     pub ticket_id: &'a str,
     pub purpose: &'a str,
     pub parent_run_id: Option<&'a str>,
@@ -97,11 +98,19 @@ pub struct NewRun<'a> {
 /// 入队一轮新的 Run。
 pub fn enqueue(conn: &Connection, n: NewRun) -> Result<Run> {
     let id = crate::util::new_id();
-    let number: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(number), 0) + 1 FROM run WHERE task_id = ?1",
-        [n.task_id],
-        |r| r.get(0),
-    )?;
+    // 子任务的运行按子任务编号；工单级运行按工单编号
+    let number: i64 = match n.task_id {
+        Some(t) => conn.query_row(
+            "SELECT COALESCE(MAX(number), 0) + 1 FROM run WHERE task_id = ?1",
+            [t],
+            |r| r.get(0),
+        )?,
+        None => conn.query_row(
+            "SELECT COALESCE(MAX(number), 0) + 1 FROM run WHERE ticket_id = ?1 AND task_id IS NULL",
+            [n.ticket_id],
+            |r| r.get(0),
+        )?,
+    };
     conn.execute(
         "INSERT INTO run (id, task_id, ticket_id, number, purpose, parent_run_id, agent, provider_id, model,
          permission, resume_session_id, prompt, status, queued_at)
@@ -171,8 +180,8 @@ pub fn count_running(conn: &Connection) -> Result<u32> {
 pub fn next_queued(conn: &Connection) -> Result<Option<Run>> {
     let runs = query(
         conn,
-        "WHERE status = 'queued' AND task_id NOT IN
-           (SELECT task_id FROM run WHERE status IN ('starting', 'running', 'finalizing', 'stopping') AND task_id IS NOT NULL)
+        "WHERE status = 'queued' AND (task_id IS NULL OR task_id NOT IN
+           (SELECT task_id FROM run WHERE status IN ('starting', 'running', 'finalizing', 'stopping') AND task_id IS NOT NULL))
          ORDER BY (SELECT CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
                    FROM ticket t WHERE t.id = run.ticket_id), queued_at, id LIMIT 1",
         &[],

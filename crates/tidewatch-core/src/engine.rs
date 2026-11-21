@@ -197,7 +197,7 @@ impl Engine {
             let run = runs::enqueue(
                 &tx,
                 runs::NewRun {
-                    task_id: &task.id,
+                    task_id: Some(&task.id),
                     ticket_id: &ticket.id,
                     purpose: if plan.resume.is_some()
                         || opts.instruction.is_some()
