@@ -666,6 +666,18 @@ fn unfinished_runs_become_orphans_on_restart() {
         Arc::new(|_| {}),
     )
     .unwrap();
+    // 同一个数据目录不能再起第二个引擎：否则它会把这边正在跑的运行当成孤儿收掉
+    let second = Engine::start(
+        db::shared(db::open(&root.join("data/tidewatch.db")).unwrap()),
+        Box::new(MemoryStore::default()),
+        EngineConfig {
+            data_dir: root.join("data"),
+            mock_binary: None,
+        },
+        Arc::new(|_| {}),
+    );
+    assert!(second.err().unwrap().to_string().contains("已经在运行"));
+
     let conn = lock(engine.db());
     let run = runs::get(&conn, &run.id).unwrap();
     assert_eq!(run.status, "orphaned");

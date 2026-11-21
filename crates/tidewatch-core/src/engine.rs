@@ -110,16 +110,22 @@ struct Inner {
 pub struct Engine {
     inner: Arc<Inner>,
     scheduler: Mutex<Option<JoinHandle<()>>>,
+    /// 数据目录的独占锁，引擎存在期间一直持有。
+    _instance_lock: std::fs::File,
 }
 
 impl Engine {
     /// 启动引擎：先把上次没跑完的运行标为孤儿，再开调度线程。
+    ///
+    /// 一个数据目录同一时间只能有一个引擎：第二个实例会把第一个实例正在跑的运行当成孤儿收掉，
+    /// 之后两个 Agent 就可能在同一个 worktree 里同时改文件。所以先拿独占锁，拿不到就不启动。
     pub fn start(
         db: Db,
         secrets: Box<dyn SecretStore>,
         cfg: EngineConfig,
         listener: Listener,
     ) -> Result<Engine> {
+        let instance_lock = lock_data_dir(&cfg.data_dir)?;
         runs::recover_orphans(&mut lock(&db))?;
         let inner = Arc::new(Inner {
             db,
@@ -139,6 +145,7 @@ impl Engine {
         Ok(Engine {
             inner,
             scheduler: Mutex::new(Some(handle)),
+            _instance_lock: instance_lock,
         })
     }
 
@@ -1251,6 +1258,24 @@ pub struct ShellResult {
     pub cancelled: bool,
     /// 输出的最后一段，方便直接看到失败原因。
     pub tail: String,
+}
+
+/// 对数据目录加独占锁（锁文件 `engine.lock`）。进程退出或引擎销毁时由系统释放。
+fn lock_data_dir(data_dir: &Path) -> Result<std::fs::File> {
+    std::fs::create_dir_all(data_dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(data_dir.join("engine.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Error::invalid(format!(
+            "观澜已经在运行：数据目录 {} 正被另一个实例使用。请切换到已打开的窗口，或先退出它。",
+            data_dir.display()
+        ))),
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+    }
 }
 
 /// 在 `cwd` 里用系统 shell 执行一条命令，输出（stdout + stderr）写到 `log`。
