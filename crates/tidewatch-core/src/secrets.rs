@@ -2,7 +2,7 @@
 //!
 //! Windows 用凭据管理器（观澜的目标平台）。其它系统没有统一的免依赖方案，
 //! 开发时退回到数据目录下只有本人可读的文件。
-use crate::{Error, Result};
+use crate::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -118,6 +118,7 @@ impl SecretStore for FileStore {
 #[cfg(windows)]
 pub mod windows {
     use super::*;
+    use crate::Error;
     use std::ptr;
     use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
     use windows_sys::Win32::Security::Credentials::{

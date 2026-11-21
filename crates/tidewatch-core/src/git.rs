@@ -187,7 +187,7 @@ pub fn commit_all(worktree: &Path, message: &str) -> Result<Option<String>> {
     Ok(Some(rev_parse(worktree, "HEAD")?))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileStat {
     pub path: String,
     pub added: u32,
