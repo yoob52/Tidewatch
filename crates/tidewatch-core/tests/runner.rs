@@ -337,6 +337,18 @@ env > env.txt"#,
     assert!(with_provider.contains("ANTHROPIC_AUTH_TOKEN=provider-key"));
     assert!(!with_provider.contains("ambient-key"));
 
+    let model_only = vars(
+        AgentKind::ClaudeCode,
+        vec![("ANTHROPIC_MODEL".into(), "some-model".into())],
+    );
+    assert!(model_only.contains("ANTHROPIC_MODEL=some-model"));
+    assert!(model_only.contains("ANTHROPIC_API_KEY=ambient-key"));
+
     assert!(!vars(AgentKind::Codex, vec![]).contains("ambient-key"));
+
+    std::env::set_var("TIDEWATCH_MOCK_STEPS", "7");
+    assert!(vars(AgentKind::Mock, vec![]).contains("TIDEWATCH_MOCK_STEPS=7"));
+    assert!(!vars(AgentKind::ClaudeCode, vec![]).contains("TIDEWATCH_MOCK_STEPS"));
+    std::env::remove_var("TIDEWATCH_MOCK_STEPS");
     std::env::remove_var("ANTHROPIC_API_KEY");
 }
