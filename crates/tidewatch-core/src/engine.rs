@@ -1222,7 +1222,9 @@ impl Inner {
         }
         let end_commit = git::rev_parse(&worktree, "HEAD")?;
         git::save_checkpoint(&repo, &format!("{}/{}-end", task.id, run.id), &end_commit)?;
-        if task.kind == "backend" && doc_file.is_file() {
+        // 返工没成功、文档也没动过：留着的还是作废的那一版，不能当成新文档放行依赖方
+        let doc_current = agent_ok || std::fs::read(&doc_file).ok() != doc_before;
+        if task.kind == "backend" && doc_file.is_file() && doc_current {
             // 提交之后记下含有文档的提交：worktree 清理后还能从提交里取到
             self.api_doc_ready(&task, &ticket, &doc_rel, Some(&end_commit));
         }

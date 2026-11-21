@@ -1157,6 +1157,49 @@ fn change_after_finalize_runs_impact_analysis_and_reworks_affected_tasks() {
 }
 
 #[test]
+fn failed_backend_rework_does_not_republish_the_stale_api_doc() {
+    let f = fixture(2, None);
+    let (ticket, web) = f.mixed("导出报表", "## 背景\n导出订单报表。\n");
+    {
+        let mut conn = lock(f.db());
+        tickets::set_criteria(&conn, &ticket, vec!["能导出 CSV".into()]).unwrap();
+        tickets::transition(&mut conn, &ticket, "ai_review").unwrap();
+        tickets::transition(&mut conn, &ticket, "human_review").unwrap();
+    }
+    f.engine.finalize(&ticket, false).unwrap();
+    let created = f
+        .engine
+        .apply_split(
+            &ticket,
+            f.be_fe_drafts(&web, "x [mock:steps=1] [mock:delay=50]"),
+        )
+        .unwrap();
+    let (be, fe) = (created[0].id.clone(), created[1].id.clone());
+    f.engine.start_development(&ticket).unwrap();
+    f.wait_for("前端自动入队", || {
+        !runs::list_for_task(&lock(f.db()), &fe).unwrap().is_empty()
+    });
+    f.wait_idle(&ticket);
+
+    // 两个都返工，后端的旧文档作废（需求变更确认后的状态），这一轮后端没改文档就失败了
+    f.engine.reject_task(&fe, "跟着接口改").unwrap();
+    f.engine.reject_task(&be, "接口要改 [mock:fail]").unwrap();
+    tasks::remove_artifact(&lock(f.db()), &be, "api_doc").unwrap();
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert_eq!(started.len(), 1);
+    assert_eq!(f.wait_done(&started[0].id).status, "failed");
+    f.wait_idle(&ticket);
+    assert!(
+        tasks::artifact(&lock(f.db()), &be, "api_doc")
+            .unwrap()
+            .is_none(),
+        "worktree 里留着的是作废的那一版"
+    );
+    assert_eq!(runs::list_for_task(&lock(f.db()), &fe).unwrap().len(), 1);
+    assert_eq!(f.task(&fe).status, "changes_requested");
+}
+
+#[test]
 fn split_with_a_dependency_cycle_creates_nothing() {
     let f = fixture(2, None);
     let (ticket, web) = f.mixed("环", "## 背景\n随便。\n");
