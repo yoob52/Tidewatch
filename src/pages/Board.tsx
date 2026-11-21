@@ -1,0 +1,172 @@
+// 看板：七个阶段是一条从左到右的水流；「人工审核」「验收中」两列是你的关口
+import { useState } from 'react';
+import { api, type TicketStatus, type TicketSummary } from '../lib/api';
+import { useData } from '../lib/data';
+import { canMove } from '../lib/flow';
+import { Icon } from '../lib/Icon';
+import { Ripple, STAGES, STAGE_NAME, Seg, Stamp, runActive, useUi } from '../lib/ui';
+
+export function TaskChips({ t }: { t: TicketSummary }) {
+  if (!t.tasks_total) return null;
+  return (
+    <>
+      {t.tasks_running > 0 && (
+        <span className="subchip tide">
+          <Ripple />
+          <span>{t.tasks_running} 个在跑</span>
+        </span>
+      )}
+      <span className={`subchip ${t.tasks_done === t.tasks_total ? 'moss' : 'dim'}`} title="已跑完的子任务 / 全部子任务">
+        <b>
+          {t.tasks_done}/{t.tasks_total}
+        </b>
+        <span>子任务完成</span>
+      </span>
+    </>
+  );
+}
+
+export function BoardPage() {
+  const { tickets, projects, runs, reload } = useData();
+  const ui = useUi();
+  const [filter, setFilter] = useState('all');
+  const [drag, setDrag] = useState<TicketSummary | null>(null);
+  const [over, setOver] = useState<TicketStatus | null>(null);
+
+  const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? '已删除的项目';
+  const list = tickets.filter(
+    (t) => filter === 'all' || (filter === 'bug' ? t.type === 'bug' : t.projects.some((p) => p.project_id === filter)),
+  );
+  const review = tickets.filter((t) => t.status === 'human_review');
+  const acc = tickets.filter((t) => t.status === 'acceptance');
+  const running = runs.filter((r) => runActive(r.status)).length;
+  const d = new Date();
+  const dateText = `${d.getMonth() + 1} 月 ${d.getDate()} 日 · 周${'日一二三四五六'[d.getDay()]}`;
+
+  const move = async (t: TicketSummary, to: TicketStatus) => {
+    if (t.status === to) return;
+    const r = canMove(t, to);
+    if (!r.ok) {
+      ui.toast(`${t.key} 无法流转：${r.why}`);
+      return;
+    }
+    if (to === 'finalized' && !(await ui.confirm('定稿', `定稿后 ${t.key} 的 PRD 将锁定，再修改需要「发起变更」。`, '定稿'))) return;
+    const done = await ui.attempt(api.ticketTransition(t.id, to));
+    if (done) {
+      ui.toast(`${t.key} → ${STAGE_NAME[to]}（${r.label}）`);
+      void reload();
+    }
+  };
+
+  return (
+    <div className="page flush board-page">
+      <div className="today">
+        <div className="today-l">
+          <span className="today-date">{dateText}</span>
+          <p>
+            有 <b>{review.length + acc.length}</b> 张工单在等你：
+            <a href={review[0] ? `#/ticket/${review[0].key}` : '#/tickets'}>{review.length} 张待审核</a>，
+            <a href={acc[0] ? `#/ticket/${acc[0].key}/accept` : '#/tickets'}>{acc.length} 张待验收</a>。
+            {running ? (
+              <>
+                另有 <a href="#/runs">{running} 个 Agent 正在运行</a>。
+              </>
+            ) : (
+              '当前没有 Agent 在运行。'
+            )}
+          </p>
+        </div>
+        <div className="row">
+          <Seg
+            value={filter}
+            onChange={setFilter}
+            options={[['all', '全部'], ...projects.slice(0, 4).map((p) => [p.id, p.name] as const), ['bug', '只看 Bug']]}
+          />
+        </div>
+      </div>
+      <div className="board">
+        {STAGES.map((s) => {
+          const items = list.filter((t) => t.status === s.id);
+          const hint = drag && drag.status !== s.id ? (canMove(drag, s.id).ok ? 'can' : 'cannot') : '';
+          return (
+            <section
+              key={s.id}
+              className={`col ${s.mine ? 'mine' : ''} ${hint} ${over === s.id ? 'over' : ''}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setOver(s.id);
+              }}
+              onDragLeave={() => setOver((o) => (o === s.id ? null : o))}
+              onDrop={(e) => {
+                e.preventDefault();
+                setOver(null);
+                if (drag) void move(drag, s.id);
+                setDrag(null);
+              }}
+            >
+              <header className="col-h">
+                <span className="col-num">{s.num}</span>
+                <b>{s.name}</b>
+                <span className="col-n">{items.length}</span>
+                {s.mine && items.length > 0 && <span className="col-flag">等你</span>}
+              </header>
+              <div className="col-b">
+                {items.length === 0 && <div className="col-empty">{s.hint}</div>}
+                {items.map((t) => (
+                  <a
+                    key={t.id}
+                    className={`tcard p-${t.priority} ${drag?.id === t.id ? 'dragging' : ''}`}
+                    draggable
+                    href={`#/ticket/${t.key}`}
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = 'move';
+                      setDrag(t);
+                    }}
+                    onDragEnd={() => {
+                      setDrag(null);
+                      setOver(null);
+                    }}
+                  >
+                    <div className="tcard-top">
+                      <Stamp type={t.type} />
+                      <span className="key">{t.key}</span>
+                      {t.tasks_running > 0 && (
+                        <span className="live">
+                          <Ripple />
+                        </span>
+                      )}
+                      <span className="grow" />
+                      {t.due_date && (
+                        <span className="due">
+                          <Icon name="clock" size={11} />
+                          {t.due_date.slice(5)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="tcard-title">{t.title}</div>
+                    <div className="tcard-meta">
+                      {t.projects.map((p) => (
+                        <span key={p.project_id} className="tag line">
+                          {projectName(p.project_id)}
+                        </span>
+                      ))}
+                    </div>
+                    {t.tasks_total > 0 && (
+                      <div className="tcard-foot">
+                        <TaskChips t={t} />
+                      </div>
+                    )}
+                  </a>
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+      <div className="board-hint">
+        <Icon name="drag" size={12} />
+        拖动卡片到另一列即尝试流转；不合法的流转会说明原因。Bug 可从「草稿」直接拖到「开发中」。
+      </div>
+    </div>
+  );
+}

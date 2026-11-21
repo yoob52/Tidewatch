@@ -1,5 +1,7 @@
-//! 演示 Agent：按 Claude Code 的 stream-json 格式输出，在当前目录做一个小改动。
-//! 不联网、不需要账号；用于走通流程和自动化测试。
+//! 演示 Agent 的进程体：按 Claude Code 的 stream-json 格式输出，在当前目录做一个小改动。
+//! 不联网、不需要账号；用于走通流程和自动化测试。`twctl mock-agent` 和桌面应用自身都能充当它。
+//!
+//! 提示词里的标记可以改变行为（测试用）：`[mock:steps=5]`、`[mock:delay=800]`、`[mock:fail]`。
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -24,13 +26,27 @@ fn assistant(session: &str, content: Value) {
     );
 }
 
-pub fn run(args: MockArgs) -> i32 {
+/// 提示词中 `[mock:name=值]` 的值。
+fn marker(prompt: &str, name: &str) -> Option<u64> {
+    let tag = format!("[mock:{name}=");
+    let rest = &prompt[prompt.find(&tag)? + tag.len()..];
+    rest[..rest.find(']')?].trim().parse().ok()
+}
+
+pub fn run(mut args: MockArgs) -> i32 {
     let mut prompt = String::new();
     let _ = std::io::stdin().read_to_string(&mut prompt);
+    if let Some(n) = marker(&prompt, "steps") {
+        args.steps = n as u32;
+    }
+    if let Some(n) = marker(&prompt, "delay") {
+        args.delay_ms = n;
+    }
+    let fail = prompt.contains("[mock:fail]");
     let session = args
         .resume
         .clone()
-        .unwrap_or_else(|| format!("mock-{}", tidewatch_core::util::new_id().to_lowercase()));
+        .unwrap_or_else(|| format!("mock-{}", crate::util::new_id().to_lowercase()));
     let cwd = std::env::current_dir().unwrap_or_default();
     let pause = || std::thread::sleep(Duration::from_millis(args.delay_ms));
     let first_line = prompt
@@ -83,6 +99,15 @@ pub fn run(args: MockArgs) -> i32 {
         );
     }
     pause();
+    if fail {
+        let msg = "演示 Agent 按提示词中的 [mock:fail] 标记失败。";
+        emit(
+            json!({"type":"result","subtype":"error_during_execution","is_error":true,"session_id":session,
+            "num_turns":args.steps+1,"result":msg,"total_cost_usd":0.0,
+            "usage":{"input_tokens":120,"output_tokens":20,"cache_read_input_tokens":0}}),
+        );
+        return 1;
+    }
     let summary = if read_only {
         "只读检查完成，没有修改文件。".to_string()
     } else {
@@ -96,4 +121,17 @@ pub fn run(args: MockArgs) -> i32 {
         "usage":{"input_tokens":chars/2+120,"output_tokens":80+40*args.steps as u64,"cache_read_input_tokens":0}}),
     );
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::marker;
+
+    #[test]
+    fn reads_prompt_markers() {
+        assert_eq!(marker("修一下 [mock:steps=5] 谢谢", "steps"), Some(5));
+        assert_eq!(marker("[mock:delay=800]", "delay"), Some(800));
+        assert_eq!(marker("[mock:steps=x]", "steps"), None);
+        assert_eq!(marker("没有标记", "steps"), None);
+    }
 }

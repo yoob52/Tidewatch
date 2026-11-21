@@ -17,3 +17,5 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tidewatch-core = { path = "../crates/tidewatch-core" }
+tauri-plugin-notification = "2"
+tauri-plugin-dialog = "2"

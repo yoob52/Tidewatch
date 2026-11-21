@@ -1,5 +1,5 @@
 //! twctl：观澜命令行。M0 技术验证的入口，也随桌面应用分发（演示 Agent）。
-mod mock_agent;
+use tidewatch_core::agent::mock_process as mock_agent;
 
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};

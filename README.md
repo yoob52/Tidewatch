@@ -8,7 +8,7 @@
 
 ## 当前状态
 
-🚧 **开发中**。M0 技术验证已落地（Tauri 2 壳 + React + SQLite、两个 Agent 的适配器、进程树停止、worktree、命令行演示），后续阶段见 [路线图](docs/06-roadmap/roadmap.md)。
+🚧 **开发中**。M0 技术验证和 M1 MVP 已落地：项目、工单与看板、Provider、子任务在独立 worktree 里交给 Agent 运行（实时日志、停止 / 恢复）、自动提交与检查、Diff 验收、合并、统计。AI 预审与自动拆分在 M2，见 [路线图](docs/06-roadmap/roadmap.md)。
 
 ## 开发
 
@@ -16,7 +16,7 @@
 
 | 路径 | 内容 |
 | --- | --- |
-| `crates/tidewatch-core` | Rust 核心（不依赖 Tauri）：SQLite 迁移、Agent 适配器（Claude Code / Codex / 演示 Agent）、进程树、git worktree、Provider 注入 |
+| `crates/tidewatch-core` | Rust 核心（不依赖 Tauri）：SQLite 迁移与各表的读写（`store/`）、工作流规则、执行引擎（`engine.rs`：排队、并发、worktree、运行、提交、检查、合并）、Agent 适配器（Claude Code / Codex / 演示 Agent）、进程树、Provider 注入、密钥存放 |
 | `crates/twctl` | 命令行：`doctor`、`run`、`plan`、`demo`、`worktree`，以及内置的演示 Agent |
 | `src-tauri` | Tauri 2 桌面壳，把核心暴露成命令 |
 | `src` | React + TypeScript 前端，样式沿用 `prototype-v2/` |
@@ -27,6 +27,8 @@ npm run tauri dev          # 启动桌面应用（开发）
 npm run tauri build        # 打包（Windows 上产出 NSIS 安装包）
 cargo test -p tidewatch-core -p twctl
 ```
+
+没有 Claude Code / Codex 账号也能试：在「设置」里把默认 Agent 选成「演示 Agent」，它会在 worktree 里写一个 `TIDEWATCH_DEMO.md`。开发时可以用环境变量 `TIDEWATCH_DATA_DIR` 把数据库和 worktree 放到别的目录。
 
 命令行演示（M0）：在一个 git 仓库里建 worktree，让 Agent 做小改动，中途停止再续接，提交后看 diff 并清理。
 

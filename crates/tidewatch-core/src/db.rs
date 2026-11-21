@@ -3,7 +3,22 @@ use crate::Result;
 pub use rusqlite::Connection;
 use std::path::Path;
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_m1.sql"),
+];
+
+/// 多线程共用的连接：调度线程、运行线程和界面命令都经它读写。
+pub type Db = std::sync::Arc<std::sync::Mutex<Connection>>;
+
+pub fn shared(conn: Connection) -> Db {
+    std::sync::Arc::new(std::sync::Mutex::new(conn))
+}
+
+/// 取锁；持锁线程 panic 过也继续用（SQLite 事务自身保证一致性）。
+pub fn lock(db: &Db) -> std::sync::MutexGuard<'_, Connection> {
+    db.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
