@@ -191,3 +191,29 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"done","ses
     );
     assert_eq!(out.summary, "done");
 }
+
+#[test]
+fn raw_log_write_failure_is_reported() {
+    let _serial = serial();
+    if !Path::new("/dev/full").exists() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bin = script(
+        dir.path(),
+        r#"echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"s-4"}'"#,
+    );
+    let opts = RunOptions {
+        raw_log: Some("/dev/full".into()),
+        ..Default::default()
+    };
+    let out = run_agent(
+        adapter(AgentKind::ClaudeCode).as_ref(),
+        &spec(dir.path(), bin),
+        &opts,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(out.succeeded(), "日志失败不影响 Agent 结果");
+    assert!(out.raw_log_error.is_some());
+}

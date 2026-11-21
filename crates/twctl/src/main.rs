@@ -290,6 +290,9 @@ fn run_once(
             .map(|c| format!(" · ${c:.4}"))
             .unwrap_or_default()
     );
+    if let Some(e) = &outcome.raw_log_error {
+        eprintln!("警告：原始日志写入失败，日志不完整：{e}");
+    }
     if !outcome.succeeded() && !outcome.stopped && !outcome.stderr_tail.is_empty() {
         eprintln!("{}", outcome.stderr_tail);
     }

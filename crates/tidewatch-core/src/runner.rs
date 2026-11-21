@@ -38,6 +38,8 @@ pub struct RunOutcome {
     pub summary: String,
     pub usage: Usage,
     pub stderr_tail: String,
+    /// 原始日志写入失败（磁盘满等）时的错误；此后的输出不再写入日志。
+    pub raw_log_error: Option<String>,
     pub duration_ms: u64,
 }
 
@@ -145,7 +147,11 @@ pub fn run_agent(
         match msg {
             Ok(Msg::Out(line)) => {
                 if let Some(f) = raw.as_mut() {
-                    let _ = writeln!(f, "{line}");
+                    if let Err(e) = writeln!(f, "{line}") {
+                        // 日志写不进去不该打断 Agent，但要让调用方知道日志不完整
+                        outcome.raw_log_error = Some(e.to_string());
+                        raw = None;
+                    }
                 }
                 for ev in parser.parse_line(&line) {
                     match &ev {
