@@ -1097,8 +1097,30 @@ fn change_after_finalize_runs_impact_analysis_and_reworks_affected_tasks() {
         f.engine.start_development(&ticket).is_err(),
         "影响分析没确认前不能开始"
     );
+    // 新增的子任务有问题时整个确认失败，已有子任务不动
+    let bad = reviews::TaskDraft {
+        kind: "backend".into(),
+        project: "不存在的项目".into(),
+        title: "多出来的".into(),
+        ..Default::default()
+    };
+    assert!(f
+        .engine
+        .apply_impact(&ticket, impacts.clone(), vec![bad])
+        .is_err());
+    assert_eq!(f.task(&be).status, "review");
+    assert!(tasks::artifact(&lock(f.db()), &be, "api_doc")
+        .unwrap()
+        .is_some());
+
     f.engine.apply_impact(&ticket, impacts, vec![]).unwrap();
     assert_eq!(f.task(&be).status, "changes_requested");
+    assert!(
+        tasks::artifact(&lock(f.db()), &be, "api_doc")
+            .unwrap()
+            .is_none(),
+        "需求变了，旧的接口文档作废"
+    );
     let t = f.ticket(&ticket);
     assert_eq!((t.change_from_version_id, t.change_reason), (None, None));
 
@@ -1106,17 +1128,149 @@ fn change_after_finalize_runs_impact_analysis_and_reworks_affected_tasks() {
     let started = f.engine.start_development(&ticket).unwrap();
     assert_eq!(
         started.len(),
-        2,
-        "后端（变更）和前端（之前打回的）都重新入队"
+        1,
+        "只有后端（变更）入队；前端（之前打回的）等后端重新给出接口文档"
     );
-    let be_run = started
-        .iter()
-        .find(|r| r.task_id.as_deref() == Some(be.as_str()))
-        .unwrap();
+    let be_run = &started[0];
+    assert_eq!(be_run.task_id.as_deref(), Some(be.as_str()));
     assert!(be_run.prompt.contains("还要支持 Excel") && be_run.prompt.contains("更新接口文档"));
     assert_eq!(be_run.number, 2);
+    assert_eq!(f.task(&fe).status, "changes_requested");
+    f.wait_for("后端返工完后前端自动入队", || {
+        runs::list_for_task(&lock(f.db()), &fe).unwrap().len() == 2
+    });
+    assert!(
+        !runs::ACTIVE.contains(&f.run(&be_run.id).status.as_str())
+            || tasks::artifact(&lock(f.db()), &be, "api_doc")
+                .unwrap()
+                .is_some(),
+        "前端入队时，后端要么已经返工完，要么已经写出新文档"
+    );
     f.wait_idle(&ticket);
     assert_eq!(f.ticket_status(&ticket), "acceptance");
+}
+
+#[test]
+fn split_with_a_dependency_cycle_creates_nothing() {
+    let f = fixture(2, None);
+    let (ticket, web) = f.mixed("环", "## 背景\n随便。\n");
+    {
+        let mut conn = lock(f.db());
+        tickets::set_criteria(&conn, &ticket, vec!["能用".into()]).unwrap();
+        tickets::transition(&mut conn, &ticket, "ai_review").unwrap();
+        tickets::transition(&mut conn, &ticket, "human_review").unwrap();
+    }
+    f.engine.finalize(&ticket, false).unwrap();
+    let mut drafts = f.be_fe_drafts(&web, "接口");
+    drafts[0].depends_on = vec!["T2".into()];
+    drafts.insert(
+        0,
+        reviews::TaskDraft {
+            r#ref: "T0".into(),
+            kind: "doc".into(),
+            project: f.project_id.clone(),
+            title: "和环无关的文档".into(),
+            ..Default::default()
+        },
+    );
+    let err = f.engine.apply_split(&ticket, drafts).unwrap_err();
+    assert!(err.to_string().contains("环"), "{err}");
+    assert!(
+        tasks::list_for_ticket(&lock(f.db()), &ticket)
+            .unwrap()
+            .is_empty(),
+        "有环时一个子任务都不该建，否则改完重试会重复"
+    );
+}
+
+#[test]
+fn start_development_queues_reworked_dependents_after_their_prerequisite() {
+    let f = fixture(2, None);
+    let (ticket, first) = f.bug("先后", "x [mock:steps=1] [mock:delay=50]", "medium");
+    let second = tasks::create(
+        &mut lock(f.db()),
+        tasks::TaskInput {
+            ticket_id: ticket.clone(),
+            kind: "bug".into(),
+            project_id: f.project_id.clone(),
+            title: "后续".into(),
+            depends_on: vec![first.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .id;
+    let run = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+    f.wait_for("后续自动入队", || {
+        !runs::list_for_task(&lock(f.db()), &second)
+            .unwrap()
+            .is_empty()
+    });
+    f.wait_idle(&ticket);
+    // 两个都打回：后续要等前一个返工完
+    f.engine.reject_task(&second, "跟着改").unwrap();
+    f.engine.reject_task(&first, "还差一步").unwrap();
+
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].task_id.as_deref(), Some(first.as_str()));
+    f.wait_for("前一个返工完后，后续自动入队", || {
+        runs::list_for_task(&lock(f.db()), &second).unwrap().len() == 2
+    });
+    assert_eq!(f.run(&started[0].id).status, "succeeded");
+    f.wait_idle(&ticket);
+    assert_eq!(f.task(&second).status, "review");
+}
+
+#[test]
+fn full_auto_tasks_are_never_started_without_the_user() {
+    let f = fixture(2, None);
+    let (ticket, first) = f.bug("权限", "x [mock:steps=1] [mock:delay=50]", "medium");
+    let make = |title: &str, depends_on: Vec<String>| {
+        tasks::create(
+            &mut lock(f.db()),
+            tasks::TaskInput {
+                ticket_id: ticket.clone(),
+                kind: "bug".into(),
+                project_id: f.project_id.clone(),
+                title: title.into(),
+                permission_profile: Some("full_auto".into()),
+                depends_on,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id
+    };
+    let unattended = make("不经确认执行命令", vec![]);
+    let dependent = make("依赖满足后", vec![first.clone()]);
+    // 先让工单进入开发中
+    let run = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+    assert_eq!(f.task(&dependent).status, "pending", "依赖满足，已解锁");
+
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert!(started.is_empty(), "批量开始不带上 full_auto 的子任务");
+    f.wait_idle(&ticket);
+    for id in [&unattended, &dependent] {
+        assert!(runs::list_for_task(&lock(f.db()), id).unwrap().is_empty());
+        assert_eq!(f.task(id).status, "pending");
+    }
+    // 用户自己点开始（界面在这一步弹确认）仍然可以
+    let run = f
+        .engine
+        .start_task(&unattended, StartOptions::default())
+        .unwrap();
+    assert_eq!(run.permission.as_deref(), Some("full_auto"));
+    f.engine.stop_run(&run.id).unwrap();
+    f.wait_done(&run.id);
 }
 
 #[test]

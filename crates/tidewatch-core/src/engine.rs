@@ -734,6 +734,14 @@ fn handoff_from_last_run(conn: &rusqlite::Connection, task: &Task) -> Result<Opt
     }))
 }
 
+/// 这个子任务按现在的配置会以 full_auto 运行：每次开始都要用户确认，不能由系统自动入队。
+pub(crate) fn needs_confirmation(task: &Task, default_permission: &str) -> bool {
+    first([&task.permission_profile])
+        .as_deref()
+        .unwrap_or(default_permission)
+        == "full_auto"
+}
+
 const MAX_API_DOC_BYTES: usize = 60 * 1024;
 
 /// 依赖的子任务产出的接口文档全文（前端子任务的 Prompt 用）。文档还在对方的 worktree 里就读文件，
@@ -899,6 +907,7 @@ impl Inner {
                 },
             )?;
             tasks::set_status(&tx, &task.id, "queued")?;
+            tasks::set_start_when_ready(&tx, &task.id, false)?;
             tasks::refresh_blocked(&tx, &ticket.id)?;
             if let Some(h) = &plan.handoff {
                 tx.execute(
@@ -1112,6 +1121,9 @@ impl Inner {
             Some(run.id.clone()),
         );
         self.auto_start(&unblocked);
+        if let Some(ticket_id) = &run.ticket_id {
+            self.start_deferred(ticket_id);
+        }
         self.emit(EngineEvent::RunFinished {
             run_id: run.id.clone(),
             task_id,
@@ -1164,6 +1176,12 @@ impl Inner {
         let doc_file = worktree.join(&doc_rel);
         let mut doc_known = task.kind != "backend"
             || tasks::artifact(&lock(&self.db), &task.id, "api_doc")?.is_some();
+        // 返工时 worktree 里可能留着上一版文档（需求变更后已作废）：内容变了才算新文档
+        let doc_before = if doc_known {
+            None
+        } else {
+            std::fs::read(&doc_file).ok()
+        };
         let mut last_check = Instant::now();
         let mut last_size = 0u64;
         let mut watch_doc = || {
@@ -1173,7 +1191,10 @@ impl Inner {
             last_check = Instant::now();
             let size = std::fs::metadata(&doc_file).map(|m| m.len()).unwrap_or(0);
             // 连续两次大小不变才算写完
-            if size > 0 && size == last_size {
+            if size > 0
+                && size == last_size
+                && (doc_before.is_none() || std::fs::read(&doc_file).ok() != doc_before)
+            {
                 doc_known = true;
                 self.api_doc_ready(&task, &ticket, &doc_rel, None);
             }
@@ -1309,6 +1330,7 @@ impl Inner {
                     unblocked: unblocked.len(),
                 });
                 self.auto_start(&unblocked);
+                self.start_deferred(&ticket.id);
             }
             Ok(None) => {}
             Err(e) => eprintln!("记录接口文档失败：{e}"),
@@ -1327,16 +1349,36 @@ impl Inner {
             return;
         }
         for id in task_ids {
-            let developing = (|| -> Result<bool> {
+            let startable = (|| -> Result<bool> {
                 let conn = lock(&self.db);
                 let task = tasks::get(&conn, id)?;
-                Ok(tickets::get(&conn, &task.ticket_id)?.status == "developing")
+                // full_auto 每次开始都要用户确认，不自动入队
+                let confirm = needs_confirmation(&task, &settings::get(&conn)?.default_permission);
+                Ok(!confirm && tickets::get(&conn, &task.ticket_id)?.status == "developing")
             })()
             .unwrap_or(false);
-            if !developing {
+            if !startable {
                 continue;
             }
             if let Err(e) = self.enqueue_task(id, StartOptions::default()) {
+                eprintln!("自动开始子任务 {id} 失败：{e}");
+            }
+        }
+    }
+
+    /// "开始开发"时依赖还没满足的返工子任务：依赖满足了就入队。
+    /// 这是用户点过"开始开发"的延续，不受"依赖满足后自动开始"开关影响。
+    pub(crate) fn start_deferred(&self, ticket_id: &str) {
+        let ready = (|| -> Result<Vec<String>> {
+            let conn = lock(&self.db);
+            if tickets::get(&conn, ticket_id)?.status != "developing" {
+                return Ok(vec![]);
+            }
+            tasks::ready_deferred(&conn, ticket_id)
+        })()
+        .unwrap_or_default();
+        for id in ready {
+            if let Err(e) = self.enqueue_task(&id, StartOptions::default()) {
                 eprintln!("自动开始子任务 {id} 失败：{e}");
             }
         }

@@ -447,10 +447,25 @@ impl Engine {
                 })
                 .collect::<Result<_>>()?;
             let reason = ticket.change_reason.clone().unwrap_or_default();
-            let mut follow_ups = vec![];
+            // 已合并的子任务 worktree 已清理，另开一个子任务做增量
+            let mut follow_ups: Vec<TaskDraft> = rework
+                .iter()
+                .filter(|(task, _)| task.status == "merged")
+                .map(|(task, instruction)| TaskDraft {
+                    r#ref: format!("follow-{}", task.id),
+                    kind: task.kind.clone(),
+                    project: task.project_id.clone(),
+                    title: format!("变更追加：{}", task.title),
+                    spec: instruction.clone(),
+                    ..Default::default()
+                })
+                .collect();
+            follow_ups.extend(new_tasks);
+            // 新子任务先整体校验，再动已有子任务：校验不过时什么都不改
+            let plan = plan_drafts(&conn, &ticket, &follow_ups)?;
             for (task, instruction) in &rework {
                 match task.status.as_str() {
-                    "cancelled" => {}
+                    "cancelled" | "merged" => {}
                     // 还没开始：说明里补上变更，首轮就按新需求做
                     "pending" | "blocked" => {
                         conn.execute(
@@ -465,18 +480,11 @@ impl Engine {
                             ],
                         )?;
                     }
-                    // 已合并：worktree 已清理，另开一个子任务做增量
-                    "merged" => follow_ups.push(TaskDraft {
-                        r#ref: format!("follow-{}", task.id),
-                        kind: task.kind.clone(),
-                        project: task.project_id.clone(),
-                        title: format!("变更追加：{}", task.title),
-                        spec: instruction.clone(),
-                        ..Default::default()
-                    }),
                     // 做过了：在原 worktree 里增量返工
                     _ => {
                         tasks::set_status(&conn, &task.id, "changes_requested")?;
+                        // 需求变了，旧的接口文档不再算数：等它的子任务要等返工重新写出文档
+                        tasks::remove_artifact(&conn, &task.id, "api_doc")?;
                         add_timeline(
                             &conn,
                             &ticket.id,
@@ -491,10 +499,7 @@ impl Engine {
                     }
                 }
             }
-            follow_ups.extend(new_tasks);
-            if !follow_ups.is_empty() {
-                create_drafts(&mut conn, &ticket, &follow_ups)?;
-            }
+            create_planned(&mut conn, &ticket, &follow_ups, &plan)?;
             tasks::refresh_blocked(&conn, &ticket.id)?;
             tickets::clear_change(&conn, &ticket.id)?;
             if let Some(p) = reviews::latest_proposal(&conn, &ticket.id, "impact")? {
@@ -518,6 +523,7 @@ impl Engine {
     }
 
     /// 开始开发：能开始的子任务（待开始、已打回）全部入队；等依赖的在依赖满足后自动入队。
+    /// 权限是 full_auto 的子任务不在这里入队：它每次开始都要用户单独确认。
     pub fn start_development(&self, ticket_id: &str) -> Result<Vec<Run>> {
         let startable: Vec<String> = {
             let mut conn = lock(&self.inner.db);
@@ -535,17 +541,34 @@ impl Engine {
                     "还没有子任务。先确认拆分建议，或手动添加子任务。",
                 ));
             }
-            let startable: Vec<String> = all
+            let default_permission = settings::get(&conn)?.default_permission;
+            let mut startable: Vec<String> = vec![];
+            let mut waiting = 0;
+            let mut deferred = false;
+            for t in all
                 .iter()
                 .filter(|t| matches!(t.status.as_str(), "pending" | "changes_requested"))
-                .map(|t| t.id.clone())
-                .collect();
-            if startable.is_empty() && ticket.status == "finalized" {
+            {
+                if super::needs_confirmation(t, &default_permission) {
+                    waiting += 1;
+                } else if tasks::unmet_dependency(&conn, t)?.is_some() {
+                    // 返工的子任务还在等它依赖的那个返工完：依赖满足后再入队
+                    tasks::set_start_when_ready(&conn, &t.id, true)?;
+                    waiting += 1;
+                    deferred = true;
+                } else {
+                    startable.push(t.id.clone());
+                }
+            }
+            if startable.is_empty() && waiting == 0 && ticket.status == "finalized" {
                 // 变更没有影响到任何子任务：直接回到开发 / 验收
                 tickets::transition(&mut conn, &ticket.id, "developing")?;
                 if workflow::all_tasks_ready_for_acceptance(all.iter().map(|t| t.status.as_str())) {
                     tickets::transition(&mut conn, &ticket.id, "acceptance")?;
                 }
+            } else if startable.is_empty() && deferred && ticket.status == "finalized" {
+                // 只有等依赖的返工：工单先回到开发中，依赖满足后它们才会自动入队
+                tickets::transition(&mut conn, &ticket.id, "developing")?;
             }
             startable
         };
@@ -567,6 +590,7 @@ impl Engine {
         let (ticket, active) = {
             let mut conn = lock(&self.inner.db);
             let ticket = tickets::request_change(&mut conn, ticket_id, reason)?;
+            tasks::clear_start_when_ready(&conn, &ticket.id)?;
             // 按旧版需求生成、还没确认的建议作废
             conn.execute(
                 "UPDATE proposal SET status = 'discarded', updated_at = ?2
@@ -591,18 +615,33 @@ impl Engine {
     }
 }
 
+/// 校验过的一批子任务草稿：每个草稿落在哪个项目，以及依赖在前的创建顺序。
+struct DraftPlan {
+    project_ids: Vec<String>,
+    order: Vec<usize>,
+}
+
 /// 把建议里的子任务按依赖顺序建出来。`depends_on` 可以写同一批里的 ref，也可以写已有子任务的 id。
 fn create_drafts(
     conn: &mut rusqlite::Connection,
     ticket: &Ticket,
     drafts: &[TaskDraft],
 ) -> Result<Vec<Task>> {
+    let plan = plan_drafts(conn, ticket, drafts)?;
+    create_planned(conn, ticket, drafts, &plan)
+}
+
+/// 整体校验一批草稿（标题、类型、项目、依赖、有没有环），不写库：有问题时一个子任务都不建。
+fn plan_drafts(
+    conn: &rusqlite::Connection,
+    ticket: &Ticket,
+    drafts: &[TaskDraft],
+) -> Result<DraftPlan> {
     let all_projects = projects::list(conn)?;
     let existing: HashSet<String> = tasks::list_for_ticket(conn, &ticket.id)?
         .into_iter()
         .map(|t| t.id)
         .collect();
-    // 先整体校验，避免建到一半才发现问题
     let mut refs = HashSet::new();
     let mut project_ids = vec![];
     for (n, d) in drafts.iter().enumerate() {
@@ -616,6 +655,9 @@ fn create_drafts(
         }
         if !tasks::KINDS.contains(&d.kind.trim()) {
             return Err(Error::invalid(format!("{label}的类型不对：{}", d.kind)));
+        }
+        if let Some(agent) = d.agent.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+            AgentKind::parse(agent)?;
         }
         let wanted = d.project.trim();
         let project = all_projects
@@ -653,61 +695,77 @@ fn create_drafts(
         }
     }
     // 依赖在前
-    let mut created: Map<String, String> = Map::new();
-    let mut out: Vec<Option<Task>> = vec![None; drafts.len()];
-    while out.iter().any(Option::is_none) {
-        let mut progressed = false;
+    let mut placed: HashSet<&str> = HashSet::new();
+    let mut order: Vec<usize> = vec![];
+    while order.len() < drafts.len() {
+        let before = order.len();
         for (n, d) in drafts.iter().enumerate() {
-            if out[n].is_some() {
+            if order.contains(&n) {
                 continue;
             }
             let ready = d
                 .depends_on
                 .iter()
-                .all(|dep| created.contains_key(dep.trim()) || existing.contains(dep.trim()));
-            if !ready {
-                continue;
+                .all(|dep| placed.contains(dep.trim()) || existing.contains(dep.trim()));
+            if ready {
+                order.push(n);
+                if !d.r#ref.trim().is_empty() {
+                    placed.insert(d.r#ref.trim());
+                }
             }
-            let deps: Vec<String> = d
-                .depends_on
-                .iter()
-                .map(|dep| {
-                    created
-                        .get(dep.trim())
-                        .cloned()
-                        .unwrap_or(dep.trim().to_string())
-                })
-                .collect();
-            let task = tasks::create(
-                conn,
-                tasks::TaskInput {
-                    ticket_id: ticket.id.clone(),
-                    kind: d.kind.trim().into(),
-                    project_id: project_ids[n].clone(),
-                    title: d.title.trim().into(),
-                    spec_md: d.spec.clone(),
-                    acceptance_criteria: d.acceptance_criteria.clone(),
-                    agent: d.agent.clone(),
-                    api_doc_deps: if d.dependency_kind.as_deref() == Some("api_doc") {
-                        deps.clone()
-                    } else {
-                        vec![]
-                    },
-                    depends_on: deps,
-                    ..Default::default()
-                },
-            )?;
-            if !d.r#ref.trim().is_empty() {
-                created.insert(d.r#ref.trim().to_string(), task.id.clone());
-            }
-            out[n] = Some(task);
-            progressed = true;
         }
-        if !progressed {
+        if order.len() == before {
             return Err(Error::invalid(
                 "子任务之间的依赖成了环，请去掉其中一条依赖。",
             ));
         }
+    }
+    Ok(DraftPlan { project_ids, order })
+}
+
+fn create_planned(
+    conn: &mut rusqlite::Connection,
+    ticket: &Ticket,
+    drafts: &[TaskDraft],
+    plan: &DraftPlan,
+) -> Result<Vec<Task>> {
+    let mut created: Map<String, String> = Map::new();
+    let mut out: Vec<Option<Task>> = vec![None; drafts.len()];
+    for &n in &plan.order {
+        let d = &drafts[n];
+        let deps: Vec<String> = d
+            .depends_on
+            .iter()
+            .map(|dep| {
+                created
+                    .get(dep.trim())
+                    .cloned()
+                    .unwrap_or(dep.trim().to_string())
+            })
+            .collect();
+        let task = tasks::create(
+            conn,
+            tasks::TaskInput {
+                ticket_id: ticket.id.clone(),
+                kind: d.kind.trim().into(),
+                project_id: plan.project_ids[n].clone(),
+                title: d.title.trim().into(),
+                spec_md: d.spec.clone(),
+                acceptance_criteria: d.acceptance_criteria.clone(),
+                agent: d.agent.clone(),
+                api_doc_deps: if d.dependency_kind.as_deref() == Some("api_doc") {
+                    deps.clone()
+                } else {
+                    vec![]
+                },
+                depends_on: deps,
+                ..Default::default()
+            },
+        )?;
+        if !d.r#ref.trim().is_empty() {
+            created.insert(d.r#ref.trim().to_string(), task.id.clone());
+        }
+        out[n] = Some(task);
     }
     Ok(out.into_iter().flatten().collect())
 }

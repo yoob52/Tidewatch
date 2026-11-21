@@ -304,6 +304,51 @@ pub fn refresh_blocked(conn: &Connection, ticket_id: &str) -> Result<Vec<String>
     Ok(unblocked)
 }
 
+/// "开始开发"时这个返工子任务的依赖还没满足：记下来，依赖满足后自动入队。
+pub fn set_start_when_ready(conn: &Connection, id: &str, on: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE task SET start_when_ready = ?2 WHERE id = ?1",
+        rusqlite::params![id, on],
+    )?;
+    Ok(())
+}
+
+/// 这张工单不再等着自动开始任何子任务（发起了新的变更）。
+pub fn clear_start_when_ready(conn: &Connection, ticket_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE task SET start_when_ready = 0 WHERE ticket_id = ?1",
+        [ticket_id],
+    )?;
+    Ok(())
+}
+
+/// 记过"依赖满足后自动入队"、现在依赖已经满足的返工子任务。
+pub fn ready_deferred(conn: &Connection, ticket_id: &str) -> Result<Vec<String>> {
+    let mut st = conn.prepare(
+        "SELECT id FROM task WHERE ticket_id = ?1 AND start_when_ready = 1
+         AND status = 'changes_requested' ORDER BY created_at, id",
+    )?;
+    let ids = st
+        .query_map([ticket_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut ready = vec![];
+    for id in ids {
+        if unmet_dependency(conn, &get(conn, &id)?)?.is_none() {
+            ready.push(id);
+        }
+    }
+    Ok(ready)
+}
+
+/// 产物作废（需求变了，要等它重新产出）。
+pub fn remove_artifact(conn: &Connection, task_id: &str, kind: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM artifact WHERE task_id = ?1 AND kind = ?2",
+        [task_id, kind],
+    )?;
+    Ok(())
+}
+
 /// 记下子任务的产物；同一类已有记录时更新路径和提交。
 pub fn record_artifact(
     conn: &Connection,

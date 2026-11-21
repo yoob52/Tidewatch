@@ -504,7 +504,10 @@ export function TasksTab({ d, reload }: TabProps) {
     t.status === 'finalized' ? ([d.impact, d.split].find((x) => x && ['running', 'pending', 'failed'].includes(x.status)) ?? null) : null;
   const canAdd = ['developing', 'finalized', 'acceptance'].includes(t.status) && proposal?.status !== 'running';
   const live = d.tasks.filter((k) => k.status !== 'cancelled');
-  const startable = live.filter((k) => ['pending', 'changes_requested'].includes(k.status)).length;
+  const waitingStart = live.filter((k) => ['pending', 'changes_requested'].includes(k.status));
+  // full_auto 每次开始都要单独确认，"开始开发"不会带上它们
+  const needConfirm = waitingStart.filter((k) => k.permission_profile === 'full_auto').length;
+  const startable = waitingStart.length - needConfirm;
 
   const act = async (p: Promise<unknown>, ok: string) => {
     if ((await ui.attempt(p, ok)) !== undefined) await refresh();
@@ -519,13 +522,21 @@ export function TasksTab({ d, reload }: TabProps) {
             <Icon name="info" size={15} />
             <div className="grow">
               <b>PRD 已定稿，子任务已就绪。</b> 开始开发后，{startable} 个可以开始的子任务一起入队；等依赖的在依赖满足后自动开始。
+              {needConfirm > 0 && ` 另有 ${needConfirm} 个 full_auto 子任务不会自动开始，需要逐个点「开始」确认。`}
             </div>
             <button
               className="btn primary sm"
               onClick={async () => {
                 const runs = await ui.attempt(api.developmentStart(t.id));
                 if (runs) {
-                  ui.toast(runs.length ? `已入队 ${runs.length} 个子任务` : '没有需要运行的子任务，工单已进入下一阶段');
+                  const confirmHint = needConfirm ? `；${needConfirm} 个 full_auto 子任务需要逐个点「开始」确认` : '';
+                  ui.toast(
+                    runs.length
+                      ? `已入队 ${runs.length} 个子任务${confirmHint}`
+                      : needConfirm
+                        ? `没有自动入队的子任务${confirmHint}`
+                        : '没有可以马上开始的子任务',
+                  );
                   await refresh();
                 }
               }}
