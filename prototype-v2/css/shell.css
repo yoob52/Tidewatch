@@ -1,0 +1,81 @@
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font:13px/1.55 var(--font-sans);color:var(--ink);background:var(--paper);-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+a{color:inherit;text-decoration:none}
+input,textarea,select{font:inherit;color:inherit}
+svg{display:block;flex:none}
+::selection{background:color-mix(in srgb,var(--tide) 24%,transparent)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:10px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+
+.app{display:grid;grid-template-columns:208px minmax(0,1fr);height:100vh}
+
+/* 侧栏 */
+.side{background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:14px 10px 10px;min-height:0}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 8px 16px}
+.seal{width:32px;height:32px;background:var(--cinnabar);color:#FFF6EA;border-radius:4px;display:grid;place-items:center;font:700 11.5px/1.08 var(--font-serif);writing-mode:vertical-rl;letter-spacing:.5px;outline:1px solid rgba(255,246,234,.55);outline-offset:-4px}
+.brand b{font:700 18px/1.1 var(--font-serif);letter-spacing:2px;display:block}
+.brand small{font:500 9.5px/1 var(--font-mono);letter-spacing:1.6px;color:var(--ink-3);text-transform:uppercase}
+.nav-group{font-size:11px;color:var(--ink-3);letter-spacing:1px;padding:12px 10px 5px}
+.nav a{display:flex;align-items:center;gap:10px;height:32px;padding:0 10px;border-radius:var(--r);color:var(--ink-2);position:relative;border:1px solid transparent}
+.nav a:hover{background:color-mix(in srgb,var(--ink) 5%,transparent);color:var(--ink)}
+.nav a.on{background:var(--raised);border-color:var(--line);color:var(--ink);font-weight:600}
+.nav a.on::before{content:"";position:absolute;left:-11px;top:8px;bottom:8px;width:3px;background:var(--tide);border-radius:0 2px 2px 0}
+.nav a .n{margin-left:auto;font:500 11px var(--font-mono);color:var(--ink-3)}
+.nav a .n.live{color:var(--tide);display:flex;align-items:center;gap:5px}
+.side-foot{margin-top:auto;display:flex;flex-direction:column;gap:8px}
+
+/* 潮位：运行队列的水位计 */
+.gauge{border:1px solid var(--line);background:var(--surface);border-radius:var(--r-lg);overflow:hidden;display:block}
+.gauge-head{display:flex;justify-content:space-between;align-items:baseline;padding:9px 11px 0}
+.gauge-head span{font-size:11px;color:var(--ink-3);letter-spacing:1px}
+.gauge-head b{font:600 15px var(--font-mono)}
+.gauge-head b i{font-style:normal;color:var(--ink-3);font-weight:400}
+.gauge svg{width:100%;height:46px;margin-top:2px}
+.gauge .w1{fill:color-mix(in srgb,var(--tide) 26%,transparent);animation:drift 9s linear infinite}
+.gauge .w2{fill:color-mix(in srgb,var(--tide) 55%,transparent);animation:drift 6s linear infinite reverse}
+.gauge .cap{stroke:var(--line-2);stroke-dasharray:2 3}
+@keyframes drift{to{transform:translateX(-120px)}}
+.gauge-rows{padding:7px 11px 9px;border-top:1px solid var(--line);display:grid;gap:3px;font-size:11.5px;color:var(--ink-2)}
+.gauge-rows div{display:flex;justify-content:space-between}
+.gauge-rows b{font:500 11.5px var(--font-mono);color:var(--ink)}
+.env{display:flex;gap:10px;padding:2px 10px;font:500 10.5px var(--font-mono);color:var(--ink-3)}
+.env i{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--moss);margin-right:4px;vertical-align:1.5px}
+
+/* 顶栏 */
+.main{display:grid;grid-template-rows:48px minmax(0,1fr);min-width:0;min-height:0}
+.top{display:flex;align-items:center;gap:12px;padding:0 0 0 22px;border-bottom:1px solid var(--line);background:var(--surface)}
+.top h1{font:700 17px var(--font-serif);letter-spacing:.5px;white-space:nowrap}
+.top .crumb{color:var(--ink-3);font-size:12px;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.top .crumb a:hover{color:var(--ink)}
+.top .spacer{flex:1}
+.search{display:flex;align-items:center;gap:8px;height:30px;width:300px;padding:0 9px;border:1px solid var(--line);border-radius:var(--r);background:var(--paper);color:var(--ink-3);font-size:12.5px}
+.search:hover{border-color:var(--line-2)}
+.search kbd{margin-left:auto}
+.runchip{display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border-radius:var(--r);border:1px solid var(--line);font-size:12px;color:var(--ink-2)}
+.runchip b{font:600 12px var(--font-mono);color:var(--ink)}
+.runchip:hover{border-color:var(--tide)}
+.iconbtn{width:30px;height:30px;display:grid;place-items:center;border-radius:var(--r);color:var(--ink-2);position:relative}
+.iconbtn:hover{background:var(--wash);color:var(--ink)}
+.iconbtn .pip{position:absolute;top:5px;right:5px;width:7px;height:7px;border-radius:50%;background:var(--cinnabar);border:1.5px solid var(--surface)}
+.winctl{display:flex;height:100%;margin-left:6px;border-left:1px solid var(--line)}
+.winctl span{width:44px;display:grid;place-items:center;color:var(--ink-3)}
+.winctl span:hover{background:var(--wash)}
+.winctl span:last-child:hover{background:var(--cinnabar);color:#fff}
+
+.view{min-height:0;min-width:0;overflow:hidden;position:relative}
+.page{height:100%;overflow:auto;padding:20px 24px 28px}
+.page.flush{padding:0;display:flex;flex-direction:column;overflow:hidden}
+
+/* 脉冲点：有 Agent 在跑 */
+.pulse{width:7px;height:7px;border-radius:50%;background:var(--tide);position:relative;flex:none}
+.pulse::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1px solid var(--tide);animation:ring 1.8s ease-out infinite}
+@keyframes ring{from{transform:scale(.5);opacity:.9}to{transform:scale(1.3);opacity:0}}
+.ripple{display:inline-flex;gap:2px;align-items:flex-end;height:11px}
+.ripple i{width:2px;background:var(--tide);border-radius:1px;animation:bob 1.1s ease-in-out infinite}
+.ripple i:nth-child(1){height:5px}.ripple i:nth-child(2){height:10px;animation-delay:.15s}.ripple i:nth-child(3){height:7px;animation-delay:.3s}.ripple i:nth-child(4){height:4px;animation-delay:.45s}
+@keyframes bob{50%{transform:scaleY(.45)}}
+.ripple i{transform-origin:bottom}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
