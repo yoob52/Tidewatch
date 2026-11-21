@@ -160,7 +160,7 @@ fn build_spec(
 ) -> AnyResult<RunSpec> {
     let mut spec = RunSpec {
         prompt: prompt.to_string(),
-        cwd: cwd.canonicalize()?,
+        cwd: tidewatch_core::util::canonical(cwd)?,
         model: o.model.clone(),
         permission: PermissionMode::parse(&o.permission)?,
         resume_session: resume,
@@ -413,7 +413,7 @@ fn dispatch(cmd: Cmd) -> AnyResult<i32> {
 
 /// 同一个 worktree 里让每种 Agent 依次改一点东西：先跑一段后停止，再用会话 id 续接跑完。
 fn demo(repo: &Path, agents: &str, keep: bool, o: &AgentOpts) -> AnyResult<i32> {
-    let repo = repo.canonicalize()?;
+    let repo = tidewatch_core::util::canonical(repo)?;
     if !git::is_repo(&repo) {
         return Err(format!("{} 不是 git 仓库", repo.display()).into());
     }

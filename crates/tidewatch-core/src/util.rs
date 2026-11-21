@@ -21,6 +21,11 @@ pub fn mask_secret(s: &str) -> String {
     format!("{head}****{tail}")
 }
 
+/// 规范化路径。Windows 上 `std::fs::canonicalize` 会返回 `\\?\` 前缀的路径，git 和多数 CLI 不认，这里去掉它。
+pub fn canonical(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    dunce::canonicalize(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

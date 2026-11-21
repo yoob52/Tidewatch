@@ -54,6 +54,7 @@ enum Msg {
     Out(String),
     Err(String),
     OutClosed,
+    ErrClosed,
 }
 
 fn to_command(spec: &CommandSpec) -> Command {
@@ -110,6 +111,7 @@ pub fn run_agent(
                 return;
             }
         }
+        let _ = tx.send(Msg::ErrClosed);
     });
 
     let mut raw = match &opts.raw_log {
@@ -130,6 +132,7 @@ pub fn run_agent(
     let mut outcome = RunOutcome::default();
     let mut stderr_lines: Vec<String> = vec![];
     let mut out_closed = false;
+    let mut err_closed = false;
     let mut exited_at: Option<Instant> = None;
 
     loop {
@@ -166,8 +169,12 @@ pub fn run_agent(
                 }
             }
             Ok(Msg::OutClosed) => out_closed = true,
+            Ok(Msg::ErrClosed) => err_closed = true,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => out_closed = true,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                out_closed = true;
+                err_closed = true;
+            }
         }
 
         if opts.cancel.load(Ordering::SeqCst) && !outcome.stopped {
@@ -187,9 +194,9 @@ pub fn run_agent(
                 exited_at = Some(Instant::now());
             }
         }
-        // 进程已退出：等输出读完；若有脱离进程树的后代仍占着管道，最多再等 1 秒。
+        // 进程已退出：等 stdout 和 stderr 都读完；若有脱离进程树的后代仍占着管道，最多再等 1 秒。
         if let Some(t) = exited_at {
-            if out_closed || t.elapsed() > Duration::from_secs(1) {
+            if (out_closed && err_closed) || t.elapsed() > Duration::from_secs(1) {
                 break;
             }
         }

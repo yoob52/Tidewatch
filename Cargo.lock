@@ -3831,6 +3831,7 @@ name = "tidewatch-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dunce",
  "libc",
  "rusqlite",
  "serde",

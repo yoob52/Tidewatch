@@ -9,6 +9,13 @@ use tidewatch_core::agent::{adapter, AgentEvent, AgentKind, RunSpec};
 use tidewatch_core::process::pid_alive;
 use tidewatch_core::runner::{run_agent, RunOptions, RunnerEvent};
 
+/// 写完脚本马上执行时，别的线程若正好 fork，会短暂持有脚本的写句柄，exec 得到 ETXTBSY；所以这些用例串行跑。
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn script(dir: &Path, body: &str) -> PathBuf {
     let p = dir.join("fake-agent.sh");
     std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -28,6 +35,7 @@ fn spec(dir: &Path, bin: PathBuf) -> RunSpec {
 
 #[test]
 fn streams_events_and_writes_raw_log() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let bin = script(
         dir.path(),
@@ -64,6 +72,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","sessi
 
 #[test]
 fn cancel_kills_whole_tree() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let bin = script(
         dir.path(),
@@ -105,6 +114,7 @@ wait"#,
 
 #[test]
 fn timeout_and_failure_exit() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let slow = script(dir.path(), "sleep 300");
     let opts = RunOptions {
@@ -135,6 +145,7 @@ fn timeout_and_failure_exit() {
 
 #[test]
 fn missing_binary_is_reported() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let s = RunSpec {
         cwd: dir.path().into(),
