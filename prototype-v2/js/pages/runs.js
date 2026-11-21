@@ -25,7 +25,7 @@ function pageRuns(id){
     <aside class="rlist"><div class="rl-h"><span>进行中</span><i>${act.length}</i></div>${act.map(item).join('')}<div class="rl-h"><span>历史</span><i>${hist.length}</i></div>${hist.map(item).join('')}</aside>
     <section class="rmain">
       <header class="rhead"><div class="grow"><div class="row"><a class="key lnk" href="#/ticket/${r.ticket}">${r.ticket}</a><span class="tag line">${r.task}</span><span id="rstate">${runState(r)}</span><span class="mono dim">${r.id}</span><span class="tag line">${I('shield',11)}${r.perm}</span></div><h2>${esc(r.title)}</h2></div>
-        ${r.status==='running'?`<button class="btn danger" id="stop">${I('stop',14)}停止</button>`:r.status==='queued'?`<button class="btn" data-toast="演示：已移出队列">取消排队</button>`:`<button class="btn" id="resume">${I('resume',14)}${r.status==='done'?'继续追问':'恢复'}</button>`}
+        ${r.status==='running'?`<button class="btn danger" id="stop">${I('stop',14)}停止</button>`:r.status==='queued'?`<button class="btn" id="dequeue">取消排队</button>`:`<button class="btn" id="resume">${I('resume',14)}${r.status==='stopped'?'恢复':'继续追问'}</button>`}
         <button class="btn" id="append">${I('msg',14)}追加指令</button>
         <button class="btn ghost" data-toast="演示：切换为 stream-json 原始事件视图">${I('code',14)}原始日志</button>
         <button class="btn ghost" data-toast="演示：在资源管理器中打开 ${r.wt?esc(r.wt).replace(/\\/g,'\\\\'):''}">${I('folder',14)}打开 worktree</button></header>
@@ -35,8 +35,10 @@ function pageRuns(id){
     </section></div>`;
   const log=$('#rlog');log.scrollTop=log.scrollHeight;
   const ap=$('#append');ap.onclick=()=>promptBox('追加指令',r.status==='running'?'会先停止当前进程，再以 resume + 新指令继续同一会话。':'以 resume + 新指令继续同一会话。','例如：把即将过期的角标改成橙色',v=>{if(v)toast(`已追加指令，恢复会话 ${r.session.slice(0,8)}`)},'发送');
-  const st=$('#stop');if(st)st.onclick=()=>confirmBox('停止运行',`将结束 ${r.id} 的整个进程树。已有改动保留在 worktree，可稍后恢复原会话。`,'停止',()=>{r.status='stopped';r.now='已人工停止 · 可恢复';toast(`${r.id} 已停止`);route()});
-  const rs=$('#resume');if(rs)rs.onclick=()=>toast(`演示：基于 session ${r.session.slice(0,8)} 恢复`);
+  const st=$('#stop');if(st)st.onclick=()=>confirmBox('停止运行',`将结束 ${r.id} 的整个进程树。已有改动保留在 worktree，可稍后恢复原会话。`,'停止',()=>{r.status='stopped';r.now='已人工停止 · 可恢复';syncRun(r);promoteQueue();toast(`${r.id} 已停止`);route()});
+  const dq=$('#dequeue');if(dq)dq.onclick=()=>{r.status='stopped';r.now='已取消排队 · 可重新开始';syncRun(r);toast(`${r.id} 已移出队列`);route()};
+  const rs=$('#resume');if(rs)rs.onclick=()=>{if(r.status!=='stopped'){toast(`演示：基于 session ${r.session.slice(0,8)} 继续追问`);return}
+    const free=counts().running<state.limit;r.status=free?'running':'queued';r.now=free?`已恢复会话 ${r.session.slice(0,8)}`:`排队中 · 并发已满 ${state.limit}/${state.limit}`;syncRun(r);toast(free?`${r.id} 已恢复原会话`:`${r.id} 已入队，等待空闲并发`);route()};
   // 模拟实时：计时、Token 增长、日志逐条流入
   let n=0;
   runTimer=setInterval(()=>{
@@ -51,7 +53,7 @@ function pageRuns(id){
       ty.insertAdjacentHTML('beforebegin',logItem(e,true));
       const nx=LOG_LIVE[liveIdx];r.now=nx?(nx.k==='edit'?'编辑 '+nx.file:nx.k==='tool'?'运行 '+nx.arg:'思考中'):'自动测试中';
       $$(`[data-now="${r.id}"]`).forEach(el=>el.textContent=r.now);
-      if(liveIdx===LOG_LIVE.length){r.status='done';r.now='完成 · 等待验收';ty.remove();$('#rstate').innerHTML=runState(r);T('TW-39').sub[1][1]='review';TASKS39[1].status='review';TASKS39[1].statusName='待验收';toast('R-121 运行完成，TW-39 前端子任务待验收');setTimeout(()=>{if($('.runs'))route()},1500)}
+      if(liveIdx===LOG_LIVE.length){r.status='done';r.now='完成 · 测试 5 通过';ty.remove();$('#rstate').innerHTML=runState(r);Object.assign(TASKS39[1],{files:5,add:201,del:2,tests:'5 通过',dur:fmtDur(r.el).replace(':',' 分 ')+' 秒',cost:'$'+r.cost.toFixed(2)});syncRun(r);promoteQueue();toast('R-121 运行完成，TW-39 前端子任务待验收');setTimeout(()=>{if($('.runs'))route()},1500)}
       if(stick)log.scrollTop=log.scrollHeight;
     }
   },1000);

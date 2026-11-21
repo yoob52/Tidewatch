@@ -6,7 +6,7 @@
 .today p b{font:700 15px var(--font-serif);color:var(--cinnabar)}
 .today p a{color:var(--ink);border-bottom:1px solid var(--line-2)}
 .today p a:hover{border-color:var(--tide);color:var(--tide)}
-.board{flex:1;min-height:0;display:grid;grid-template-columns:repeat(7,minmax(168px,1fr));overflow-x:auto;padding:0 12px}
+.board{flex:1;min-height:0;display:grid;grid-template-columns:repeat(7,minmax(146px,1fr));overflow-x:auto;padding:0 12px}
 .col{display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px dashed var(--line);padding:0 6px}
 .col:last-child{border-right:0}
 .col-h{display:flex;align-items:center;gap:7px;padding:14px 6px 10px;position:relative}
@@ -112,7 +112,8 @@ code{font:500 .9em var(--font-mono);background:var(--wash);padding:1px 4px;borde
 .prose ul{padding-left:20px}
 .prose li{margin:2px 0}
 .prose .ins{background:var(--add-bg);border-left:3px solid var(--moss);padding:6px 10px;border-radius:0 var(--r) var(--r) 0}
-.prose.diffing>*:not(.ins):not(h4:last-of-type){opacity:.45}
+.prose li.ins{list-style-position:outside;margin:3px 0}
+.prose.diffing>*:not(.ins):not(ul),.prose.diffing li:not(.ins){opacity:.4}
 .vers{list-style:none;display:grid;gap:6px}
 .vers li{display:grid;grid-template-columns:34px 1fr;gap:8px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface)}
 .vers li.on{border-color:var(--tide);background:var(--tide-wash)}
@@ -174,6 +175,7 @@ mark.hot{outline:2px solid var(--ink);outline-offset:1px}
 .acc{flex:1;min-height:0;display:flex;flex-direction:column}
 .acc-bar{display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--line)}
 .acc-cols{flex:1;min-height:0;display:grid;grid-template-columns:210px minmax(0,1fr) 290px}
+@media(max-width:1360px){.acc-cols{grid-template-columns:168px minmax(0,1fr) 248px}}
 .ftree{border-right:1px solid var(--line);overflow:auto;padding:6px;background:var(--surface)}
 .ftree-h{font-size:11px;color:var(--ink-3);letter-spacing:1px;padding:6px 8px}
 .ftree a{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r);cursor:pointer;font-size:12px}

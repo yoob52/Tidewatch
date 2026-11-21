@@ -21,7 +21,7 @@ function pageBoard(){
   $('#view').innerHTML=`<div class="page flush board-page">
     <div class="today">
       <div class="today-l"><span class="today-date">十一月廿一 · 周六</span>
-        <p>有 <b>${review.length+acc.length}</b> 张工单在等你：<a href="#/ticket/TW-42/review">${review.length} 张待审核</a>，<a href="#/ticket/TW-37/accept">${acc.length} 张待验收</a>。另有 <a href="#/runs">3 个 Agent 正在运行</a>。</p></div>
+        <p>有 <b>${review.length+acc.length}</b> 张工单在等你：<a href="${review[0]?`#/ticket/${review[0].key}/review`:'#/tickets'}">${review.length} 张待审核</a>，<a href="${acc[0]?`#/ticket/${acc[0].key}/accept`:'#/tickets'}">${acc.length} 张待验收</a>。${counts().running?`另有 <a href="#/runs">${counts().running} 个 Agent 正在运行</a>。`:'当前没有 Agent 在运行。'}</p></div>
       <div class="row">
         <div class="seg" id="bf">${[['all','全部'],['shop-api','shop-api'],['shop-web','shop-web'],['bug','只看 Bug']].map(([k,n])=>`<button class="${f===k?'on':''}" data-f="${k}">${n}</button>`).join('')}</div>
         <button class="btn ghost" data-toast="演示：筛选条件（优先级、标签、截止日期）">${I('filter',14)}筛选</button>
@@ -48,8 +48,8 @@ function canMove(t,to){
   const label=(FLOW[from]||{})[to];
   if(!label)return{ok:false,why:`「${STAGE[from].name}」不能直接到「${STAGE[to].name}」。`+({draft:'草稿需要先提交预审。',ai_review:'请等待预审完成。',human_review:'需要先定稿。',finalized:'定稿后只能开始开发，或发起变更回到审核。',developing:'需要全部子任务完成后进入验收。',acceptance:'验收只能通过或打回。',done:'已完成的工单不能再流转。'}[from]||'')};
   if(from==='draft'&&to==='developing'&&t.type!=='bug')return{ok:false,why:'只有 Bug 可以走快速通道跳过 PRD 审核，需求工单请先提交预审。'};
-  if(from==='human_review'&&to==='finalized'&&t.key==='TW-42'&&ISSUES42.some(i=>i.sev==='blocker'&&i.state==='open'))return{ok:false,why:'还有未处理的阻塞问题，处理完才能定稿。',go:'#/ticket/TW-42/review'};
-  if(from==='developing'&&to==='acceptance'&&t.sub&&t.sub.some(([,s])=>['running','queued','blocked'].includes(s)))return{ok:false,why:'还有子任务没跑完，全部完成后会自动进入验收。'};
+  if(from==='human_review'&&to==='finalized'&&t.key==='TW-42'&&blockersLeft())return{ok:false,why:`还有 ${blockersLeft()} 个阻塞问题未处理（待确认的也算），处理完才能定稿。`,go:'#/ticket/TW-42/review'};
+  if(from==='developing'&&to==='acceptance'&&t.sub&&t.sub.some(([,s])=>['running','queued','blocked','stopped','changes'].includes(s)))return{ok:false,why:'还有子任务没跑完，全部完成后会自动进入验收。'};
   if(from==='acceptance'&&to==='done'&&t.sub&&t.sub.some(([,s])=>s!=='accepted'))return{ok:false,why:'还有子任务未验收通过，不能合并。',go:`#/ticket/${t.key}/accept`};
   return{ok:true,label};
 }
@@ -57,7 +57,8 @@ function tryMove(key,to){
   const t=T(key),r=canMove(t,to);
   if(r.silent)return;
   if(!r.ok){toast(`${key} 无法流转：${r.why}`);if(r.go)setTimeout(()=>location.hash=r.go,900);return}
-  const apply=()=>{t.status=to;t.updated='刚刚';if(to==='developing'&&!t.sub)t.sub=[[t.type==='bug'?'BUG':'BE','queued']];if(to==='ai_review')t.running=true;toast(`${key} → ${STAGE[to].name}（${r.label}）`);route()};
+  const apply=()=>{t.status=to;t.updated='刚刚';if(to==='developing'&&!t.sub)t.sub=[[t.type==='bug'?'BUG':'BE','queued']];if(to==='ai_review')t.running=true;if(to==='done'){t.sub=(t.sub||[]).map(([k])=>[k,'merged']);t.running=false}toast(`${key} → ${STAGE[to].name}（${r.label}）`);route()};
+  if(to==='finalized'&&key==='TW-42'){openFinalize();return}
   if(to==='finalized'||to==='done')confirmBox(to==='done'?'验收通过并合并':'定稿',to==='done'?`将 ${key} 的分支 squash 合并到 main，并清理 worktree。`:`定稿后 ${key} 的 PRD 将锁定，再修改需要「发起变更」。`,r.label,apply);
   else apply();
 }

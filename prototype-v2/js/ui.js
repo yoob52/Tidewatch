@@ -2,7 +2,7 @@
 const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const state={theme:localStorage.getItem('tw-theme')||'light',limit:3,boardFilter:'all',listFilter:'all',note:true};
+const state={theme:localStorage.getItem('tw-theme')||'light',limit:3,boardFilter:'all',listFilter:'all',note:true,seg:{},sw:{},num:{}};
 
 function toast(msg){const box=$('#toasts'),el=document.createElement('div');el.className='toast';el.textContent=msg;while(box.children.length>1)box.firstChild.remove();box.append(el);setTimeout(()=>el.remove(),3200)}
 function stamp(type,lg){const t=TYPES[type];return `<span class="stamp ${t.cls}${lg?' lg':''}" title="${t.name}">${t.ch}</span>`}
@@ -12,7 +12,7 @@ function agentGlyph(a){const g=AGENTS[a];return `<span class="agent" title="${g.
 const ripple='<span class="ripple"><i></i><i></i><i></i><i></i></span>';
 function fmtDur(s){const m=Math.floor(s/60),x=s%60;return `${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`}
 function fmtTok(n){return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(n)}
-const SUB={queued:['排队','dim'],blocked:['等依赖','dim'],running:['运行中','tide'],review:['待验收','cin'],accepted:['已通过','moss'],changes:['已打回','amber'],merged:['已合并','moss'],pending:['待开始','dim']};
+const SUB={stopped:['已停止','amber'],queued:['排队','dim'],blocked:['等依赖','dim'],running:['运行中','tide'],review:['待验收','cin'],accepted:['已通过','moss'],changes:['已打回','amber'],merged:['已合并','moss'],pending:['待开始','dim']};
 function subChips(t){
   if(!t.sub)return '';
   return t.sub.map(([k,s])=>{const[n,c]=SUB[s];
@@ -21,16 +21,18 @@ function subChips(t){
 }
 // 极简 Markdown：标题、列表、表格之外的段落、行内 code / 加粗
 function inline(s){return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')}
-function md(src,marks=[]){
+function md(src,marks=[],prev=null){ // prev：上一版正文，用来标出本版新增的行
   const out=[];let ul=false;
-  const hl=s=>{let h=inline(s);marks.forEach(m=>{const k=esc(m.loc);if(h.includes(k))h=h.replace(k,`<mark class="m-${m.sev} ${m.state!=='open'&&m.state!=='pending'?'closed':''}" data-issue="${m.id}">${k}<sup>${m.id.slice(2)}</sup></mark>`)});return h};
+  const old=prev===null?null:new Set(prev.split('\n'));
+  const hl=s=>{let h=inline(s);marks.forEach(m=>{const closed=m.state!=='open'&&m.state!=='pending',k=esc(m.state==='adopted'?m.after:m.loc);if(h.includes(k))h=h.replace(k,`<mark class="m-${m.sev} ${closed?'closed':''}" data-issue="${m.id}">${k}<sup>${m.id.slice(2)}</sup></mark>`)});return h};
   src.split('\n').forEach(l=>{
-    if(/^- /.test(l)){if(!ul){out.push('<ul>');ul=true}out.push('<li>'+hl(l.slice(2))+'</li>');return}
+    const c=old&&l.trim()&&!old.has(l)?' class="ins"':'';
+    if(/^- /.test(l)){if(!ul){out.push('<ul>');ul=true}out.push(`<li${c}>`+hl(l.slice(2))+'</li>');return}
     if(ul){out.push('</ul>');ul=false}
-    if(/^### /.test(l))out.push('<h4>'+hl(l.slice(4))+'</h4>');
-    else if(/^## /.test(l))out.push('<h3>'+hl(l.slice(3))+'</h3>');
-    else if(/^# /.test(l))out.push('<h2>'+hl(l.slice(2))+'</h2>');
-    else if(l.trim())out.push('<p>'+hl(l)+'</p>');
+    if(/^### /.test(l))out.push(`<h4${c}>`+hl(l.slice(4))+'</h4>');
+    else if(/^## /.test(l))out.push(`<h3${c}>`+hl(l.slice(3))+'</h3>');
+    else if(/^# /.test(l))out.push(`<h2${c}>`+hl(l.slice(2))+'</h2>');
+    else if(l.trim())out.push(`<p${c}>`+hl(l)+'</p>');
   });
   if(ul)out.push('</ul>');
   return out.join('');

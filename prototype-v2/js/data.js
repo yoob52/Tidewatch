@@ -98,7 +98,21 @@ const TICKETS=[
 const T=k=>TICKETS.find(t=>t.key===k);
 
 // ───── TW-42：人工审核中的工单 ─────
-const PRD42=`# 优惠券叠加规则与结算页展示
+const PRD42_V1=`优惠券叠加规则与结算页展示
+
+目前一笔订单只能用一张券。运营希望双十二前支持「店铺券 + 平台券」叠加，提升客单价。
+
+- 同一订单最多可使用 1 张店铺券和 1 张平台券。
+- 满减券与折扣券同时使用时，按合适的顺序计算优惠。
+- 叠加后订单实付金额不得低于 0.01 元。
+- 结算页新增「优惠明细」区域，分别列出每张券抵扣的金额。
+- 用户可以手动取消勾选某张券，价格实时刷新。
+- 系统默认帮用户选择最优组合。
+- 部分退款时，优惠金额按比例分摊到每件商品。
+
+订单表新增字段记录使用的优惠券。
+可以同时使用两张券下单成功。`;
+const PRD42_V2=`# 优惠券叠加规则与结算页展示
 
 ## 背景与目标
 目前一笔订单只能用一张券。运营希望双十二前支持「店铺券 + 平台券」叠加，提升客单价。
@@ -121,15 +135,26 @@ const PRD42=`# 优惠券叠加规则与结算页展示
 订单表新增字段记录使用的优惠券。
 
 ## 验收标准
-- 可以同时使用两张券下单成功。`;
+- 可以同时使用两张券下单成功。
+
+## 不做范围
+- 不处理 I-7（非功能：结算页新增「优惠明细」区域）：本期不做，券数量目前不超过 5 张`;
+// find / to：采纳时把 PRD 中的 find 行替换为 to；after：采纳后用于定位的短语
 const ISSUES42=[
- {id:'I-1',sev:'blocker',cat:'歧义',loc:'按合适的顺序计算优惠',problem:'「合适的顺序」没有定义。先满减后折扣与先折扣后满减，结果不同（例：300 元订单，满 200 减 30 + 9 折：243.00 对 240.00）。',q:'满减与折扣的计算顺序是什么？是否固定「先折扣、后满减」？',fix:'满减券与折扣券同时使用时，固定**先计算折扣券、再计算满减券**；满减门槛按折扣后的金额判断。',state:'open'},
- {id:'I-2',sev:'blocker',cat:'数据',loc:'订单表新增字段记录使用的优惠券',problem:'未给出字段名、类型与结构。现有 `t_order.coupon_id BIGINT` 只能存一张券，直接复用会与叠加冲突。',q:'',fix:'新增关联表 `t_order_coupon(order_id, coupon_id, coupon_type, discount_fen, created_at)`；`t_order.coupon_id` 保留只读，仅兼容历史订单。',state:'open',code:true},
- {id:'I-3',sev:'major',cat:'流程',loc:'系统默认帮用户选择最优组合',problem:'未定义「最优」：是实付最低，还是优先消耗快过期的券？两者冲突时如何取舍没有说明。',q:'最优组合以实付最低为准吗？金额相同时是否优先用先过期的券？',fix:'默认组合以**实付金额最低**为准；金额相同时优先使用**先过期**的券。',state:'open'},
- {id:'I-4',sev:'major',cat:'接口',loc:'价格实时刷新',problem:'需要一个试算接口，PRD 未提及。现有 `POST /orders/preview` 不接受多张券。',q:'',fix:'新增 `POST /api/checkout/price-preview`，入参为商品行与券 ID 列表，返回逐券抵扣明细与实付金额；前端勾选变化时防抖 300ms 调用。',state:'adopted'},
- {id:'I-5',sev:'minor',cat:'可测试性',loc:'可以同时使用两张券下单成功',problem:'验收标准只有一条，覆盖不到计算顺序、下限金额与退款分摊。',q:'',fix:'已起草 6 条可验证的验收标准，见「验收标准」。',state:'open'},
- {id:'I-6',sev:'minor',cat:'流程',loc:'优惠金额按比例分摊到每件商品',problem:'分摊出现除不尽时的尾差归属未定义。',q:'尾差计入最后一件商品可以吗？',fix:'按商品金额占比分摊到「分」，尾差计入金额最大的一件商品。',state:'pending'},
- {id:'I-7',sev:'suggestion',cat:'非功能',loc:'结算页新增「优惠明细」区域',problem:'未说明券数量很多时的展示方式。',q:'',fix:'可用券超过 5 张时折叠，显示「查看全部 N 张」。',state:'ignored',reason:'本期不做，券数量目前不超过 5 张'},
+ {id:'I-1',sev:'blocker',cat:'歧义',loc:'按合适的顺序计算优惠',problem:'「合适的顺序」没有定义。先满减后折扣与先折扣后满减，结果不同（例：300 元订单，满 200 减 30 + 9 折：243.00 对 240.00）。',q:'满减与折扣的计算顺序是什么？是否固定「先折扣、后满减」？',fix:'满减券与折扣券同时使用时，固定**先计算折扣券、再计算满减券**；满减门槛按折扣后的金额判断。',state:'open',
+  find:'- 满减券与折扣券同时使用时，按合适的顺序计算优惠。',to:'- 满减券与折扣券同时使用时，固定先计算折扣券、再计算满减券；满减门槛按折扣后的金额判断。',after:'固定先计算折扣券、再计算满减券'},
+ {id:'I-2',sev:'blocker',cat:'数据',loc:'订单表新增字段记录使用的优惠券',problem:'未给出字段名、类型与结构。现有 `t_order.coupon_id BIGINT` 只能存一张券，直接复用会与叠加冲突。',q:'',fix:'新增关联表 `t_order_coupon(order_id, coupon_id, coupon_type, discount_fen, created_at)`；`t_order.coupon_id` 保留只读，仅兼容历史订单。',state:'open',
+  find:'订单表新增字段记录使用的优惠券。',to:'新增关联表 `t_order_coupon(order_id, coupon_id, coupon_type, discount_fen, created_at)`，记录订单使用的每张券；`t_order.coupon_id` 保留只读，仅兼容历史订单。',after:'记录订单使用的每张券'},
+ {id:'I-3',sev:'major',cat:'流程',loc:'系统默认帮用户选择最优组合',problem:'未定义「最优」：是实付最低，还是优先消耗快过期的券？两者冲突时如何取舍没有说明。',q:'最优组合以实付最低为准吗？金额相同时是否优先用先过期的券？',fix:'默认组合以**实付金额最低**为准；金额相同时优先使用**先过期**的券。',state:'open',
+  find:'- 系统默认帮用户选择最优组合。',to:'- 系统默认选中实付金额最低的组合；金额相同时优先使用先过期的券。',after:'实付金额最低的组合'},
+ {id:'I-4',sev:'major',cat:'接口',loc:'价格实时刷新',problem:'需要一个试算接口，PRD 未提及。现有 `POST /orders/preview` 不接受多张券。',q:'',fix:'新增 `POST /api/checkout/price-preview`，入参为商品行与券 ID 列表，返回逐券抵扣明细与实付金额；前端勾选变化时防抖 300ms 调用。',state:'adopted',
+  find:'- 用户可以手动取消勾选某张券，价格实时刷新。',to:'- 用户可以手动取消勾选某张券，价格实时刷新：前端防抖 300ms 调用试算接口 `POST /api/checkout/price-preview`（入参为商品行与券 ID 列表），返回逐券抵扣明细与实付金额。',after:'价格实时刷新'},
+ {id:'I-5',sev:'minor',cat:'可测试性',loc:'可以同时使用两张券下单成功',problem:'验收标准只有一条，覆盖不到计算顺序、下限金额与退款分摊。',q:'',fix:'用下方起草的 6 条可验证的验收标准替换这一条。',state:'open',
+  find:'- 可以同时使用两张券下单成功。',to:null,after:'同时使用 1 张店铺券 + 1 张平台券'},
+ {id:'I-6',sev:'minor',cat:'流程',loc:'优惠金额按比例分摊到每件商品',problem:'分摊出现除不尽时的尾差归属未定义。',q:'尾差计入金额最大的一件商品可以吗？',fix:'按商品金额占比分摊到「分」，尾差计入金额最大的一件商品。',state:'pending',
+  find:'- 部分退款时，优惠金额按比例分摊到每件商品。',to:'- 部分退款时，优惠金额按商品金额占比分摊到「分」，尾差计入金额最大的一件商品。',after:'尾差计入金额最大的一件商品'},
+ {id:'I-7',sev:'suggestion',cat:'非功能',loc:'结算页新增「优惠明细」区域',problem:'未说明券数量很多时的展示方式。',q:'',fix:'可用券超过 5 张时折叠，显示「查看全部 N 张」。',state:'ignored',reason:'本期不做，券数量目前不超过 5 张',
+  find:'- 结算页新增「优惠明细」区域，分别列出每张券抵扣的金额。',to:'- 结算页新增「优惠明细」区域，分别列出每张券抵扣的金额；可用券超过 5 张时折叠，显示「查看全部 N 张」。',after:'可用券超过 5 张时折叠'},
 ];
 const AC42=[
  ['同一订单可同时使用 1 张店铺券 + 1 张平台券并下单成功',true],
@@ -139,11 +164,17 @@ const AC42=[
  ['默认选中实付最低的组合；金额相同时选先过期的券',false],
  ['部分退款时优惠按金额占比分摊，各商品分摊之和等于总优惠',false],
 ];
+ISSUES42.find(i=>i.id==='I-5').to=AC42.map(a=>'- '+a[0]).join('\n');
+// 版本从新到旧；每个版本带不可变的正文快照
 const VERSIONS42=[
- {v:3,who:'你',src:'采纳 AI 建议',note:'采纳 I-4：补充试算接口',time:'今天 14:02',cur:true},
- {v:2,who:'AI',src:'规整为标准结构',note:'按标准章节重排，未改动语义',time:'今天 13:41'},
- {v:1,who:'你',src:'导入 优惠券叠加PRD.md',note:'原始导入',time:'今天 13:38'},
+ {v:3,who:'你',src:'采纳 AI 建议',note:'采纳 I-4：补充试算接口',time:'今天 14:02',cur:true,text:PRD42_V2.replace(ISSUES42[3].find,ISSUES42[3].to)},
+ {v:2,who:'AI',src:'规整为标准结构',note:'按标准章节重排，未改动语义；记录忽略 I-7 的理由',time:'今天 13:41',text:PRD42_V2},
+ {v:1,who:'你',src:'导入 优惠券叠加PRD.md',note:'原始导入',time:'今天 13:38',text:PRD42_V1},
 ];
+const prd42=()=>VERSIONS42[0].text;
+function prd42Save(text,src,note){VERSIONS42.forEach(v=>v.cur=false);VERSIONS42.unshift({v:VERSIONS42[0].v+1,who:'你',src,note,time:'刚刚',cur:true,text})}
+// 阻塞问题只有「采纳 / 手动修改 / 忽略并写理由」才算处理完；「待确认」仍然阻塞定稿
+const blockersLeft=()=>ISSUES42.filter(i=>i.sev==='blocker'&&(i.state==='open'||i.state==='pending')).length;
 const SPLIT42=[
  {kind:'BE',cls:'be',proj:'shop-api',title:'叠加计算、试算接口与订单券关联表',agent:'claude',provider:'official-claude',branch:'tw/TW-42-be',first:'第一步产出 docs/api/TW-42.md',ac:5},
  {kind:'FE',cls:'fe',proj:'shop-web',title:'结算页优惠明细与券勾选',agent:'codex',provider:'official-codex',branch:'tw/TW-42-fe',dep:'依赖 BE 的 API 文档',ac:3},
@@ -161,6 +192,8 @@ const TASKS39=[
  {id:'BE',kind:'后端',cls:'be',proj:'shop-api',title:'积分流水查询接口与汇总',status:'review',statusName:'待验收',agent:'claude',provider:'official-claude',model:'claude-sonnet-4-5',perm:'workspace_write',branch:'tw/TW-39-be',wt:'D:\\tidewatch\\worktrees\\shop-api\\TW-39-be',runs:2,cost:'$1.84',dur:'11 分 20 秒',files:7,add:312,del:18,artifact:'docs/api/TW-39.md',tests:'42 通过',lastRun:'R-118'},
  {id:'FE',kind:'前端',cls:'fe',proj:'shop-web',title:'积分明细页与筛选',status:'running',statusName:'运行中',agent:'codex',provider:'official-codex',model:'gpt-5-codex',perm:'workspace_write',branch:'tw/TW-39-fe',wt:'D:\\tidewatch\\worktrees\\shop-web\\TW-39-fe',runs:1,cost:'$0.37',dur:'4 分 12 秒',files:4,add:126,del:3,dep:'BE · API 文档已就绪',lastRun:'R-121'},
 ];
+// 全部子任务跑完（待验收或已通过）后，工单自动进入「验收中」
+function syncTW39(){const t=T('TW-39');if(t.status==='developing'&&TASKS39.every(k=>['review','accepted'].includes(k.status)))t.status='acceptance'}
 const AC39=[
  ['GET /api/points/records 支持按类型、时间范围筛选并游标分页',true],
  ['汇总接口返回可用、即将过期（30 天内）、累计获得三项',true],
@@ -204,6 +237,49 @@ const DIFF_ROWS=[
  [21,'}',31,'}',''],
 ];
 
+// 前端子任务的验收数据（R-121 跑完后可验收）
+const AC39_FE=[
+ ['顶部展示可用、即将过期、累计获得三项汇总',true],
+ ['可按类型与时间范围筛选，切换筛选后从第一页重新加载',true],
+ ['触底自动加载下一页，没有更多数据时给出提示',false],
+ ['空状态与加载失败（可重试）都有展示',false],
+];
+const DIFF_FILES_FE=[
+ {p:'src/api/points.ts',s:'A',add:31,del:0},
+ {p:'src/router/member.ts',s:'M',add:6,del:2,sel:true},
+ {p:'src/types/points.ts',s:'A',add:24,del:0},
+ {p:'src/views/points/PointsList.vue',s:'A',add:88,del:0},
+ {p:'src/views/points/__tests__/PointsList.spec.ts',s:'A',add:52,del:0},
+];
+const DIFF_ROWS_FE=[
+ [7,'',7,'',''],
+ [8,'const routes: RouteRecordRaw[] = [',8,'const routes: RouteRecordRaw[] = [',''],
+ [9,"  { path: '/member', component: MemberHome },",9,"  { path: '/member', component: MemberHome },",''],
+ [10,"  { path: '/member/coupons', component: CouponList },",10,"  { path: '/member/coupons', component: CouponList },",''],
+ [11,"  { path: '/member/points', redirect: '/member' },",null,'','del'],
+ [12,'  // TODO: 积分明细页',null,'','del'],
+ [null,'',11,'  {','add'],
+ [null,'',12,"    path: '/member/points',",'add'],
+ [null,'',13,"    component: () => import('@/views/points/PointsList.vue'),",'add'],
+ [null,'',14,"    meta: { title: '积分明细', requiresAuth: true },",'add'],
+ [null,'',15,'  },','add'],
+ [13,']',16,']',''],
+];
+// 每个子任务一份验收材料；行内评论按子任务保存，切换页面后仍在
+const ACCEPT39={
+ BE:{files:DIFF_FILES,rows:DIFF_ROWS,dir:'shop-api-service/…/points/',name:'PointsQueryService.java',ac:AC39,runs:['R-118','R-112'],
+  tests:[['mvn -q spotless:check','4s'],['mvn -q test','42 项 · 38s'],['mvn -q package','21s']],
+  xr:{by:'Codex',items:[['amber','提醒','`summary()` 连续发起 3 次查询，可合并为一条 SQL。'],['','建议','`size` 上限 50 建议抽成配置项。']]},
+  sum:'新增积分流水游标分页与汇总接口，先提交了 API 文档再实现。改动 7 个文件，补充 6 条单测。**需要人工确认**：旧的 `LegacyPointsController` 已删除，未发现其他调用方。',
+  cost:'11 分 20 秒　$ 1.84　206.4k tokens',
+  comments:[{line:28,text:'「30 天内」要含今天还是从明天算？和产品确认过是含今天，这里对的；但请加一条边界单测。'}]},
+ FE:{files:DIFF_FILES_FE,rows:DIFF_ROWS_FE,dir:'src/router/',name:'member.ts',ac:AC39_FE,runs:['R-121'],
+  tests:[['pnpm lint','6s'],['pnpm test','5 项 · 9s'],['pnpm build','31s']],
+  xr:{by:'Claude Code',items:[['amber','提醒','「即将过期」角标用了 `--van-warning-color`，与设计稿的橙色不完全一致。'],['','建议','筛选条件建议同步到 URL query，刷新后不丢失。']]},
+  sum:'新增积分明细页与两个接口封装，共改动 5 个文件；类型检查、lint、单测均通过。**需要人工确认**：即将过期的角标颜色暂用了 `--van-warning-color`。',
+  cost:'4 分 36 秒　$ 0.41　58.2k tokens',comments:[]},
+};
+
 // ───── 运行 ─────
 const RUNS=[
  {id:'R-121',ticket:'TW-39',task:'FE',title:'积分明细页与筛选',agent:'codex',provider:'official-codex',model:'gpt-5-codex',status:'running',el:252,tin:48200,tout:6100,cost:0.37,now:'编辑 src/views/points/PointsList.vue',session:'0199c3e2-7b1a-7c40',perm:'workspace_write',wt:'D:\\tidewatch\\worktrees\\shop-web\\TW-39-fe'},
@@ -216,6 +292,18 @@ const RUNS=[
  {id:'R-115',ticket:'TW-36',task:'BE',title:'购物车跨端同步',agent:'claude',provider:'official-claude',model:'claude-sonnet-4-5',status:'stopped',el:187,tin:40100,tout:3900,cost:0.31,now:'已人工停止 · 可恢复',session:'e7120b5c-6aa3-41de',perm:'workspace_write',when:'昨天 17:22'},
 ];
 const RUN=id=>RUNS.find(r=>r.id===id);
+// 把一次运行的状态同步到它所属工单的子任务
+function syncRun(r){
+  const t=T(r.ticket);if(!t)return;
+  const st={running:'running',queued:'queued',stopped:'stopped',done:'review'}[r.status],sub=t.sub&&t.sub.find(x=>x[0]===r.task);
+  if(sub&&st)sub[1]=st;
+  if(r.ticket==='TW-39'){const k=TASKS39.find(x=>x.id===r.task);if(k&&st){k.status=st;k.statusName=SUB[st][0]}syncTW39()}
+  t.running=RUNS.some(x=>x.ticket===t.key&&x.status==='running');
+}
+// 有空闲并发时，让最早排队的运行开始
+function promoteQueue(){
+  [...RUNS].reverse().forEach(r=>{if(r.status==='queued'&&counts().running<state.limit){r.status='running';r.now='启动中 · 组装 Prompt';syncRun(r)}});
+}
 // R-121 的日志时间线；后半段在页面打开后逐条「流入」
 const LOG=[
  {t:'00:00',k:'sys',text:'已创建运行 · Codex · gpt-5-codex · workspace_write · 分支 tw/TW-39-fe'},
