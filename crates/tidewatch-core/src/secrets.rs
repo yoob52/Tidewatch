@@ -80,13 +80,18 @@ impl FileStore {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
-        let mut f = opts.open(&self.path)?;
+        // 先写临时文件再改名：写到一半失败或退出，原来的文件保持完整
+        let tmp = self.path.with_extension("tmp");
+        let mut f = opts.open(&tmp)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
         std::io::Write::write_all(&mut f, serde_json::to_string(map)?.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, &self.path)?;
         Ok(())
     }
 }
