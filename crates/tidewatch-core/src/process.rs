@@ -88,6 +88,13 @@ impl Drop for ProcessTree {
     fn drop(&mut self) {
         if let Ok(None) = self.child.try_wait() {
             let _ = self.kill_tree(Duration::from_millis(200));
+            return;
+        }
+        // 主进程已自行退出：清掉它留在进程组里的后台后代。
+        // Windows 上由 Job 的 KILL_ON_JOB_CLOSE 在句柄关闭时完成同样的事。
+        #[cfg(unix)]
+        unsafe {
+            libc::killpg(self.child.id() as libc::pid_t, libc::SIGKILL);
         }
     }
 }

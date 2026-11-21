@@ -217,3 +217,33 @@ fn raw_log_write_failure_is_reported() {
     assert!(out.succeeded(), "日志失败不影响 Agent 结果");
     assert!(out.raw_log_error.is_some());
 }
+
+#[test]
+fn background_descendants_do_not_outlive_run() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let bin = script(
+        dir.path(),
+        r#"sleep 300 >/dev/null 2>&1 &
+echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"child $!\"}]}}"
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"s-5"}'"#,
+    );
+    let mut child_pid = 0u32;
+    let out = run_agent(
+        adapter(AgentKind::ClaudeCode).as_ref(),
+        &spec(dir.path(), bin),
+        &RunOptions::default(),
+        &mut |e| {
+            if let RunnerEvent::Agent(AgentEvent::Text { text }) = e {
+                child_pid = text.trim_start_matches("child ").parse().unwrap();
+            }
+        },
+    )
+    .unwrap();
+    assert!(out.succeeded());
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        child_pid > 0 && !pid_alive(child_pid),
+        "主进程正常退出后，后台后代也要结束"
+    );
+}
