@@ -171,7 +171,7 @@ document.addEventListener('click',e=>{
   if(match[1]==='pending'){state.issueActions[i]='待确认';toast('已标记待确认，可从顶部导出问题。');}
   return;
  }
- if(a==='confirm-adopt'){resolveIssue(pendingIssue,'已采纳建议');return;}
+ if(a==='confirm-adopt'){const edits=[['标签名称应该适当限制长度。','标签名称为 1–20 个字符，每张工单最多 10 个标签。'],['看板支持按项目、类型、标签组合筛选。','看板支持按项目、类型、标签组合筛选，条件取交集；无结果时提供清除筛选入口。'],['','标签颜色从预设的 8 种颜色中选择。']];const [before,after]=edits[pendingIssue];const text=currentTicket().body??samplePrd;currentTicket().body=before&&text.includes(before)?text.replace(before,after):text+'\n\n## 采纳的澄清\n'+after;resolveIssue(pendingIssue,'已采纳建议');return;}
  if(a==='confirm-ignore'){const reason=$('#issue-reason').value.trim();if(!reason){toast('忽略前请填写理由。');return;}currentTicket().body=(currentTicket().body??samplePrd)+'\n\n## 忽略说明\n'+reason;resolveIssue(pendingIssue,'已忽略：'+reason);return;}
  if(a==='confirm-manual'){const value=$('#issue-edit').value.trim();if(!value){toast('请填写修订内容。');return;}currentTicket().body=(currentTicket().body??samplePrd)+'\n\n## 人工修订\n'+value;resolveIssue(pendingIssue,'已手动修订');return;}
  actions[a]?.();
