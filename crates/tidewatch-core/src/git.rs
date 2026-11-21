@@ -224,7 +224,14 @@ pub fn diff(repo: &Path, base: &str, head: Option<&str>) -> Result<String> {
 }
 
 /// 在 `repo` 当前分支上合并 `branch`。冲突时中止合并并返回错误。
+/// 要求已跟踪文件没有未提交改动：失败后的回退（`reset --merge`）会丢掉暂存区里的内容。
 pub fn merge(repo: &Path, branch: &str, squash: bool, message: &str) -> Result<String> {
+    if !git(repo, &["status", "--porcelain", "--untracked-files=no"])?.is_empty() {
+        return Err(Error::invalid(
+            "目标分支有未提交的改动，请先提交或暂存（stash）后再合并",
+        ));
+    }
+    rev_parse(repo, branch)?;
     let ident = [
         "-c",
         "user.name=Tidewatch",
@@ -355,6 +362,27 @@ mod tests {
         commit_all(&repo, "main").unwrap();
         assert!(merge(&repo, "tw/x", false, "m").is_err());
         assert!(!is_dirty(&repo).unwrap(), "冲突后应恢复干净");
+    }
+
+    #[test]
+    fn failed_merge_keeps_staged_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("README.md"), "# staged\n").unwrap();
+        git(&repo, &["add", "README.md"]).unwrap();
+
+        assert!(merge(&repo, "no-such-branch", false, "m").is_err());
+        assert!(merge(&repo, "main", true, "m").is_err());
+        assert_eq!(
+            git(&repo, &["diff", "--cached", "--name-only"]).unwrap(),
+            "README.md"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README.md")).unwrap(),
+            "# staged\n"
+        );
     }
 
     #[test]
