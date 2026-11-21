@@ -186,12 +186,15 @@ struct TicketSummary {
     /// 待验收 / 已通过 / 已合并
     tasks_done: usize,
     tasks_running: usize,
+    /// 预审提出、还没处理的问题数。
+    issues_open: usize,
 }
 
 #[tauri::command]
 fn ticket_list(state: State, query: Option<String>) -> CmdResult<Vec<TicketSummary>> {
     let conn = lock(state.engine.db());
     let all_tasks = tasks::list_all(&conn).map_err(err)?;
+    let open_issues = reviews::open_counts(&conn).map_err(err)?;
     Ok(tickets::list(&conn, query.as_deref())
         .map_err(err)?
         .into_iter()
@@ -206,6 +209,7 @@ fn ticket_list(state: State, query: Option<String>) -> CmdResult<Vec<TicketSumma
                 running += matches!(t.status.as_str(), "queued" | "running") as usize;
             }
             TicketSummary {
+                issues_open: open_issues.get(&ticket.id).copied().unwrap_or(0),
                 ticket,
                 tasks_total: total,
                 tasks_done: done,
@@ -284,7 +288,39 @@ fn ticket_transition(state: State, id: String, to: String) -> CmdResult<tickets:
             tickets::get(&lock(state.engine.db()), &ticket_id).map_err(err)
         }
         "finalized" => Ok(state.engine.finalize(&id, false).map_err(err)?.ticket),
-        _ => tickets::transition(&mut lock(state.engine.db()), &id, &to).map_err(err),
+        _ => {
+            let current = tickets::get(&lock(state.engine.db()), &id).map_err(err)?;
+            match (current.status.as_str(), to.as_str()) {
+                // 定稿后开始开发：能开始的子任务一起入队
+                ("finalized", "developing") => {
+                    state.engine.start_development(&current.id).map_err(err)?;
+                }
+                // 预审还在跑：停掉它，引擎收尾时把工单送回人工审核
+                ("ai_review", "human_review") => {
+                    let active: Vec<String> =
+                        runs::list_for_ticket(&lock(state.engine.db()), &current.id)
+                            .map_err(err)?
+                            .into_iter()
+                            .filter(|r| {
+                                r.task_id.is_none() && runs::ACTIVE.contains(&r.status.as_str())
+                            })
+                            .map(|r| r.id)
+                            .collect();
+                    if active.is_empty() {
+                        tickets::transition(&mut lock(state.engine.db()), &current.id, &to)
+                            .map_err(err)?;
+                    }
+                    for run_id in active {
+                        state.engine.stop_run(&run_id).map_err(err)?;
+                    }
+                }
+                _ => {
+                    tickets::transition(&mut lock(state.engine.db()), &current.id, &to)
+                        .map_err(err)?;
+                }
+            }
+            tickets::get(&lock(state.engine.db()), &current.id).map_err(err)
+        }
     }
 }
 

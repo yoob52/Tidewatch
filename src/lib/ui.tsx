@@ -92,6 +92,21 @@ export const RUN_STATUS: Record<RunStatus, [string, string]> = {
 
 export const PERMISSIONS = ['read_only', 'workspace_write', 'full_auto'] as const;
 
+/** 运行的用途。预审 / 拆分 / 影响分析是工单级的，不属于某个子任务。 */
+export const PURPOSE: Record<string, string> = {
+  dev: '开发',
+  rework: '返工',
+  review: 'AI 预审',
+  split: '拆分子任务',
+  impact: '变更影响分析',
+};
+
+/** 运行在列表里显示的名字：子任务标题；工单级运行显示「用途 · 工单标题」。 */
+export function runTitle(r: { task_id: string | null; purpose: string; task_title?: string | null; ticket_title?: string | null }): string {
+  if (r.task_id) return r.task_title ?? r.ticket_title ?? '已删除的子任务';
+  return `${PURPOSE[r.purpose] ?? r.purpose} · ${r.ticket_title ?? '已删除的工单'}`;
+}
+
 export const runActive = (s: RunStatus) => ['starting', 'running', 'finalizing', 'stopping'].includes(s);
 
 export function Stamp({ type, lg }: { type: TicketType; lg?: boolean }) {
@@ -482,6 +497,43 @@ export function UiProvider({ children }: { children: ReactNode }) {
         ))}
       </div>
     </UiContext.Provider>
+  );
+}
+
+/** 自定义内容的弹层（定稿、手动修改正文等）。点遮罩或按 Esc 关闭。 */
+export function Modal({
+  title,
+  hint,
+  width = 640,
+  onClose,
+  children,
+  footer,
+}: {
+  title: string;
+  hint?: ReactNode;
+  width?: number;
+  onClose: () => void;
+  children: ReactNode;
+  footer: ReactNode;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+  return (
+    <div className="modal-bg" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="pop" style={{ width }} role="dialog" aria-modal="true" aria-label={title}>
+        <div className="pop-h">
+          <h2>{title}</h2>
+          {hint && <p>{hint}</p>}
+        </div>
+        <div className="pop-b">{children}</div>
+        <div className="pop-f">{footer}</div>
+      </div>
+    </div>
   );
 }
 

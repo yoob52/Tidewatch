@@ -50,8 +50,14 @@ export function BoardPage() {
       ui.toast(`${t.key} 无法流转：${r.why}`);
       return;
     }
-    if (to === 'finalized' && !(await ui.confirm('定稿', `定稿后 ${t.key} 的 PRD 将锁定，再修改需要「发起变更」。`, '定稿'))) return;
-    const done = await ui.attempt(api.ticketTransition(t.id, to));
+    if (to === 'finalized' && !(await ui.confirm('定稿', `定稿后 ${t.key} 的 PRD 将锁定，再修改需要「发起变更」。要让 AI 拆分子任务，请在工单的「审核」页定稿。`, '定稿'))) return;
+    let job: Promise<unknown> = api.ticketTransition(t.id, to);
+    if (to === 'human_review' && (t.status === 'finalized' || t.status === 'developing')) {
+      const reason = await ui.prompt('发起变更', `${t.key} 回到人工审核，PRD 重新可编辑；正在运行的子任务会继续跑完。`, '为什么要改需求', '发起变更', true);
+      if (!reason) return;
+      job = api.changeRequest(t.id, reason, false);
+    }
+    const done = await ui.attempt(job);
     if (done) {
       ui.toast(`${t.key} → ${STAGE_NAME[to]}（${r.label}）`);
       void reload();
@@ -151,9 +157,20 @@ export function BoardPage() {
                         </span>
                       ))}
                     </div>
-                    {t.tasks_total > 0 && (
+                    {(t.tasks_total > 0 || (t.status === 'human_review' && t.issues_open > 0) || t.status === 'ai_review') && (
                       <div className="tcard-foot">
-                        <TaskChips t={t} />
+                        {t.tasks_total > 0 && <TaskChips t={t} />}
+                        {t.status === 'human_review' && t.issues_open > 0 && (
+                          <span className="subchip cin">
+                            <b>{t.issues_open}</b>
+                            <span>个问题待处理</span>
+                          </span>
+                        )}
+                        {t.status === 'ai_review' && (
+                          <span className="subchip tide">
+                            <span>AI 预审中</span>
+                          </span>
+                        )}
                       </div>
                     )}
                   </a>

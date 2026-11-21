@@ -10,6 +10,7 @@ import {
   Empty,
   KindStamp,
   Md,
+  PURPOSE,
   Prio,
   RunStatusTag,
   STAGES,
@@ -23,11 +24,13 @@ import {
   fmtDur,
   fmtTok,
   go,
+  runActive,
   runSeconds,
   stageTone,
   useLoad,
   useUi,
 } from '../lib/ui';
+import { FinalizeDialog, ReviewTab } from './TicketReview';
 import { AcceptTab, TasksTab } from './TicketTasks';
 
 export interface TabProps {
@@ -57,6 +60,7 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
   const ui = useUi();
   const data = useData();
   const { data: d, error, reload } = useLoad(() => api.ticketGet(ticketKey), [ticketKey]);
+  const [finalizing, setFinalizing] = useState(false);
 
   if (error)
     return (
@@ -75,19 +79,42 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
   const t = d.ticket;
   const live = d.tasks.filter((k) => k.status !== 'cancelled');
   const toAccept = live.filter((k) => k.status === 'review').length;
-  const current = tab || (t.status === 'acceptance' ? 'accept' : 'overview');
+  const openIssues = d.issues.filter((i) => i.resolution === 'open' || i.resolution === 'pending_confirm');
+  const blockers = openIssues.filter((i) => i.severity === 'blocker').length;
+  const reviewing = t.status === 'human_review' || t.status === 'ai_review';
+  const current = tab || (reviewing ? 'review' : t.status === 'acceptance' ? 'accept' : 'overview');
   const tabs: [string, string, string | number, boolean?][] = [
     ['overview', '概览', ''],
     ['prd', 'PRD', d.versions.length ? `v${d.versions[d.versions.length - 1].version}` : ''],
+    ['review', '审核', t.status === 'human_review' && openIssues.length ? openIssues.length : '', true],
     ['tasks', '子任务', live.length || ''],
     ['accept', '验收', toAccept || '', true],
     ['runs', '运行记录', d.runs.length || ''],
   ];
 
   const move = async (to: TicketStatus, label: string) => {
-    if (to === 'finalized' && !(await ui.confirm('定稿', `定稿后 ${t.key} 的 PRD 将锁定，再修改需要「发起变更」。`, '定稿'))) return;
+    if (to === 'finalized') {
+      // 定稿要过校验、选要不要让 AI 拆分
+      setFinalizing(true);
+      return;
+    }
     if (to === 'cancelled' && !(await ui.confirm('取消工单', `${t.key} 会从看板移走，之后可以恢复到取消前的状态。`, '取消工单', true))) return;
-    if (await ui.attempt(api.ticketTransition(t.id, to), `${t.key} → ${STAGE_NAME[to]}（${label}）`)) {
+    let job: Promise<unknown> = api.ticketTransition(t.id, to);
+    if (to === 'human_review' && (t.status === 'finalized' || t.status === 'developing')) {
+      // 发起变更：要写原因；有子任务在跑时问要不要停
+      const reason = await ui.prompt(
+        '发起变更',
+        `${t.key} 回到人工审核，PRD 重新可编辑。改完再次定稿时，AI 会分析这次变更对已有子任务的影响。`,
+        '为什么要改需求',
+        '发起变更',
+        true,
+      );
+      if (!reason) return;
+      const busy = d.runs.some((r) => r.task_id && (runActive(r.status) || r.status === 'queued'));
+      const stop = busy && (await ui.confirm('有子任务正在运行', '要现在停掉它们吗？不停的话它们会按旧需求跑完，之后再按影响分析返工。', '停掉正在运行的'));
+      job = api.changeRequest(t.id, reason, stop);
+    }
+    if (await ui.attempt(job, `${t.key} → ${STAGE_NAME[to]}（${label}）`)) {
       await Promise.all([reload(), data.reload()]);
     }
   };
@@ -152,6 +179,14 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
           skipped={d.timeline.some((e) => e.type === 'status' && e.payload.from === 'draft' && e.payload.to === 'developing') ? ['ai_review', 'human_review', 'finalized'] : []}
         />
       </div>
+      {finalizing && (
+        <FinalizeDialog d={d} blockers={blockers} onClose={() => setFinalizing(false)}
+          onDone={async () => {
+            setFinalizing(false);
+            await Promise.all([reload(), data.reload()]);
+          }}
+        />
+      )}
       <nav className="tabs">
         {tabs.map(([id, name, badge, hot]) => (
           <a key={id} href={`#/ticket/${t.key}/${id}`} className={current === id ? 'on' : ''}>
@@ -163,6 +198,8 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
       <div className="tbody" id="tbody">
         {current === 'prd' ? (
           <PrdTab d={d} reload={reload} />
+        ) : current === 'review' ? (
+          <ReviewTab d={d} reload={reload} />
         ) : current === 'tasks' ? (
           <TasksTab d={d} reload={reload} />
         ) : current === 'accept' ? (
@@ -191,7 +228,9 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
     case 'task_created':
       return ['branch', '你', `创建${name}`];
     case 'run_queued':
-      return ['runs', '系统', `${name}第 ${p.number} 次运行已入队`];
+      return p.purpose && !p.task_id
+        ? ['runs', '系统', `${PURPOSE[p.purpose as string] ?? p.purpose}已入队`]
+        : ['runs', '系统', `${name}第 ${p.number} 次运行已入队`];
     case 'run_finished': {
       const failed = (p.failed_checks as string[] | undefined) ?? [];
       const st = { succeeded: '运行完成', failed: '运行失败', stopped: '已停止', orphaned: '被中断' }[p.status as string] ?? String(p.status);
@@ -200,7 +239,33 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
     case 'task_accepted':
       return ['check', '你', `验收通过${name}`];
     case 'task_rejected':
-      return ['undo', '你', `打回${name}：${p.note ?? ''}`];
+      return p.reason === 'change'
+        ? ['undo', '系统', `需求变更，${name}需要追加工作：${p.note ?? ''}`]
+        : ['undo', '你', `打回${name}：${p.note ?? ''}${p.comments ? `（${p.comments} 条行内评论）` : ''}`];
+    case 'review_finished':
+      return p.error
+        ? ['alert', 'AI', `预审没有完成：${p.error}`]
+        : ['spark', 'AI', `预审完成，发现 ${p.issues} 个问题${p.blockers ? `，其中 ${p.blockers} 个阻塞` : ''}`];
+    case 'issue_resolved': {
+      const how = { accepted: '采纳了', manual: '手动处理了', ignored: '忽略了', pending_confirm: '把', open: '重新打开了' }[p.resolution as string] ?? '处理了';
+      return ['check', '你', `${how}问题 ${p.code}${p.resolution === 'pending_confirm' ? ' 标为待确认' : ''}${p.note ? `：${p.note}` : ''}`];
+    }
+    case 'finalized':
+      return ['lock', '你', '定稿，PRD 已锁定'];
+    case 'proposal_ready': {
+      const what = p.kind === 'impact' ? '变更影响分析' : '拆分建议';
+      return p.error ? ['alert', 'AI', `${what}没有生成出来：${p.error}`] : ['spark', 'AI', `${what}出来了，等你确认`];
+    }
+    case 'proposal_discarded':
+      return ['x', '你', `放弃了${p.kind === 'impact' ? '变更影响分析' : '拆分建议'}`];
+    case 'split_applied':
+      return ['branch', '你', `确认拆分，创建了 ${(p.tasks as string[] | undefined)?.length ?? 0} 个子任务`];
+    case 'impact_applied':
+      return ['check', '你', `确认影响分析：${(p.rework as string[] | undefined)?.length ?? 0} 个子任务要追加工作，新增 ${p.new_tasks ?? 0} 个`];
+    case 'change_requested':
+      return ['undo', '你', `发起变更：${p.reason ?? ''}`];
+    case 'api_doc_ready':
+      return ['file', 'Agent', `${name}写出了接口文档 ${p.path}${(p.unblocked as string[] | undefined)?.length ? '，等它的子任务已解锁' : ''}`];
     case 'task_merged':
       return ['merge', '系统', `${name}已合并（${String(p.commit ?? '').slice(0, 8)}）${p.note ? `；${p.note}` : ''}`];
     case 'task_cancelled':
@@ -215,6 +280,9 @@ function OverviewTab({ d }: { d: TicketDetail }) {
   const t = d.ticket;
   const live = d.tasks.filter((k) => k.status !== 'cancelled');
   const wait = live.filter((k) => k.status === 'review');
+  const openIssues = d.issues.filter((i) => i.resolution === 'open' || i.resolution === 'pending_confirm');
+  const blockers = openIssues.filter((i) => i.severity === 'blocker').length;
+  const proposal = [d.impact, d.split].find((x) => x && ['running', 'pending', 'failed'].includes(x.status));
   const cost = d.runs.reduce((a, r) => a + (r.cost_usd ?? 0), 0);
   const secs = d.runs.reduce((a, r) => a + runSeconds(r), 0);
   const first = projects.find((p) => p.id === t.projects[0]?.project_id);
@@ -225,9 +293,43 @@ function OverviewTab({ d }: { d: TicketDetail }) {
       <div className="ov-main">
         {t.status === 'ai_review' && (
           <div className="callout tide">
+            <Icon name="spark" size={15} />
+            <div>
+              <b>AI 正在预审这份 PRD。</b> 结束后工单进入人工审核。{' '}
+              <a className="lnk" href={`#/ticket/${t.key}/review`}>
+                看进度 →
+              </a>
+            </div>
+          </div>
+        )}
+        {t.status === 'human_review' && (
+          <div className="callout cin">
             <Icon name="info" size={15} />
             <div>
-              <b>这一版还没有 AI 预审。</b> 自动预审在下一阶段（M2）实现；现在请自己读一遍 PRD，然后点右上角「预审完成」。
+              <b>
+                {t.change_from_version_id
+                  ? `变更进行中：${t.change_reason}`
+                  : openIssues.length
+                    ? `预审提出的问题还有 ${openIssues.length} 个没处理${blockers ? `，其中 ${blockers} 个阻塞定稿` : ''}。`
+                    : '等你审核并定稿。'}
+              </b>{' '}
+              <a className="lnk" href={`#/ticket/${t.key}/review`}>
+                去审核 →
+              </a>
+            </div>
+          </div>
+        )}
+        {t.status === 'finalized' && proposal && (
+          <div className="callout tide">
+            <Icon name="spark" size={15} />
+            <div>
+              <b>
+                {proposal.kind === 'impact' ? '变更影响分析' : '拆分建议'}
+                {proposal.status === 'running' ? '正在生成。' : proposal.status === 'failed' ? '没有生成出来。' : '等你确认。'}
+              </b>{' '}
+              <a className="lnk" href={`#/ticket/${t.key}/tasks`}>
+                去子任务页 →
+              </a>
             </div>
           </div>
         )}
@@ -263,7 +365,7 @@ function OverviewTab({ d }: { d: TicketDetail }) {
           </div>
         ) : (
           <div className="card">
-            <Empty icon="branch" title="还没有子任务" body="工单进入「开发中」后，在「子任务」页创建，每个子任务有自己的分支和 worktree。">
+            <Empty icon="branch" title="还没有子任务" body="定稿时可以让 AI 拆分，也可以在「子任务」页自己添加。每个子任务有自己的分支和 worktree。">
               <a className="btn" href={`#/ticket/${t.key}/tasks`}>
                 打开子任务
               </a>
@@ -451,7 +553,7 @@ function PrdTab({ d, reload }: TabProps) {
             >
               <b>v{v.version}</b>
               <div>
-                <span>{v.origin === 'edit' ? '编辑' : v.origin === 'file' ? '文件导入' : '创建'}</span>
+                <span>{v.origin === 'edit' ? '编辑' : v.origin === 'ai_suggestion' ? 'AI 采纳' : v.origin === 'file' ? '文件导入' : '创建'}</span>
                 <small>{fmtAgo(v.created_at)}</small>
                 {v.note && <small>{v.note}</small>}
               </div>
@@ -525,7 +627,7 @@ function RunsTab({ d }: { d: TicketDetail }) {
                       第 {r.number} 次
                     </a>
                   </td>
-                  <td>{task ? `${TASK_KIND[task.kind]?.short ?? task.kind} · ${task.title}` : '—'}</td>
+                  <td>{task ? `${TASK_KIND[task.kind]?.short ?? task.kind} · ${task.title}` : r.task_id ? '—' : (PURPOSE[r.purpose] ?? r.purpose)}</td>
                   <td>
                     <AgentTag agent={r.agent} />
                   </td>

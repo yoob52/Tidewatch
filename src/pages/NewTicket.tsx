@@ -58,6 +58,10 @@ export function NewTicketPage() {
       ui.toast('开始修复前请先绑定一个项目');
       return;
     }
+    if (to === 'ai_review' && picked.length === 0) {
+      ui.toast('提交预审前请先绑定一个项目：AI 要在项目目录里只读地查看代码');
+      return;
+    }
     setSaving(true);
     try {
       const t = await api.ticketCreate({
@@ -78,7 +82,18 @@ export function NewTicketPage() {
         default_provider_id: null,
       });
       let note = STAGE_NAME.draft;
-      if (to !== 'draft') {
+      if (to === 'ai_review') {
+        // 工单已经建好；预审提交不了（比如 Agent 没配好）就留在草稿，不让用户重复创建
+        try {
+          await api.reviewStart(t.id);
+          note = 'AI 预审已入队';
+        } catch (e) {
+          ui.toast(`已创建 ${t.key}（草稿），但没能提交预审：${String(e)}`);
+          await reload();
+          go(`#/ticket/${t.key}/review`);
+          return;
+        }
+      } else if (to !== 'draft') {
         await api.ticketTransition(t.id, to);
         note = STAGE_NAME[to];
       }

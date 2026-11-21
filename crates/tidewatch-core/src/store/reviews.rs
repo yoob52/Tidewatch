@@ -279,6 +279,20 @@ pub fn issue(conn: &Connection, id: &str) -> Result<Issue> {
     .map_err(|_| not_found("预审问题", id))
 }
 
+/// 每张工单还没处理的问题数（看板和列表用）。
+pub fn open_counts(conn: &Connection) -> Result<std::collections::HashMap<String, usize>> {
+    let mut st = conn.prepare(
+        "SELECT ticket_id, COUNT(*) FROM review_issue
+         WHERE COALESCE(resolution, 'open') IN ('open', 'pending_confirm') GROUP BY ticket_id",
+    )?;
+    let rows = st
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
 pub fn is_unresolved(resolution: &str) -> bool {
     matches!(resolution, "open" | "pending_confirm")
 }
