@@ -69,6 +69,16 @@ impl ProcessTree {
         Ok(self.child.wait()?)
     }
 
+    /// 主进程已自行退出后，结束它留在进程树里的后台后代（它们还占着输出管道）。
+    pub fn kill_leftovers(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::killpg(self.child.id() as libc::pid_t, libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        let _ = self.job.terminate();
+    }
+
     /// 结束整棵进程树。Unix 先 SIGTERM，`grace` 内未退出再 SIGKILL。
     pub fn kill_tree(&mut self, grace: Duration) -> Result<()> {
         #[cfg(unix)]
@@ -100,12 +110,7 @@ impl Drop for ProcessTree {
         if let Ok(None) = self.child.try_wait() {
             let _ = self.kill_tree(Duration::from_millis(200));
         } else {
-            // 主进程已自行退出：清掉它留在进程组里的后台后代。
-            // Windows 上由 Job 的 KILL_ON_JOB_CLOSE 在句柄关闭时完成同样的事。
-            #[cfg(unix)]
-            unsafe {
-                libc::killpg(self.child.id() as libc::pid_t, libc::SIGKILL);
-            }
+            self.kill_leftovers();
         }
     }
 }

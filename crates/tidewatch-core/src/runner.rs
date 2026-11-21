@@ -5,7 +5,7 @@ use crate::Result;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -94,6 +94,9 @@ pub fn run_agent(
     let stdout = tree.take_stdout().expect("stdout piped");
     let stderr = tree.take_stderr().expect("stderr piped");
     let tx_out = tx.clone();
+    // 已读到 EOF 的管道数；两条都到 EOF 说明剩下的输出全在队列里。
+    let eof = Arc::new(AtomicUsize::new(0));
+    let (eof_out, eof_err) = (eof.clone(), eof.clone());
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             match line {
@@ -105,6 +108,7 @@ pub fn run_agent(
                 Err(_) => break,
             }
         }
+        eof_out.fetch_add(1, Ordering::SeqCst);
         let _ = tx_out.send(Msg::OutClosed);
     });
     std::thread::spawn(move || {
@@ -113,6 +117,7 @@ pub fn run_agent(
                 return;
             }
         }
+        eof_err.fetch_add(1, Ordering::SeqCst);
         let _ = tx.send(Msg::ErrClosed);
     });
 
@@ -204,14 +209,19 @@ pub fn run_agent(
             if let Some(status) = tree.try_wait()? {
                 outcome.exit_code = status.code();
                 exited_at = Some(Instant::now());
+                tree.kill_leftovers();
             }
         }
-        // 进程已退出：等 stdout 和 stderr 都读完。若有脱离进程树的后代仍占着管道，
-        // 则在管道连续 1 秒没有新内容后放弃等待；已排队的输出总会先处理完。
-        if exited_at.is_some()
-            && ((out_closed && err_closed) || last_msg.elapsed() > Duration::from_secs(1))
-        {
-            break;
+        // 进程已退出：把 stdout 和 stderr 读完、处理完再返回。只有脱离了进程树的后代还占着管道时
+        // 才放弃等待：管道连续 1 秒没有新内容，或退出已超过 5 秒（它一直在写）。
+        if let Some(t) = exited_at {
+            let pipes_held = eof.load(Ordering::SeqCst) < 2;
+            let give_up = pipes_held
+                && (last_msg.elapsed() > Duration::from_secs(1)
+                    || t.elapsed() > Duration::from_secs(5));
+            if (out_closed && err_closed) || give_up {
+                break;
+            }
         }
     }
 

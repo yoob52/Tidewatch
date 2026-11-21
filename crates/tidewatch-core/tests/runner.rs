@@ -247,3 +247,50 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","sessi
         "主进程正常退出后，后台后代也要结束"
     );
 }
+
+/// 主进程退出后仍有后代不停往 stdout 写：进程树内的会被结束；脱离进程树的（setsid）不能让 run_agent 一直等下去。
+#[test]
+fn chatty_descendants_do_not_hang_run() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let noise = r#"while true; do echo "{\"type\":\"system\"}"; sleep 0.2; done"#;
+    for (escape, limit) in [("", 3), ("setsid ", 9)] {
+        if !escape.is_empty() && !Path::new("/usr/bin/setsid").exists() {
+            continue;
+        }
+        let body = format!(
+            "{escape}sh -c '{noise}' &\nsleep 0.3\necho \"{{\\\"type\\\":\\\"assistant\\\",\\\"message\\\":{{\\\"content\\\":[{{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"child $!\\\"}}]}}}}\"\necho '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"session_id\":\"s-6\"}}'"
+        );
+        let bin = script(dir.path(), &body);
+        let mut child_pid = 0u32;
+        let t = Instant::now();
+        let out = run_agent(
+            adapter(AgentKind::ClaudeCode).as_ref(),
+            &spec(dir.path(), bin),
+            &RunOptions::default(),
+            &mut |e| {
+                if let RunnerEvent::Agent(AgentEvent::Text { text }) = e {
+                    child_pid = text.trim_start_matches("child ").parse().unwrap();
+                }
+            },
+        )
+        .unwrap();
+        assert!(out.succeeded());
+        let took = t.elapsed();
+        assert!(
+            took < Duration::from_secs(limit),
+            "{escape:?} 用了 {took:?}"
+        );
+        // 脱离进程树的那个确实一直占着管道：run_agent 是等到上限才放弃的
+        assert!(
+            escape.is_empty() || took > Duration::from_secs(4),
+            "{escape:?} 用了 {took:?}"
+        );
+        if escape.is_empty() {
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(!pid_alive(child_pid));
+        } else {
+            unsafe { libc::kill(-(child_pid as i32), libc::SIGKILL) };
+        }
+    }
+}
