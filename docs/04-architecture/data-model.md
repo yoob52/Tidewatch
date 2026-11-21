@@ -157,6 +157,46 @@ CREATE TABLE provider (
 CREATE TABLE attachment (
   id TEXT PRIMARY KEY, ticket_id TEXT, file_name TEXT, path TEXT, mime TEXT, description TEXT, created_at TEXT
 );
+-- 【建议】Agent 管理（见 03-agent/agent-management.md）
+CREATE TABLE agent_instance (
+  id TEXT PRIMARY KEY, name TEXT,
+  agent_kind TEXT,                -- claude-code / codex
+  binary_path TEXT, config_dir TEXT,
+  launch_args_json TEXT, extra_env_json TEXT,
+  enabled INTEGER, status_json TEXT, capabilities_json TEXT
+);
+CREATE TABLE project_agent_instance (project_id TEXT, agent_instance_id TEXT, enabled INTEGER,
+  PRIMARY KEY (project_id, agent_instance_id));
+-- run 增加：agent_instance_id、agent_finished_at（与 finished_at 区分收尾耗时）、checkpoint_before_ref、checkpoint_after_ref
+CREATE TABLE run_attempt (
+  id TEXT PRIMARY KEY, run_id TEXT, ordinal INTEGER,
+  reason TEXT,                    -- initial / steering_restart / retry / recovery
+  agent_session_id TEXT, agent_turn_ref TEXT,   -- Agent 原生 ID 只作引用
+  transport TEXT,                 -- headless_cli / interactive
+  status TEXT, started_at TEXT, finished_at TEXT, raw_log_path TEXT
+);
+CREATE TABLE runtime_request (
+  id TEXT PRIMARY KEY, run_id TEXT, attempt_id TEXT, node_ref TEXT,
+  kind TEXT,                      -- command_approval / file_change_approval / user_input
+  agent_request_ref TEXT, payload_json TEXT,
+  status TEXT,                    -- pending / resolved / declined / expired / not_resumable
+  response_json TEXT, created_at TEXT, resolved_at TEXT
+);
+CREATE TABLE context_handoff (
+  id TEXT PRIMARY KEY, task_id TEXT, target_run_id TEXT,
+  from_run_ids_json TEXT,
+  strategy TEXT,                  -- delta / full_summary / manual
+  summary_md TEXT, created_by TEXT,
+  status TEXT,                    -- ready / superseded
+  created_at TEXT
+);
+CREATE TABLE command_receipt (command_id TEXT PRIMARY KEY, result_json TEXT, created_at TEXT);
+CREATE TABLE pending_effect (
+  id TEXT PRIMARY KEY, kind TEXT, payload_json TEXT,
+  status TEXT,                    -- pending / running / done / failed / orphaned
+  attempts INTEGER, created_at TEXT, updated_at TEXT
+);
+
 -- 图片附件的来源、效力与按版本的引用索引（prd_image）见 02-workflow/prd-images.md
 
 CREATE TABLE setting (key TEXT PRIMARY KEY, value_json TEXT);

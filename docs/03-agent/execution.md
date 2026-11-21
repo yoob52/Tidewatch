@@ -36,6 +36,8 @@
    - 计算 Diff 统计；
    - 运行自动测试。
 
+【建议】Agent 进程结束与 Run 结束分开：进程结束后进入"收尾中"（检查点、Diff、提交、测试），Agent 耗时与收尾耗时分别统计；Run 内可有多次 Attempt，见 [Agent 管理 §4](agent-management.md)。
+
 ## 4. 可观测性【已确认】
 
 | 维度 | 内容 |
@@ -45,7 +47,7 @@
 | 耗时 | 总耗时、各阶段耗时 |
 | Token 与费用 | 输入 / 输出 / 缓存 Token；Agent 上报的费用，或按 Provider 价格估算 |
 | 文件改动 | 实时改动文件列表 |
-| 控制 | 停止、恢复、重试、追加指令（停止后以 resume + 新 Prompt 实现） |
+| 控制 | 停止、恢复、重试、追加指令（停止后以 resume + 新 Prompt 实现；【建议】按能力区分原地引导 / 中断重启 / 排队，见 [Agent 管理 §6](agent-management.md)） |
 
 ### 预算与护栏【建议】
 - 每个 Run 可设上限：最长时间、最大费用 / Token；超出自动停止并通知。
@@ -68,6 +70,8 @@
 | `full_auto` | 完全自动（需显式开启） | `bypassPermissions` | `--full-auto` / `danger-full-access` |
 
 默认：预审 `read_only`，开发 `workspace_write`。命令白名单来自项目卡片中的测试 / 构建命令。
+
+【建议】交互通道上线后增加 `supervised`（逐项审批）；只提供 Agent 原生能执行的档位，派生 / 委派的 Run 不得提权，见 [Agent 管理 §9](agent-management.md)。
 
 ## 7. Review 与合并【已确认】
 

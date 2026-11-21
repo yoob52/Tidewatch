@@ -49,6 +49,8 @@ interface RunRequest {
 
 原始 JSONL 同时完整落盘，便于调试和适配器升级后重放。
 
+> 【建议】`supports` 将扩展为完整的能力声明 `AgentCapabilities`，并引入 Agent 实例（同一 Agent 多账号 / 多配置）与两种通道（`headless_cli` / `interactive`），见 [Agent 管理 §2–§3、§5](agent-management.md)。
+
 ## 3. Claude Code
 
 ```powershell
@@ -111,6 +113,8 @@ DeepSeek 不作为独立 Agent，而是作为 **Provider** 接入：
 1. 优先用原 Agent + 原 session id 恢复（保留完整上下文）。
 2. 若恢复失败（会话过期、换了 Agent / Provider），新开会话，Prompt 中附带：原任务、上一轮总结、当前 `git diff --stat`、打回意见。
 3. 每个 Run 记录 `parent_run_id`，形成运行链。
+
+> 【建议】第 2 步的"附带总结"升级为显式的上下文交接记录（策略 `delta` / `full_summary` / `manual`，可查看、可作废），见 [Agent 管理 §7](agent-management.md)。
 
 ## 8. 扩展其他 Agent（P2）
 
