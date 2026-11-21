@@ -19,7 +19,7 @@ function pageRuns(id){
     <b class="ell">${esc(x.title)}</b>
     <div class="row sub">${x.status==='running'?ripple:`<span class="dot st-${x.status}"></span>`}<span class="grow ell" ${x.status==='running'?`data-now="${x.id}"`:''}>${esc(x.now)}</span><span class="mono" ${x.status==='running'?`data-tok="${x.id}"`:''}>${fmtTok(x.tin+x.tout)}</span></div></a>`;
   const act=RUNS.filter(x=>x.status==='running'||x.status==='queued'),hist=RUNS.filter(x=>!act.includes(x));
-  const body=r.id==='R-121'?LOG.map(e=>logItem(e)).join('')+(r.status!=='running'?LOG_LIVE.slice(0,liveIdx).map(e=>logItem(e)).join(''):'')
+  const body=r.id==='R-121'?LOG.map(e=>logItem(e)).join('')+LOG_LIVE.slice(0,liveIdx).map(e=>logItem(e)).join('')
     :`<div class="logi sys"><time>00:00</time><div>${I('info',12)}已创建运行 · ${AGENTS[r.agent].name} · ${r.model} · ${r.perm}</div></div><div class="logi msg"><time>00:02</time><div class="bubble">${r.status==='queued'?'等待空闲的并发名额。':'演示数据只为 R-121 准备了完整日志，请在左侧选择 R-121 查看实时效果。'}</div></div>`;
   $('#view').innerHTML=`<div class="page flush runs">
     <aside class="rlist"><div class="rl-h"><span>进行中</span><i>${act.length}</i></div>${act.map(item).join('')}<div class="rl-h"><span>历史</span><i>${hist.length}</i></div>${hist.map(item).join('')}</aside>
@@ -48,7 +48,7 @@ function pageRuns(id){
       $$(`[data-el="${x.id}"]`).forEach(el=>el.textContent=fmtDur(x.el));$$(`[data-tok="${x.id}"]`).forEach(el=>el.textContent=fmtTok(x.tin+x.tout))});
     if(r.status==='running'){$('[data-in]').textContent=fmtTok(r.tin);$('[data-out]').textContent=fmtTok(r.tout);$('[data-cost]').textContent='$ '+r.cost.toFixed(2)}
     if(live&&n%4===0&&liveIdx<LOG_LIVE.length){
-      liveClock=r.el;const e=LOG_LIVE[liveIdx++],ty=$('#typing');
+      liveClock=r.el;const e=LOG_LIVE[liveIdx++],ty=$('#typing');e.t=e.t||fmtDur(r.el); // 记下流入时刻，重新进入页面时照原样重放
       const stick=log.scrollHeight-log.scrollTop-log.clientHeight<80;
       ty.insertAdjacentHTML('beforebegin',logItem(e,true));
       const nx=LOG_LIVE[liveIdx];r.now=nx?(nx.k==='edit'?'编辑 '+nx.file:nx.k==='tool'?'运行 '+nx.arg:'思考中'):'自动测试中';
