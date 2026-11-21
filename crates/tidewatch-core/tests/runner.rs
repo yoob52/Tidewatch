@@ -294,3 +294,49 @@ fn chatty_descendants_do_not_hang_run() {
         }
     }
 }
+
+/// 启动观澜的 shell 里的其它密钥不能传给 Agent；系统变量、注入的变量和点名放行的变量要能传到。
+#[test]
+fn agent_env_is_allowlisted() {
+    let _serial = serial();
+    std::env::set_var("TW_TEST_UNRELATED_SECRET", "leak-me");
+    std::env::set_var("TW_TEST_PASSED_THROUGH", "wanted");
+    std::env::set_var("ANTHROPIC_API_KEY", "ambient-key");
+    let dir = tempfile::tempdir().unwrap();
+    let bin = script(
+        dir.path(),
+        r#"cat >/dev/null
+env > env.txt"#,
+    );
+    let vars = |kind, env: Vec<(String, String)>| {
+        let s = RunSpec {
+            env,
+            env_passthrough: vec!["TW_TEST_PASSED_THROUGH".into()],
+            ..spec(dir.path(), bin.clone())
+        };
+        run_agent(
+            adapter(kind).as_ref(),
+            &s,
+            &RunOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+        std::fs::read_to_string(dir.path().join("env.txt")).unwrap()
+    };
+
+    let own_login = vars(AgentKind::ClaudeCode, vec![]);
+    assert!(!own_login.contains("TW_TEST_UNRELATED_SECRET"));
+    assert!(own_login.contains("TW_TEST_PASSED_THROUGH=wanted"));
+    assert!(own_login.contains("PATH="));
+    assert!(own_login.contains("ANTHROPIC_API_KEY=ambient-key"));
+
+    let with_provider = vars(
+        AgentKind::ClaudeCode,
+        vec![("ANTHROPIC_AUTH_TOKEN".into(), "provider-key".into())],
+    );
+    assert!(with_provider.contains("ANTHROPIC_AUTH_TOKEN=provider-key"));
+    assert!(!with_provider.contains("ambient-key"));
+
+    assert!(!vars(AgentKind::Codex, vec![]).contains("ambient-key"));
+    std::env::remove_var("ANTHROPIC_API_KEY");
+}

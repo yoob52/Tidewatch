@@ -39,6 +39,8 @@ DEEPSEEK_API_KEY=... cargo run -p twctl -- run --agent claude_code --deepseek --
 MY_KEY=... cargo run -p twctl -- run --agent codex --base-url https://example.com/v1 --api-key-env MY_KEY --model <模型> --cwd <目录> --prompt "..."
 ```
 
+Agent 子进程只继承系统变量（PATH、用户目录、代理、工具链位置等）和它自己的配置变量；shell 里的其它变量不会传过去，需要时用 `--pass-env NAME` 点名放行。
+
 ## 文档导航
 
 | 文档 | 内容 |

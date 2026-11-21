@@ -1,5 +1,5 @@
 //! 运行一次 Agent：启动进程树、写入提示词、逐行解析事件、支持中途停止与超时。
-use crate::agent::{AgentAdapter, AgentEvent, CommandSpec, RunSpec, Usage};
+use crate::agent::{AgentAdapter, AgentEvent, AgentKind, CommandSpec, RunSpec, Usage};
 use crate::process;
 use crate::Result;
 use std::io::{BufRead, BufReader, Write};
@@ -59,9 +59,120 @@ enum Msg {
     ErrClosed,
 }
 
-fn to_command(spec: &CommandSpec) -> Command {
+/// 任何 Agent 都要的系统变量：可执行文件查找、用户目录、临时目录、区域、代理与证书、语言工具链位置。
+const SYSTEM_ENV: &[&str] = &[
+    "PATH",
+    "PATHEXT",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LANGUAGE",
+    "TERM",
+    "COLORTERM",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    // Windows
+    "USERPROFILE",
+    "USERNAME",
+    "USERDOMAIN",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "COMMONPROGRAMFILES",
+    "COMMONPROGRAMFILES(X86)",
+    "COMMONPROGRAMW6432",
+    "ALLUSERSPROFILE",
+    "PUBLIC",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "OS",
+    "COMPUTERNAME",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PSMODULEPATH",
+    // 代理与证书
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    // 工具链位置（Agent 要能跑项目的测试 / 构建命令）
+    "JAVA_HOME",
+    "GOPATH",
+    "GOROOT",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "PNPM_HOME",
+    "VOLTA_HOME",
+    "PYENV_ROOT",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "ANDROID_HOME",
+    "ANDROID_SDK_ROOT",
+    "DOTNET_ROOT",
+    "MAVEN_HOME",
+    "M2_HOME",
+    "GRADLE_USER_HOME",
+];
+const SYSTEM_ENV_PREFIXES: &[&str] = &["LC_", "XDG_", "NVM_"];
+
+/// 子进程能从观澜自身环境里继承哪些变量。
+///
+/// 只放行系统变量、Agent 自己的配置变量和用户点名的变量（`passthrough`）；启动观澜的 shell 里
+/// 的其它密钥不会传给 Agent（docs/04-architecture/security-storage.md §3）。Provider 已经注入
+/// 凭据时，环境里现成的同类凭据（`ANTHROPIC_*` / `OPENAI_*`）也不继承，免得两套混用。
+pub fn inherits_env(
+    kind: AgentKind,
+    name: &str,
+    injected: &[(String, String)],
+    passthrough: &[String],
+) -> bool {
+    let name = name.to_ascii_uppercase();
+    if SYSTEM_ENV.contains(&name.as_str())
+        || SYSTEM_ENV_PREFIXES.iter().any(|p| name.starts_with(p))
+        || passthrough.iter().any(|p| p.eq_ignore_ascii_case(&name))
+    {
+        return true;
+    }
+    let (config, credentials): (&[&str], &[&str]) = match kind {
+        AgentKind::ClaudeCode => (&["CLAUDE_"], &["ANTHROPIC_"]),
+        AgentKind::Codex => (&["CODEX_"], &["OPENAI_"]),
+        AgentKind::Mock => (&[], &[]),
+    };
+    if config.iter().any(|p| name.starts_with(p)) {
+        return true;
+    }
+    let provider_injected = injected.iter().any(|(k, _)| {
+        let k = k.to_ascii_uppercase();
+        credentials.iter().any(|p| k.starts_with(p)) || k == crate::provider::CODEX_KEY_ENV
+    });
+    !provider_injected && credentials.iter().any(|p| name.starts_with(p))
+}
+
+fn to_command(kind: AgentKind, spec: &CommandSpec, passthrough: &[String]) -> Command {
     let mut cmd = Command::new(&spec.program);
-    cmd.args(&spec.args).current_dir(&spec.cwd);
+    cmd.args(&spec.args).current_dir(&spec.cwd).env_clear();
+    for (k, v) in std::env::vars_os() {
+        if k.to_str()
+            .is_some_and(|k| inherits_env(kind, k, &spec.env, passthrough))
+        {
+            cmd.env(k, v);
+        }
+    }
     for (k, v) in &spec.env {
         cmd.env(k, v);
     }
@@ -77,7 +188,7 @@ pub fn run_agent(
     let command = adapter.build_command(spec)?;
     let mut parser = adapter.parser();
     let started = Instant::now();
-    let mut tree = process::spawn(to_command(&command))?;
+    let mut tree = process::spawn(to_command(adapter.kind(), &command, &spec.env_passthrough))?;
     on_event(RunnerEvent::Spawned {
         pid: tree.id(),
         command: command.display(),

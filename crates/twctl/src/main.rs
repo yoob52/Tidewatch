@@ -28,6 +28,9 @@ struct AgentOpts {
     /// 使用 DeepSeek（Anthropic 兼容端点），密钥从 --api-key-env 指定的环境变量读取
     #[arg(long)]
     deepseek: bool,
+    /// 额外传给 Agent 的环境变量名（可重复）；默认只传系统变量和 Agent 自己的配置变量
+    #[arg(long = "pass-env", value_name = "NAME")]
+    pass_env: Vec<String>,
     /// 自定义 Provider 的 Base URL（如中转站）；密钥同样从 --api-key-env 读取
     #[arg(long, conflicts_with = "deepseek")]
     base_url: Option<String>,
@@ -171,6 +174,7 @@ fn build_spec(
         permission: PermissionMode::parse(&o.permission)?,
         resume_session: resume,
         binary: o.binary.clone(),
+        env_passthrough: o.pass_env.clone(),
         ..Default::default()
     };
     if agent == AgentKind::Mock && spec.binary.is_none() {

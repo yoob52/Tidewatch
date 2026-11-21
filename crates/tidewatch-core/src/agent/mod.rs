@@ -83,6 +83,8 @@ pub struct RunSpec {
     pub binary: Option<PathBuf>,
     /// 仅注入本次子进程的环境变量（Provider 密钥等）。
     pub env: Vec<(String, String)>,
+    /// 额外允许从观澜自身环境继承的变量名；默认只继承系统变量和 Agent 自己的配置变量。
+    pub env_passthrough: Vec<String>,
     /// 追加到命令行末尾之前的参数（Provider 的 `-c` 覆盖、实例启动参数）。
     pub extra_args: Vec<String>,
 }
