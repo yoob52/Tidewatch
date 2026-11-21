@@ -377,7 +377,7 @@ function PrdTab({ d, reload }: TabProps) {
             {idx ? '' : ' · 当前'}
           </span>
           <span className="dim">
-            {fmtAgo(cur.created_at)} · {cur.author === 'user' ? '你' : cur.author}
+            {fmtAgo(cur.created_at)} · {cur.author === 'human' ? '你' : cur.author}
             {cur.note ? ` · ${cur.note}` : ''}
           </span>
           {!editable && idx === 0 && (
@@ -444,7 +444,7 @@ function PrdTab({ d, reload }: TabProps) {
             >
               <b>v{v.version}</b>
               <div>
-                <span>{v.origin === 'edit' ? '编辑' : v.origin === 'create' ? '创建' : (v.origin ?? '—')}</span>
+                <span>{v.origin === 'edit' ? '编辑' : v.origin === 'file' ? '文件导入' : '创建'}</span>
                 <small>{fmtAgo(v.created_at)}</small>
                 {v.note && <small>{v.note}</small>}
               </div>
