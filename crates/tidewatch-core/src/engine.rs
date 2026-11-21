@@ -100,6 +100,8 @@ struct Inner {
     cfg: EngineConfig,
     listener: Listener,
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// 合并会动项目主检出的索引和 HEAD，同一时间只做一个。
+    merging: Mutex<()>,
     wake: (Mutex<bool>, Condvar),
     shutdown: AtomicBool,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -125,6 +127,7 @@ impl Engine {
             cfg,
             listener,
             cancels: Mutex::new(HashMap::new()),
+            merging: Mutex::new(()),
             wake: (Mutex::new(false), Condvar::new()),
             shutdown: AtomicBool::new(false),
             workers: Mutex::new(Vec::new()),
@@ -330,6 +333,7 @@ impl Engine {
 
     /// 把已通过的子任务合并进项目的目标分支，然后清理 worktree。
     pub fn merge_task(&self, task_id: &str) -> Result<Task> {
+        let _merging = self.inner.merging.lock().unwrap_or_else(|e| e.into_inner());
         let (task, ticket, project, st) = self.load(task_id)?;
         if task.status != "accepted" {
             return Err(Error::invalid(format!(
