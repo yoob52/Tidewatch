@@ -256,6 +256,11 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
         "UPDATE task SET provider_id = NULL WHERE provider_id = ?1 AND status NOT IN ('merged', 'cancelled')",
         [id],
     )?;
+    let mut st = settings::get(conn)?;
+    if st.default_provider_id.as_deref() == Some(id) {
+        st.default_provider_id = None;
+        settings::save(conn, &st)?;
+    }
     conn.execute("DELETE FROM provider WHERE id = ?1", [id])?;
     Ok(())
 }
@@ -298,8 +303,18 @@ mod tests {
         set_secret_ref(&conn, &p.id, Some(&secret_name(&p.id))).unwrap();
         assert!(get(&conn, &p.id).unwrap().secret_ref.is_some());
         // 库里任何一列都不该出现密钥：这里只有条目名
+        let st = settings::Settings {
+            default_provider_id: Some(p.id.clone()),
+            ..Default::default()
+        };
+        settings::save(&conn, &st).unwrap();
         delete(&conn, &p.id).unwrap();
         assert!(list(&conn).unwrap().is_empty());
+        assert_eq!(
+            settings::get(&conn).unwrap().default_provider_id,
+            None,
+            "删掉的 Provider 不能还是全局默认"
+        );
     }
 
     #[test]
