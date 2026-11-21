@@ -151,14 +151,19 @@ pub fn inherits_env(
     let (config, credentials): (&[&str], &[&str]) = match kind {
         AgentKind::ClaudeCode => (&["CLAUDE_"], &["ANTHROPIC_"]),
         AgentKind::Codex => (&["CODEX_"], &["OPENAI_"]),
-        AgentKind::Mock => (&[], &[]),
+        AgentKind::Mock => (&["TIDEWATCH_MOCK_"], &[]),
     };
     if config.iter().any(|p| name.starts_with(p)) {
         return true;
     }
+    // 只注入了模型名之类的覆盖项不算：这时登录凭据仍然来自环境
     let provider_injected = injected.iter().any(|(k, _)| {
         let k = k.to_ascii_uppercase();
-        credentials.iter().any(|p| k.starts_with(p)) || k == crate::provider::CODEX_KEY_ENV
+        k == crate::provider::CODEX_KEY_ENV
+            || credentials.iter().any(|p| {
+                k.strip_prefix(p)
+                    .is_some_and(|rest| matches!(rest, "API_KEY" | "AUTH_TOKEN" | "BASE_URL"))
+            })
     });
     !provider_injected && credentials.iter().any(|p| name.starts_with(p))
 }
