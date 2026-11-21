@@ -256,10 +256,10 @@ pub fn get(conn: &Connection, id: &str) -> Result<Review> {
     .map_err(|_| not_found("预审记录", id))
 }
 
-/// 这张工单的预审记录，最近的在前。
+/// 这张工单的预审记录，按时间先后，最近一次在最后。
 pub fn list(conn: &Connection, ticket_id: &str) -> Result<Vec<Review>> {
     let mut st = conn.prepare(&format!(
-        "SELECT {REVIEW_COLS} FROM review WHERE ticket_id = ?1 ORDER BY created_at DESC, rowid DESC"
+        "SELECT {REVIEW_COLS} FROM review WHERE ticket_id = ?1 ORDER BY created_at, rowid"
     ))?;
     let rows = st
         .query_map([ticket_id], review_row)?
@@ -704,8 +704,13 @@ mod tests {
         assert_eq!(failed.error.as_deref(), Some("Agent 退出码 1"));
         assert_eq!(issues(&conn, &t).unwrap().len(), 2);
         // 再审一次，编号接着排
-        save_result(&mut conn, &t, None, "run4", Ok(OUTPUT)).unwrap();
+        let again = save_result(&mut conn, &t, None, "run4", Ok(OUTPUT)).unwrap();
         assert_eq!(issues(&conn, &t).unwrap()[2].code, "I-3");
+        // 记录按时间先后排，界面取最后一条当作最近一次
+        let all = list(&conn, &t).unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0].id, r.id);
+        assert_eq!(all[3].id, again.id);
     }
 
     #[test]
