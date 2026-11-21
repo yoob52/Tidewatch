@@ -14,7 +14,9 @@ function infoBox(title,body,text,ok){
   $('#ok').onclick=()=>{closeOv();toast('已复制到剪贴板')};
 }
 function openFinalize(){
-  const blockers=blockersLeft(),ac=AC42.filter(a=>a[1]).length,ver=VERSIONS42[0].v;
+  // 定稿的验收标准以勾选为准：写回 PRD 的「验收标准」一节，有变化就存成定稿版本
+  const picked=AC42.filter(a=>a[1]).map(a=>'- '+a[0]).join('\n'),blockers=blockersLeft(),ac=AC42.filter(a=>a[1]).length;
+  const finalText=prd42().replace(/(## 验收标准\n)[\s\S]*?(?=\n\n## |$)/,(m,h)=>h+picked),ver=VERSIONS42[0].v+(ac&&finalText!==prd42()?1:0);
   ov().innerHTML=`<div class="pop fin" style="width:720px;margin-top:-6vh"><div class="pop-h"><h2>定稿并拆分子任务</h2><p>定稿会锁定 PRD v${ver}。之后再改需求，需要「发起变更」并重新审核。</p></div>
     <div class="pop-b">
       <div class="gate"><div class="${blockers?'bad':'ok'}">${I(blockers?'x':'check',13)}${blockers?`还有 ${blockers} 个阻塞问题未处理`:'阻塞问题已全部处理'}</div><div class="${ac?'ok':'bad'}">${I(ac?'check':'x',13)}${ac?`验收标准 ${ac} 条`:'验收标准不能为空'}</div><div class="ok">${I('check',13)}已绑定后端与前端项目</div></div>
@@ -25,7 +27,7 @@ function openFinalize(){
     </div>
     <div class="pop-f"><button class="btn" data-x>再看看</button><button class="btn primary" id="ok" ${blockers||!ac?'disabled':''}>${I('lock',14)}确认定稿，创建 2 个分支与 worktree</button></div></div>`;
   $('#auto').parentNode.onclick=()=>$('#auto').classList.toggle('on');
-  $('#ok').onclick=()=>{if(blockers||!ac)return;const t=T('TW-42'),go=$('#auto').classList.contains('on');closeOv();t.status=go?'developing':'finalized';t.issues=0;t.sub=[['BE','queued'],['FE','blocked']];t.updated='刚刚';
+  $('#ok').onclick=()=>{if(blockers||!ac)return;const t=T('TW-42'),go=$('#auto').classList.contains('on');closeOv();if(finalText!==prd42())prd42Save(finalText,'定稿',`验收标准以勾选的 ${ac} 条为准`);t.status=go?'developing':'finalized';t.issues=0;t.sub=[['BE','queued'],['FE','blocked']];t.updated='刚刚';
     toast(`TW-42 已定稿（v${ver}），已创建 tw/TW-42-be 与 tw/TW-42-fe`);location.hash='#/board'};
 }
 function openCmd(){
