@@ -199,7 +199,10 @@ impl Engine {
                 runs::NewRun {
                     task_id: &task.id,
                     ticket_id: &ticket.id,
-                    purpose: if plan.resume.is_some() || opts.instruction.is_some() {
+                    purpose: if plan.resume.is_some()
+                        || opts.instruction.is_some()
+                        || task.status == "changes_requested"
+                    {
                         "rework"
                     } else {
                         "dev"
@@ -540,6 +543,25 @@ fn first<'a>(candidates: impl IntoIterator<Item = &'a Option<String>>) -> Option
         .find_map(|c| c.clone().filter(|s| !s.trim().is_empty()))
 }
 
+fn last_rejection_note(
+    conn: &rusqlite::Connection,
+    ticket_id: &str,
+    task_id: &str,
+) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    Ok(conn
+        .query_row(
+            "SELECT json_extract(payload_json, '$.note') FROM timeline_event
+             WHERE ticket_id = ?1 AND type = 'task_rejected'
+               AND json_extract(payload_json, '$.task_id') = ?2
+             ORDER BY ts DESC, rowid DESC LIMIT 1",
+            [ticket_id, task_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
 fn plan_run(
     conn: &rusqlite::Connection,
     task: &Task,
@@ -575,11 +597,18 @@ fn plan_run(
     } else {
         runs::last_session(conn, &task.id, kind.as_str())?
     };
+    // 被打回的子任务：没有另给指令时，把最近一次打回意见交给 Agent
+    let rejection = if task.status == "changes_requested" {
+        last_rejection_note(conn, &task.ticket_id, &task.id)?
+    } else {
+        None
+    };
     let instruction = opts
         .instruction
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or(rejection.as_deref());
     let prompt = match (&opts.prompt_override, &resume, instruction) {
         (Some(p), _, _) if !p.trim().is_empty() => p.clone(),
         (_, Some(_), Some(i)) => crate::prompt::rework_prompt(&project, ticket, i),

@@ -452,6 +452,10 @@ fn rejection_sends_the_note_back_to_the_same_session() {
     );
     assert_eq!(f.ticket_status(&ticket), "developing");
 
+    // 不另给指令时，打回意见本身就是返工指令
+    let plan = f.engine.plan(&task, &StartOptions::default()).unwrap();
+    assert!(plan.prompt.contains("边界值没处理") && plan.resume.is_some());
+
     let opts = StartOptions {
         instruction: Some("边界值没处理 [mock:steps=1] [mock:delay=50]".into()),
         ..Default::default()
@@ -477,6 +481,7 @@ fn rejection_sends_the_note_back_to_the_same_session() {
         )
         .unwrap();
     assert!(fresh.resume.is_none() && fresh.prompt.contains("修复下面这个 Bug"));
+    assert!(fresh.prompt.contains("重来"));
 
     // 取消：worktree 删掉，分支留着
     let t = f.engine.cancel_task(&task).unwrap();
