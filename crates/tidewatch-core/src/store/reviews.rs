@@ -160,7 +160,15 @@ pub fn save_result(
     let id = crate::util::new_id();
     let now = crate::util::now();
     let parsed = match output {
-        Ok(text) => extract_json(text).map_err(|e| e.to_string()),
+        // 能解析成对象还不够：没有 issues 数组的输出（比如 `{}`）不能当成"没有问题"
+        Ok(text) => {
+            extract_json(text)
+                .map_err(|e| e.to_string())
+                .and_then(|v| match v.get("issues") {
+                    Some(Value::Array(_)) => Ok(v),
+                    _ => Err("预审输出里没有 issues 数组，不是约定的格式。".to_string()),
+                })
+        }
         Err(e) => Err(e.to_string()),
     };
     let raw = output.unwrap_or_default();
@@ -698,6 +706,28 @@ mod tests {
         // 再审一次，编号接着排
         save_result(&mut conn, &t, None, "run4", Ok(OUTPUT)).unwrap();
         assert_eq!(issues(&conn, &t).unwrap()[2].code, "I-3");
+    }
+
+    #[test]
+    fn output_without_an_issue_list_is_a_failed_review() {
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let t = ticket(&mut conn);
+        for raw in ["{}", r#"{"summary":"不错","issues":"无"}"#] {
+            let r = save_result(&mut conn, &t, None, "", Ok(raw)).unwrap();
+            assert!(r.error.is_some(), "{raw} 不应该算预审成功");
+            assert_eq!(r.summary, "");
+        }
+        assert!(issues(&conn, &t).unwrap().is_empty());
+        // 明确给出空数组才是"没有问题"
+        let ok = save_result(
+            &mut conn,
+            &t,
+            None,
+            "",
+            Ok(r#"{"summary":"清楚","issues":[]}"#),
+        )
+        .unwrap();
+        assert_eq!(ok.error, None);
     }
 
     #[test]
