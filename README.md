@@ -35,6 +35,8 @@ cargo run -p twctl -- doctor
 cargo run -p twctl -- demo --repo <仓库路径> --agents mock                # 不需要账号
 cargo run -p twctl -- demo --repo <仓库路径> --agents claude_code,codex   # 需要本机已登录
 DEEPSEEK_API_KEY=... cargo run -p twctl -- run --agent claude_code --deepseek --cwd <目录> --prompt "..."
+# 其它兼容端点（中转站等）：Claude Code 走 Anthropic 协议，Codex 走 OpenAI Responses 协议
+MY_KEY=... cargo run -p twctl -- run --agent codex --base-url https://example.com/v1 --api-key-env MY_KEY --model <模型> --cwd <目录> --prompt "..."
 ```
 
 ## 文档导航

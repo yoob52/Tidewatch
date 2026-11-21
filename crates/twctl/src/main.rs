@@ -28,6 +28,12 @@ struct AgentOpts {
     /// 使用 DeepSeek（Anthropic 兼容端点），密钥从 --api-key-env 指定的环境变量读取
     #[arg(long)]
     deepseek: bool,
+    /// 自定义 Provider 的 Base URL（如中转站）；密钥同样从 --api-key-env 读取
+    #[arg(long, conflicts_with = "deepseek")]
+    base_url: Option<String>,
+    /// 自定义 Provider 的协议：anthropic / openai_responses / openai_chat；默认按 Agent 选
+    #[arg(long, requires = "base_url")]
+    protocol: Option<String>,
     /// 存放 API Key 的环境变量名
     #[arg(long, default_value = "DEEPSEEK_API_KEY")]
     api_key_env: String,
@@ -170,10 +176,25 @@ fn build_spec(
     if agent == AgentKind::Mock && spec.binary.is_none() {
         spec.binary = Some(std::env::current_exe()?);
     }
-    if o.deepseek {
+    let custom = match &o.base_url {
+        Some(url) => Some(provider::ProviderConfig {
+            name: "自定义".into(),
+            protocol: match (&o.protocol, agent) {
+                (Some(p), _) => provider::Protocol::parse(p)?,
+                (None, AgentKind::Codex) => provider::Protocol::OpenaiResponses,
+                (None, _) => provider::Protocol::Anthropic,
+            },
+            base_url: Some(url.clone()),
+            default_model: o.model.clone(),
+            small_model: None,
+            extra_env: vec![],
+        }),
+        None => o.deepseek.then(provider::deepseek),
+    };
+    if let Some(p) = custom {
         let key = std::env::var(&o.api_key_env)
             .map_err(|_| format!("环境变量 {} 未设置", o.api_key_env))?;
-        let inj = provider::inject(agent, &provider::deepseek(), Some(&key))?;
+        let inj = provider::inject(agent, &p, Some(&key))?;
         spec.env.extend(inj.env);
         spec.extra_args.extend(inj.args);
         if spec.model.is_none() {

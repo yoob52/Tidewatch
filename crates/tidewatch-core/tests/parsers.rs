@@ -71,6 +71,71 @@ fn claude_real_not_logged_in() {
         .any(|e| matches!(e, AgentEvent::Finished { ok: false, .. })));
 }
 
+/// 真实录制：Claude Code 续接被中途停止的会话，改两个文件后成功结束。
+#[test]
+fn claude_real_resume_stream() {
+    let ev = replay(AgentKind::ClaudeCode, "claude_real_resume.jsonl");
+    assert!(
+        matches!(&ev[0], AgentEvent::SessionStarted { session_id, model }
+        if session_id == "8d23d512-8c23-4572-8fc6-1f665311b6e6" && model.as_deref() == Some("claude-fable-5-2"))
+    );
+    for path in ["/repo/calc.py", "/repo/README.md"] {
+        assert!(ev.contains(&AgentEvent::FileChange {
+            path: path.into(),
+            kind: "edit".into()
+        }));
+    }
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::Thinking { .. })));
+    let Some(AgentEvent::Finished {
+        ok, summary, usage, ..
+    }) = ev.last()
+    else {
+        panic!("最后一个事件应是 Finished：{:?}", ev.last());
+    };
+    assert!(*ok && summary.contains("sub(a, b)"));
+    let usage = usage.as_ref().unwrap();
+    assert!(usage.output_tokens == 2577 && usage.cost_usd.is_some_and(|c| c > 0.0));
+}
+
+/// 真实录制：上游接口 502，CLI 自动重试——要变成一条看得见的错误事件。
+#[test]
+fn claude_real_api_retry_is_surfaced() {
+    let ev = replay(AgentKind::ClaudeCode, "claude_real_api_retry.jsonl");
+    assert!(ev.iter().any(
+        |e| matches!(e, AgentEvent::Error { message } if message.contains("502") && message.contains("1/10"))
+    ));
+}
+
+/// 真实录制：Codex（gpt-6.1-sol，自定义 Provider）改两个文件后成功结束。
+#[test]
+fn codex_real_success_stream() {
+    let ev = replay(AgentKind::Codex, "codex_real_success.jsonl");
+    assert!(
+        matches!(&ev[0], AgentEvent::SessionStarted { session_id, .. } if session_id == "01a1fedb-2b8a-7940-beba-e3f69089f8e6")
+    );
+    for path in ["/repo/calc.py", "/repo/README.md"] {
+        assert!(ev
+            .iter()
+            .any(|e| matches!(e, AgentEvent::FileChange { path: p, .. } if p == path)));
+    }
+    assert!(ev.iter().any(|e| matches!(
+        e,
+        AgentEvent::Command {
+            done: true,
+            exit_code: Some(0),
+            ..
+        }
+    )));
+    let Some(AgentEvent::Finished {
+        ok, summary, usage, ..
+    }) = ev.last()
+    else {
+        panic!("最后一个事件应是 Finished：{:?}", ev.last());
+    };
+    assert!(*ok && summary.contains("mul(a, b)"));
+    assert_eq!(usage.as_ref().unwrap().output_tokens, 486);
+}
+
 #[test]
 fn codex_success_stream() {
     let ev = replay(AgentKind::Codex, "codex_success.jsonl");

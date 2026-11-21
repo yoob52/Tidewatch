@@ -88,15 +88,30 @@ impl EventParser for ClaudeParser {
         };
         let mut out = vec![];
         match v.get("type").and_then(|t| t.as_str()).unwrap_or_default() {
-            "system" => {
-                if v.get("subtype").and_then(|s| s.as_str()) == Some("init") && !self.session_seen {
+            "system" => match v.get("subtype").and_then(|s| s.as_str()) {
+                Some("init") if !self.session_seen => {
                     self.session_seen = true;
                     out.push(AgentEvent::SessionStarted {
                         session_id: str_of(&v, "session_id"),
                         model: v.get("model").and_then(|m| m.as_str()).map(String::from),
                     });
                 }
-            }
+                // 上游接口出错、CLI 在自动重试：不提示的话界面上只会看到长时间没动静
+                Some("api_retry") => {
+                    let num = |k: &str| v.get(k).and_then(|n| n.as_u64()).unwrap_or_default();
+                    out.push(AgentEvent::Error {
+                        message: format!(
+                            "接口请求失败（{} {}），{} 秒后第 {}/{} 次重试",
+                            num("error_status"),
+                            str_of(&v, "error"),
+                            num("retry_delay_ms").div_ceil(1000),
+                            num("attempt"),
+                            num("max_retries"),
+                        ),
+                    });
+                }
+                _ => {}
+            },
             "assistant" => {
                 let blocks = v
                     .pointer("/message/content")
