@@ -725,28 +725,14 @@ impl Inner {
         if let Some(e) = &error {
             self.log(&run.id, "error", json!({ "message": e }));
         }
-        {
-            let conn = lock(&self.db);
-            let _ = runs::set_fields(
-                &conn,
-                &run.id,
-                &[
-                    ("status", &status),
-                    ("finished_at", &crate::util::now()),
-                    ("error", &error),
-                ],
-            );
-            let _ = set_effect(
-                &conn,
-                &run.id,
-                if status == "failed" { "failed" } else { "done" },
-            );
+        // 运行的终态和它的结论（预审结果 / 建议、工单状态）在同一次持锁里写入：
+        // 否则界面可能读到"运行已成功、工单还在预审中"的中间状态。
+        let finish = Some((status, error.as_deref()));
+        match &res {
+            Ok(text) => self.conclude_ticket_run(run, Ok(text), finish),
+            Err(e) => self.conclude_ticket_run(run, Err(&e.to_string()), finish),
         }
         self.log(&run.id, "status", json!({ "status": status }));
-        match &res {
-            Ok(text) => self.conclude_ticket_run(run, Ok(text)),
-            Err(e) => self.conclude_ticket_run(run, Err(&e.to_string())),
-        }
     }
 
     fn ticket_run_steps(&self, run: &Run, cancel: &AtomicBool) -> Result<String> {
@@ -803,10 +789,33 @@ impl Inner {
     }
 
     /// 工单级运行结束（或没开始就被停掉）之后：预审结果 / 建议入库，工单离开"AI 预审中"，通知界面。
-    pub(super) fn conclude_ticket_run(&self, run: &Run, output: std::result::Result<&str, &str>) {
+    ///
+    /// `finish` 是运行自己的终态（状态、错误）；排队中就被撤掉的运行已经写过终态，传 `None`。
+    pub(super) fn conclude_ticket_run(
+        &self,
+        run: &Run,
+        output: std::result::Result<&str, &str>,
+        finish: Option<(&str, Option<&str>)>,
+    ) {
         let ticket_id = run.ticket_id.clone().unwrap_or_default();
         let res: Result<EngineEvent> = (|| {
             let mut conn = lock(&self.db);
+            if let Some((status, error)) = finish {
+                let _ = runs::set_fields(
+                    &conn,
+                    &run.id,
+                    &[
+                        ("status", &status),
+                        ("finished_at", &crate::util::now()),
+                        ("error", &error),
+                    ],
+                );
+                let _ = set_effect(
+                    &conn,
+                    &run.id,
+                    if status == "failed" { "failed" } else { "done" },
+                );
+            }
             let ticket = tickets::get(&conn, &ticket_id)?;
             if run.purpose == "review" {
                 let review = reviews::save_result(

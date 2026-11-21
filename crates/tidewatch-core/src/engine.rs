@@ -242,7 +242,7 @@ impl Engine {
                     if run.task_id.is_none() {
                         drop(conn);
                         self.inner
-                            .conclude_ticket_run(&run, Err("在开始前被停止。"));
+                            .conclude_ticket_run(&run, Err("在开始前被停止。"), None);
                     }
                 }
                 "starting" | "running" | "finalizing" | "stopping" => {
