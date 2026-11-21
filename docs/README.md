@@ -3,7 +3,7 @@
 ## 推荐阅读顺序
 
 1. **为什么做**：[产品愿景与痛点](01-product/vision.md) → [功能清单](01-product/features.md)
-2. **工单怎么流转**：[工单模型](02-workflow/ticket-model.md) → [工作流与状态机](02-workflow/workflow.md) → [PRD 审核](02-workflow/prd-review.md) → [工单来源](02-workflow/ticket-sources.md)
+2. **工单怎么流转**：[工单模型](02-workflow/ticket-model.md) → [工作流与状态机](02-workflow/workflow.md) → [PRD 审核](02-workflow/prd-review.md) → [工单来源](02-workflow/ticket-sources.md) → [PRD 中的图片](02-workflow/prd-images.md)
 3. **Agent 怎么干活**：[Agent 适配层](03-agent/agent-adapter.md) → [自定义 Provider](03-agent/providers.md) → [执行与隔离](03-agent/execution.md) → [Prompt 与上下文](03-agent/prompt-context.md)
 4. **系统怎么搭**：[系统架构](04-architecture/overview.md) → [数据模型](04-architecture/data-model.md) → [安全与存储](04-architecture/security-storage.md)
 5. **长什么样**：[界面设计](05-ui/ui-design.md)
@@ -22,7 +22,8 @@ docs/
 │   ├── ticket-model.md          # 工单 / 子任务 / 版本模型
 │   ├── workflow.md              # 状态机与流转规则
 │   ├── prd-review.md            # PRD 预审与人工审核
-│   └── ticket-sources.md        # 工单来源与导入
+│   ├── ticket-sources.md        # 工单来源与导入
+│   └── prd-images.md            # PRD 图片：存储、引用、权威图与参考图
 ├── 03-agent/
 │   ├── agent-adapter.md         # Agent 适配层
 │   ├── providers.md             # 自定义 Provider
