@@ -227,7 +227,9 @@ pub fn list_for_ticket(conn: &Connection, ticket_id: &str) -> Result<Vec<Task>> 
 }
 
 pub fn list_all(conn: &Connection) -> Result<Vec<Task>> {
-    let mut st = conn.prepare(&format!("SELECT {COLS} FROM task ORDER BY created_at, rowid"))?;
+    let mut st = conn.prepare(&format!(
+        "SELECT {COLS} FROM task ORDER BY created_at, rowid"
+    ))?;
     let rows = st
         .query_map([], row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
