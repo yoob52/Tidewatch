@@ -509,6 +509,8 @@ pub fn request_change(conn: &mut Connection, id: &str, reason: &str) -> Result<T
     // 连续两次变更之间没有再定稿时，保留最早那个定稿版本作为对比基准
     tx.execute(
         "UPDATE ticket SET status = 'human_review',
+           change_from_criteria_json = CASE WHEN change_from_version_id IS NULL
+             THEN acceptance_criteria_json ELSE change_from_criteria_json END,
            change_from_version_id = COALESCE(change_from_version_id, finalized_version_id),
            change_reason = ?2, updated_at = ?3 WHERE id = ?1",
         rusqlite::params![t.id, reason, crate::util::now()],
@@ -532,10 +534,23 @@ pub fn request_change(conn: &mut Connection, id: &str, reason: &str) -> Result<T
 /// 变更的影响已经处理完。
 pub fn clear_change(conn: &Connection, id: &str) -> Result<()> {
     conn.execute(
-        "UPDATE ticket SET change_from_version_id = NULL, change_reason = NULL WHERE id = ?1",
+        "UPDATE ticket SET change_from_version_id = NULL, change_reason = NULL,
+           change_from_criteria_json = NULL WHERE id = ?1",
         [id],
     )?;
     Ok(())
+}
+
+/// 发起变更那一刻的验收标准（和变更前的定稿版本一起，作为影响分析的对比基准）。
+pub fn change_from_criteria(conn: &Connection, id: &str) -> Result<Vec<String>> {
+    let json: Option<String> = conn.query_row(
+        "SELECT change_from_criteria_json FROM ticket WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    Ok(json
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default())
 }
 
 pub fn prd_version(conn: &Connection, version_id: &str) -> Result<PrdVersion> {

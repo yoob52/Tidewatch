@@ -25,6 +25,11 @@ ALTER TABLE review_issue ADD COLUMN code TEXT;
 -- 变更：记下发起变更时的定稿版本和原因，再次定稿时用来做影响分析
 ALTER TABLE ticket ADD COLUMN change_from_version_id TEXT;
 ALTER TABLE ticket ADD COLUMN change_reason TEXT;
+-- 发起变更时的验收标准：只改验收标准的变更也要能对比出来
+ALTER TABLE ticket ADD COLUMN change_from_criteria_json TEXT;
+
+-- "开始开发"时依赖还没满足的返工子任务：依赖满足后自动入队
+ALTER TABLE task ADD COLUMN start_when_ready INTEGER NOT NULL DEFAULT 0;
 
 -- 打回时的行内评论属于哪一次打回
 ALTER TABLE comment ADD COLUMN batch_id TEXT;

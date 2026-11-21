@@ -188,8 +188,8 @@ fn proposal_prompt(
             crate::prompt::impact_prompt(
                 &ov,
                 ticket.change_reason.as_deref().unwrap_or(""),
-                &old,
-                &prd,
+                (&old, &tickets::change_from_criteria(conn, &ticket.id)?),
+                (&prd, &ticket.acceptance_criteria),
                 &lines,
             ),
         ))

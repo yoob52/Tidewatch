@@ -132,8 +132,14 @@ const IMPACT: &str = r#"下面这份需求在定稿后发生了变更。请对�
 ## 旧版需求
 {{prd.old}}
 
+## 旧版验收标准
+{{criteria.old}}
+
 ## 新版需求
 {{prd.new}}
+
+## 新版验收标准
+{{criteria.new}}
 
 ## 已有的子任务
 {{tasks}}
@@ -270,7 +276,14 @@ pub const TEMPLATES: &[TemplateDef] = &[
         title: "变更影响分析",
         description: "定稿后变更、再次定稿时生成；输出格式由系统固定追加",
         default: IMPACT,
-        variables: &["change.reason", "prd.old", "prd.new", "tasks"],
+        variables: &[
+            "change.reason",
+            "prd.old",
+            "criteria.old",
+            "prd.new",
+            "criteria.new",
+            "tasks",
+        ],
     },
 ];
 
@@ -400,6 +413,8 @@ pub fn preview(name: &str, content: &str) -> crate::Result<String> {
             "instruction" => "边界值没处理：满减后金额为 0 时不应再打折。",
             "prd" | "prd.new" => "## 背景\n用户希望两张券可以叠加使用。\n\n## 规则\n先折扣、后满减。",
             "prd.old" => "## 背景\n用户希望两张券可以叠加使用。",
+            "criteria.old" => "- 两张券叠加后金额不为负",
+            "criteria.new" => "- 两张券叠加后金额不为负\n- 最多叠加三张",
             "open_issues" => "- [I-2][major] 没有约定叠加上限",
             "projects" => "- shop-api | kind=backend | role=backend\n- shop-web | kind=frontend | role=frontend",
             "change.reason" => "运营要求叠加上限改为三张。",
@@ -468,14 +483,16 @@ pub fn split_prompt(
 pub fn impact_prompt(
     ov: &Overrides,
     reason: &str,
-    old_prd: &str,
-    new_prd: &str,
+    (old_prd, old_criteria): (&str, &[String]),
+    (new_prd, new_criteria): (&str, &[String]),
     tasks: &[String],
 ) -> String {
     let vars = vec![
         ("change.reason", or_placeholder(reason, "（未填写）")),
         ("prd.old", or_placeholder(old_prd, "（空）")),
+        ("criteria.old", bullets(old_criteria, "（未列出）")),
         ("prd.new", or_placeholder(new_prd, "（空）")),
+        ("criteria.new", bullets(new_criteria, "（未列出）")),
         ("tasks", bullets(tasks, "（还没有子任务）")),
     ];
     fill(text(ov, "impact"), &vars) + IMPACT_OUTPUT

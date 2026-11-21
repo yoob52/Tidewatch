@@ -1049,6 +1049,12 @@ fn change_after_finalize_runs_impact_analysis_and_reworks_affected_tasks() {
         None,
     )
     .unwrap();
+    tickets::set_criteria(
+        &lock(f.db()),
+        &ticket,
+        vec!["能导出 CSV".into(), "能导出 Excel".into()],
+    )
+    .unwrap();
 
     // 再次定稿：已有子任务，跑的是影响分析而不是拆分
     let fin = f.engine.finalize(&ticket, false).unwrap();
@@ -1057,6 +1063,17 @@ fn change_after_finalize_runs_impact_analysis_and_reworks_affected_tasks() {
     assert!(
         impact_run.prompt.contains("还要支持 Excel")
             && impact_run.prompt.contains("支持 CSV 和 Excel")
+    );
+    // 验收标准不在 PRD 版本里，变更前后的两份都要给到 AI
+    assert!(
+        impact_run
+            .prompt
+            .contains("## 旧版验收标准\n- 能导出 CSV\n\n")
+            && impact_run
+                .prompt
+                .contains("## 新版验收标准\n- 能导出 CSV\n- 能导出 Excel\n"),
+        "{}",
+        impact_run.prompt
     );
     assert_ne!(
         fin.ticket.finalized_version_id.as_deref(),
