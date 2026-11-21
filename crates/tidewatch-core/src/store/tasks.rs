@@ -218,7 +218,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Task> {
 
 pub fn list_for_ticket(conn: &Connection, ticket_id: &str) -> Result<Vec<Task>> {
     let mut st = conn.prepare(&format!(
-        "SELECT {COLS} FROM task WHERE ticket_id = ?1 ORDER BY created_at, id"
+        "SELECT {COLS} FROM task WHERE ticket_id = ?1 ORDER BY created_at, rowid"
     ))?;
     let rows = st
         .query_map([ticket_id], row)?
@@ -227,7 +227,7 @@ pub fn list_for_ticket(conn: &Connection, ticket_id: &str) -> Result<Vec<Task>> 
 }
 
 pub fn list_all(conn: &Connection) -> Result<Vec<Task>> {
-    let mut st = conn.prepare(&format!("SELECT {COLS} FROM task ORDER BY created_at, id"))?;
+    let mut st = conn.prepare(&format!("SELECT {COLS} FROM task ORDER BY created_at, rowid"))?;
     let rows = st
         .query_map([], row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -326,7 +326,7 @@ pub fn clear_start_when_ready(conn: &Connection, ticket_id: &str) -> Result<()> 
 pub fn ready_deferred(conn: &Connection, ticket_id: &str) -> Result<Vec<String>> {
     let mut st = conn.prepare(
         "SELECT id FROM task WHERE ticket_id = ?1 AND start_when_ready = 1
-         AND status = 'changes_requested' ORDER BY created_at, id",
+         AND status = 'changes_requested' ORDER BY created_at, rowid",
     )?;
     let ids = st
         .query_map([ticket_id], |r| r.get::<_, String>(0))?
