@@ -895,6 +895,109 @@ impl Inner {
         runs::set_fields(&lock(&self.db), &run.id, &[("start_commit", &start_commit)])?;
 
         // 2. Agent
+        let logs = self.cfg.data_dir.join("logs");
+        let outcome = self.agent_phase(run, kind, &worktree, &project, &st, &provider, cancel)?;
+        let agent_ok = outcome.succeeded();
+
+        let message = format!("tw({}): {} · 第 {} 轮", ticket.key, task.title, run.number);
+        if let Some(commit) = git::commit_all(&worktree, &message)? {
+            self.log(
+                &run.id,
+                "commit",
+                json!({ "commit": commit, "message": message }),
+            );
+        }
+        let end_commit = git::rev_parse(&worktree, "HEAD")?;
+        git::save_checkpoint(&repo, &format!("{}/{}-end", task.id, run.id), &end_commit)?;
+        let stat = git::diff_stat(&worktree, &base, Some("HEAD"))?;
+        runs::set_fields(
+            &lock(&self.db),
+            &run.id,
+            &[
+                ("end_commit", &end_commit),
+                ("diff_stat_json", &serde_json::to_string(&stat)?),
+            ],
+        )?;
+
+        let mut failed_checks = vec![];
+        if agent_ok && st.auto_test {
+            for (name, command) in project.commands.checks() {
+                if cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                self.log(
+                    &run.id,
+                    "check_started",
+                    json!({ "name": name, "command": command }),
+                );
+                let out = logs.join(format!("{}-{name}.log", run.id));
+                let res = run_shell(&command, &worktree, &out, cancel, CHECK_TIMEOUT)?;
+                runs::add_test_report(
+                    &lock(&self.db),
+                    &run.id,
+                    &task.id,
+                    &command,
+                    res.exit_code.map(i64::from),
+                    Some(&out.display().to_string()),
+                    res.duration_ms as i64,
+                )?;
+                let ok = res.exit_code == Some(0);
+                if !ok && !res.cancelled {
+                    failed_checks.push(name.to_string());
+                }
+                self.log(
+                    &run.id,
+                    "check_finished",
+                    json!({ "name": name, "command": command, "exit_code": res.exit_code, "duration_ms": res.duration_ms, "timed_out": res.timed_out, "tail": res.tail }),
+                );
+            }
+        }
+
+        let (status, error) = if outcome.stopped || cancel.load(Ordering::SeqCst) {
+            ("stopped", None)
+        } else if outcome.timed_out {
+            (
+                "failed",
+                Some(format!(
+                    "超过单次运行时限（{} 分钟），已停止。",
+                    st.run_timeout_minutes
+                )),
+            )
+        } else if !agent_ok {
+            let detail = [outcome.summary.trim(), outcome.stderr_tail.trim()]
+                .into_iter()
+                .find(|s| !s.is_empty())
+                .unwrap_or("没有输出");
+            (
+                "failed",
+                Some(format!(
+                    "Agent 没有正常完成（退出码 {:?}）：{detail}",
+                    outcome.exit_code
+                )),
+            )
+        } else {
+            ("succeeded", None)
+        };
+        Ok(Finished {
+            status,
+            error,
+            failed_checks,
+        })
+    }
+
+    /// 在 `worktree` 里启动 Agent 并等它结束：事件写库并推给界面，用量、费用、摘要记到 Run 上，
+    /// Run 进入 finalizing。子任务运行和工单级运行（预审 / 拆分 / 影响分析）共用。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn agent_phase(
+        &self,
+        run: &Run,
+        kind: AgentKind,
+        worktree: &Path,
+        project: &Project,
+        st: &Settings,
+        provider: &Option<providers::Provider>,
+        cancel: &AtomicBool,
+    ) -> Result<crate::runner::RunOutcome> {
         if cancel.load(Ordering::SeqCst) {
             return Err(Error::invalid("在 Agent 启动前被停止。"));
         }
@@ -903,7 +1006,7 @@ impl Inner {
         let raw_log = logs.join(format!("{}.jsonl", run.id));
         let mut spec = RunSpec {
             prompt: run.prompt.clone(),
-            cwd: worktree.clone(),
+            cwd: worktree.to_path_buf(),
             model: run.model.clone(),
             permission: PermissionMode::parse(
                 run.permission.as_deref().unwrap_or("workspace_write"),
@@ -1065,91 +1168,7 @@ impl Inner {
                 json!({ "message": format!("原始日志没有写全：{e}") }),
             );
         }
-
-        let message = format!("tw({}): {} · 第 {} 轮", ticket.key, task.title, run.number);
-        if let Some(commit) = git::commit_all(&worktree, &message)? {
-            self.log(
-                &run.id,
-                "commit",
-                json!({ "commit": commit, "message": message }),
-            );
-        }
-        let end_commit = git::rev_parse(&worktree, "HEAD")?;
-        git::save_checkpoint(&repo, &format!("{}/{}-end", task.id, run.id), &end_commit)?;
-        let stat = git::diff_stat(&worktree, &base, Some("HEAD"))?;
-        runs::set_fields(
-            &lock(&self.db),
-            &run.id,
-            &[
-                ("end_commit", &end_commit),
-                ("diff_stat_json", &serde_json::to_string(&stat)?),
-            ],
-        )?;
-
-        let mut failed_checks = vec![];
-        if agent_ok && st.auto_test {
-            for (name, command) in project.commands.checks() {
-                if cancel.load(Ordering::SeqCst) {
-                    break;
-                }
-                self.log(
-                    &run.id,
-                    "check_started",
-                    json!({ "name": name, "command": command }),
-                );
-                let out = logs.join(format!("{}-{name}.log", run.id));
-                let res = run_shell(&command, &worktree, &out, cancel, CHECK_TIMEOUT)?;
-                runs::add_test_report(
-                    &lock(&self.db),
-                    &run.id,
-                    &task.id,
-                    &command,
-                    res.exit_code.map(i64::from),
-                    Some(&out.display().to_string()),
-                    res.duration_ms as i64,
-                )?;
-                let ok = res.exit_code == Some(0);
-                if !ok && !res.cancelled {
-                    failed_checks.push(name.to_string());
-                }
-                self.log(
-                    &run.id,
-                    "check_finished",
-                    json!({ "name": name, "command": command, "exit_code": res.exit_code, "duration_ms": res.duration_ms, "timed_out": res.timed_out, "tail": res.tail }),
-                );
-            }
-        }
-
-        let (status, error) = if outcome.stopped || cancel.load(Ordering::SeqCst) {
-            ("stopped", None)
-        } else if outcome.timed_out {
-            (
-                "failed",
-                Some(format!(
-                    "超过单次运行时限（{} 分钟），已停止。",
-                    st.run_timeout_minutes
-                )),
-            )
-        } else if !agent_ok {
-            let detail = [outcome.summary.trim(), outcome.stderr_tail.trim()]
-                .into_iter()
-                .find(|s| !s.is_empty())
-                .unwrap_or("没有输出");
-            (
-                "failed",
-                Some(format!(
-                    "Agent 没有正常完成（退出码 {:?}）：{detail}",
-                    outcome.exit_code
-                )),
-            )
-        } else {
-            ("succeeded", None)
-        };
-        Ok(Finished {
-            status,
-            error,
-            failed_checks,
-        })
+        Ok(outcome)
     }
 
     /// 取得子任务的 worktree；第一次运行时创建分支与 worktree，并执行项目的准备命令。
