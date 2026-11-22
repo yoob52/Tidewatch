@@ -196,17 +196,22 @@ export function ProvidersPage({ id }: { id?: string }) {
             </div>
           </Field>
           {compat.length > 0 && (
-            <Field label="适用的 Agent" hint={compat.some((c) => !c.compatible) ? '协议不匹配的 Agent 要经 LiteLLM 之类的代理桥接' : undefined}>
+            <Field label="适用的 Agent" hint={compat.some((c) => c.bridge_guide) ? '协议不匹配的 Agent 要经 LiteLLM 之类的代理桥接' : undefined}>
               <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
                 {compat.map((c) =>
                   c.compatible ? (
                     <span key={c.agent} className="tag moss">
                       {c.agent_name} 可直接使用
                     </span>
-                  ) : (
+                  ) : c.bridge_guide ? (
                     <button key={c.agent} className="btn sm" onClick={() => setGuide(c)}>
                       {c.agent_name} 不能直接用 · 看桥接配置
                     </button>
+                  ) : (
+                    // 没有桥接办法的（Gemini CLI 只说 Gemini 协议）不给按钮
+                    <span key={c.agent} className="tag">
+                      {c.agent_name} 不能用这个协议
+                    </span>
                   ),
                 )}
               </div>
