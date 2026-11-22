@@ -603,6 +603,32 @@ fn rejection_sends_the_note_back_to_the_same_session() {
     // 不另给指令时，打回意见本身就是返工指令
     let plan = f.engine.plan(&task, &StartOptions::default()).unwrap();
     assert!(plan.prompt.contains("边界值没处理") && plan.resume.is_some());
+    assert!(
+        !plan.prompt.contains("工单正文已更新"),
+        "正文没改过就不重复发"
+    );
+
+    // Bug 在开发中改了正文（比如换了截图）：续接的会话要拿到现行版本
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    {
+        let mut conn = f.engine.db().lock().unwrap();
+        tidewatch_core::store::tickets::save_prd(
+            &mut conn,
+            &ticket,
+            "x [mock:steps=1] [mock:delay=50]\n\n金额为 0 时也要显示",
+            None,
+        )
+        .unwrap();
+    }
+    let plan = f.engine.plan(&task, &StartOptions::default()).unwrap();
+    assert!(plan.resume.is_some());
+    assert!(
+        plan.prompt.contains("边界值没处理")
+            && plan.prompt.contains("工单正文已更新")
+            && plan.prompt.contains("金额为 0 时也要显示"),
+        "{}",
+        plan.prompt
+    );
 
     let opts = StartOptions {
         instruction: Some("边界值没处理 [mock:steps=1] [mock:delay=50]".into()),

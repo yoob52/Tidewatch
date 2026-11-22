@@ -867,6 +867,19 @@ fn plan_run(
             p
         }
     };
+    // 续接的会话只见过它开始时的正文。Bug 工单在开发 / 验收中还能改正文（比如换了截图），
+    // 这之后改过的话把现行版本附上，否则 Agent 会照着旧的做
+    let custom = opts
+        .prompt_override
+        .as_deref()
+        .is_some_and(|p| !p.trim().is_empty());
+    let prompt = match (&resume, prd_changed_since_last_run(conn, task)?) {
+        (Some(_), Some(prd)) if !custom => format!(
+            "{prompt}\n\n## 工单正文已更新\n上一轮之后工单正文有改动，下面是现行版本（v{}），以它为准：\n\n{}\n",
+            prd.version, prd.content_md
+        ),
+        _ => prompt,
+    };
     Ok(RunPlan {
         agent: kind.as_str().into(),
         provider_id,
@@ -876,6 +889,22 @@ fn plan_run(
         prompt,
         handoff,
     })
+}
+
+/// 这个子任务上一轮开始之后，工单正文有没有出新版本；有就返回现行版本。
+fn prd_changed_since_last_run(
+    conn: &rusqlite::Connection,
+    task: &Task,
+) -> Result<Option<tickets::PrdVersion>> {
+    let last: Option<String> = conn.query_row(
+        "SELECT MAX(started_at) FROM run WHERE task_id = ?1",
+        [&task.id],
+        |r| r.get(0),
+    )?;
+    let Some(last) = last else {
+        return Ok(None);
+    };
+    Ok(tickets::current_prd(conn, &task.ticket_id)?.filter(|v| v.created_at > last))
 }
 
 /// 上一轮运行的摘要，给接手的新会话看。
