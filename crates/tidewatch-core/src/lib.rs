@@ -13,6 +13,7 @@ pub mod provider;
 pub mod runner;
 pub mod secrets;
 pub mod store;
+pub mod update;
 pub mod util;
 pub mod workflow;
 

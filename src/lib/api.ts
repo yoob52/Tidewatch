@@ -33,6 +33,8 @@ export interface Settings {
   auto_fix_attempts: number;
   /** 子任务进入待验收时自动发起 AI 交叉审查。 */
   auto_cross_review: boolean;
+  /** 启动时联网检查新版本；默认关。 */
+  check_updates: boolean;
   merge_mode: 'merge' | 'squash';
   delete_branch_after_merge: boolean;
   notifications: boolean;
@@ -454,6 +456,15 @@ export interface TaskDiff {
   truncated: boolean;
 }
 
+export interface UpdateInfo {
+  current: string;
+  /** 还没有任何发布时为 null。 */
+  latest: string | null;
+  newer: boolean;
+  url: string | null;
+  notes: string | null;
+}
+
 export interface ProviderCompat {
   agent: string;
   agent_name: string;
@@ -583,6 +594,8 @@ export const api = {
   /** 这个协议的 Provider 哪个 Agent 能直接用；不能的给出 LiteLLM 桥接说明。 */
   providerCompat: (name: string, protocol: string, baseUrl: string | null, defaultModel: string | null) =>
     invoke<ProviderCompat[]>('provider_compat', { name, protocol, baseUrl, defaultModel }),
+  /** 联网读 GitHub 上最新发布的版本号。 */
+  updateCheck: () => invoke<UpdateInfo>('update_check'),
   backupList: () => invoke<BackupFile[]>('backup_list'),
   backupNow: () => invoke<BackupFile[]>('backup_now'),
   /** 导出到 dest 下新建的一个目录。 */

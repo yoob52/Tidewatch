@@ -17,6 +17,7 @@ use tidewatch_core::secrets;
 use tidewatch_core::store::{
     attachments, code_reviews, projects, providers, reviews, runs, settings, stats, tasks, tickets,
 };
+use tidewatch_core::update;
 
 /// 推给界面的事件名。
 pub const ENGINE_EVENT: &str = "tw://engine";
@@ -674,6 +675,16 @@ fn code_review_start(
         .map_err(err)
 }
 
+/// 联网看有没有新版本。只在用户点了「检查更新」或打开了启动时检查的开关时调用。
+#[tauri::command]
+async fn update_check() -> CmdResult<update::UpdateInfo> {
+    tauri::async_runtime::spawn_blocking(|| {
+        update::check(env!("CARGO_PKG_VERSION"), update::RELEASES_URL).map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
 #[tauri::command]
 fn backup_list(state: State) -> Vec<backup::BackupFile> {
     backup::list(&state.data_dir)
@@ -1054,6 +1065,7 @@ pub fn run() {
             task_accept,
             task_reject,
             code_review_start,
+            update_check,
             backup_list,
             backup_now,
             export_tickets,

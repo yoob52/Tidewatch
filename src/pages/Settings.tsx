@@ -1,7 +1,7 @@
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type BackupFile, type Detection, type Settings, type SystemInfo, type TemplateInfo } from '../lib/api';
+import { api, type BackupFile, type Detection, type Settings, type SystemInfo, type TemplateInfo, type UpdateInfo } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { AGENTS, Modal, PERMISSIONS, Seg, Switch, useUi } from '../lib/ui';
@@ -174,6 +174,11 @@ export function SettingsPage({
     if (typeof dir === 'string') await save({ workspace_dir: dir });
   };
 
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const checkUpdate = async () => {
+    const u = await ui.attempt(api.updateCheck());
+    if (u) setUpdate(u);
+  };
   const backupNow = async () => {
     const list = await ui.attempt(api.backupNow(), '已备份数据库');
     if (list) setBackups(list);
@@ -491,6 +496,28 @@ export function SettingsPage({
             <div>
               <b>观澜</b>
               <p>{info ? `${info.version} · ${info.os}` : '读取中…'}</p>
+              {update &&
+                (update.newer ? (
+                  <p>
+                    有新版本 {update.latest}，到发布页下载：<span className="mono">{update.url}</span>
+                  </p>
+                ) : (
+                  <p>{update.latest ? `已经是最新版本（最新发布 ${update.latest}）。` : '还没有发布过正式版本。'}</p>
+                ))}
+            </div>
+            <div className="sctl">
+              <button className="btn sm" onClick={() => void checkUpdate()}>
+                检查更新
+              </button>
+            </div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>启动时检查更新</b>
+              <p>打开后，每次启动联网读一次 GitHub 上的最新版本号，不发送任何本机数据，也不会自动下载或安装。默认关闭。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.check_updates} onChange={(v) => void save({ check_updates: v })} label="启动时检查更新" />
             </div>
           </div>
           <div className="srow">
