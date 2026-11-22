@@ -193,6 +193,32 @@ pub fn set_description(conn: &Connection, id: &str, description: &str) -> Result
     get(conn, id)
 }
 
+/// 工作区目录换了位置：附件是按"相对工作区"的路径记的，要把文件带过去，否则旧图全部找不到。
+/// 只复制、不删除旧文件；新位置已有的同名文件不覆盖。返回复制了几个文件。
+pub fn carry_over(old_workspace: &Path, new_workspace: &Path) -> Result<usize> {
+    fn copy_dir(from: &Path, to: &Path, n: &mut usize) -> Result<()> {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let dest = to.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_dir(&entry.path(), &dest, n)?;
+            } else if !dest.exists() {
+                std::fs::copy(entry.path(), &dest)?;
+                *n += 1;
+            }
+        }
+        Ok(())
+    }
+    let from = old_workspace.join("attachments");
+    let to = new_workspace.join("attachments");
+    let mut n = 0;
+    if from.is_dir() && from != to {
+        copy_dir(&from, &to, &mut n)?;
+    }
+    Ok(n)
+}
+
 /// 读出图片内容。
 pub fn read(workspace: &Path, a: &Attachment) -> Result<Vec<u8>> {
     Ok(std::fs::read(workspace.join(&a.path))?)
@@ -601,6 +627,31 @@ mod tests {
         )
         .unwrap();
         (dir, conn, t.id)
+    }
+
+    #[test]
+    fn attachments_follow_the_workspace_when_it_moves() {
+        let (dir, conn, ticket) = setup();
+        let a = add(
+            &conn,
+            dir.path(),
+            Some((&ticket, "TW-1")),
+            "a.png",
+            PNG,
+            "user",
+        )
+        .unwrap();
+        let next = tempfile::tempdir().unwrap();
+        assert!(read(next.path(), &a).is_err());
+        assert_eq!(carry_over(dir.path(), next.path()).unwrap(), 1);
+        assert_eq!(read(next.path(), &a).unwrap(), PNG);
+        assert!(dir.path().join(&a.path).is_file(), "旧文件留着");
+        // 再搬一次不重复复制；旧目录没有附件也不算错
+        assert_eq!(carry_over(dir.path(), next.path()).unwrap(), 0);
+        assert_eq!(
+            carry_over(&next.path().join("none"), dir.path()).unwrap(),
+            0
+        );
     }
 
     #[test]

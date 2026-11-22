@@ -105,7 +105,17 @@ fn settings_get(state: State) -> CmdResult<settings::Settings> {
 
 #[tauri::command]
 fn settings_save(state: State, settings: settings::Settings) -> CmdResult<settings::Settings> {
-    settings::save(&lock(state.engine.db()), &settings).map_err(err)
+    let conn = lock(state.engine.db());
+    // 换工作区目录时把附件带过去；带不过去就不换，否则已有的图会全部找不到
+    let old = settings::get(&conn)
+        .map_err(err)?
+        .workspace(&state.data_dir);
+    let new = settings.workspace(&state.data_dir);
+    if old != new {
+        attachments::carry_over(&old, &new)
+            .map_err(|e| format!("附件复制到新的工作区目录时出错，目录没有更换：{e}"))?;
+    }
+    settings::save(&conn, &settings).map_err(err)
 }
 
 // ---- 项目 ----
