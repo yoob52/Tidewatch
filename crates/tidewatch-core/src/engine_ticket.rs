@@ -72,14 +72,14 @@ pub(super) fn check_no_open_proposal(conn: &rusqlite::Connection, ticket_id: &st
 }
 
 /// 工单级运行在哪个项目里跑、由谁来跑。
-struct TicketPlan {
-    project: Project,
-    agent: String,
-    provider_id: Option<String>,
-    model: Option<String>,
+pub(super) struct TicketPlan {
+    pub(super) project: Project,
+    pub(super) agent: String,
+    pub(super) provider_id: Option<String>,
+    pub(super) model: Option<String>,
 }
 
-fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<TicketPlan> {
+pub(super) fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<TicketPlan> {
     // 优先在后端项目里看代码；只绑了一个项目就用它
     let bound = ticket
         .projects
@@ -114,7 +114,7 @@ fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<Ticke
     })
 }
 
-fn enqueue_ticket_run(
+pub(super) fn enqueue_ticket_run(
     conn: &rusqlite::Connection,
     ticket: &Ticket,
     plan: &TicketPlan,
@@ -944,6 +944,8 @@ impl Inner {
                     Error::invalid("子任务的 worktree 已经不在了，没有可以审查的改动。")
                 })?;
                 (projects::get(&conn, &task.project_id)?, PathBuf::from(cwd))
+            } else if run.purpose == "delegate" {
+                super::api_flow::delegate_cwd(&conn, run, &ticket)?
             } else {
                 let project = plan_ticket_run(&conn, &ticket)?.project;
                 let cwd = PathBuf::from(&project.local_path);
@@ -1049,6 +1051,21 @@ impl Inner {
                     findings: cr.findings.len(),
                     blockers,
                     error: cr.error,
+                })
+            } else if run.purpose == "delegate" {
+                let d = crate::store::delegations::by_run(&conn, &run.id)?;
+                task_id = d.as_ref().and_then(|d| d.task_id.clone());
+                add_timeline(
+                    &conn,
+                    &ticket.id,
+                    "delegate_finished",
+                    json!({ "run_id": run.id, "parent_run_id": d.map(|d| d.parent_run_id),
+                            "agent": run.agent, "error": output.err() }),
+                )?;
+                Ok(EngineEvent::Changed {
+                    ticket_id: Some(ticket.id),
+                    task_id: task_id.clone(),
+                    run_id: Some(run.id.clone()),
                 })
             } else if run.purpose == "review" {
                 let review = reviews::save_result(

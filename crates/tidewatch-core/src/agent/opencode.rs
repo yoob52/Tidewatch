@@ -51,6 +51,15 @@ impl AgentAdapter for OpenCodeAdapter {
             "allow"
         };
         config["permission"] = json!({ "edit": rule, "bash": rule });
+        if let Some(mcp) = &spec.mcp {
+            config["mcp"][super::MCP_SERVER_NAME] = json!({
+                "type": "remote",
+                "url": mcp.url,
+                "enabled": true,
+                "oauth": false,
+                "headers": { "Authorization": format!("Bearer {{env:{}}}", mcp.token_env) },
+            });
+        }
         let mut env: Vec<(String, String)> = spec
             .env
             .iter()

@@ -1,8 +1,11 @@
 //! 数据访问：项目、工单、子任务、运行、Provider、设置。函数只做库内读写，不碰进程和 git。
 pub mod attachments;
 pub mod code_reviews;
+pub mod delegations;
+pub mod members;
 pub mod projects;
 pub mod providers;
+pub mod questions;
 pub mod reviews;
 pub mod runs;
 pub mod settings;
@@ -47,9 +50,20 @@ pub fn add_timeline(
     kind: &str,
     payload: serde_json::Value,
 ) -> Result<()> {
+    add_timeline_as(conn, ticket_id, kind, payload, None)
+}
+
+/// 工单时间线，带操作人（经接口进来的成员名；本机操作为空）。
+pub fn add_timeline_as(
+    conn: &Connection,
+    ticket_id: &str,
+    kind: &str,
+    payload: serde_json::Value,
+    actor: Option<&str>,
+) -> Result<()> {
     conn.execute(
-        "INSERT INTO timeline_event (id, ticket_id, ts, type, payload_json) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![crate::util::new_id(), ticket_id, crate::util::now(), kind, payload.to_string()],
+        "INSERT INTO timeline_event (id, ticket_id, ts, type, payload_json, actor) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![crate::util::new_id(), ticket_id, crate::util::now(), kind, payload.to_string(), actor],
     )?;
     Ok(())
 }

@@ -114,7 +114,21 @@ pub struct RunSpec {
     pub extra_args: Vec<String>,
     /// 随 Prompt 发给 Agent 的图片（绝对路径，在 worktree 之外）。
     pub images: Vec<PathBuf>,
+    /// 观澜自己的 MCP 服务（委派、提问）；不支持 MCP 的 Agent 忽略它。
+    pub mcp: Option<McpServer>,
 }
+
+/// 注入给 Agent 的 MCP 服务：地址进配置，令牌只放在环境变量里。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServer {
+    /// `http://127.0.0.1:<端口>/mcp`
+    pub url: String,
+    /// 存着 Bearer 令牌的环境变量名（值在 `RunSpec::env` 里）。
+    pub token_env: String,
+}
+
+/// MCP 服务在各 Agent 配置里的名字。
+pub const MCP_SERVER_NAME: &str = "tidewatch";
 
 /// 可直接交给 `std::process::Command` 的命令描述。
 #[derive(Debug, Clone, PartialEq, Eq)]

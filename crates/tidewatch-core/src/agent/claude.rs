@@ -43,6 +43,15 @@ impl AgentAdapter for ClaudeAdapter {
         for d in dirs {
             args.extend(["--add-dir".into(), d]);
         }
+        if let Some(mcp) = &spec.mcp {
+            // 令牌用 ${VAR} 引用环境变量，不出现在命令行里
+            let config = serde_json::json!({ "mcpServers": { super::MCP_SERVER_NAME: {
+                "type": "http",
+                "url": mcp.url,
+                "headers": { "Authorization": format!("Bearer ${{{}}}", mcp.token_env) },
+            }}});
+            args.extend(["--mcp-config".into(), config.to_string()]);
+        }
         args.extend(spec.extra_args.iter().cloned());
         Ok(CommandSpec {
             program: self.resolve_binary(spec)?,

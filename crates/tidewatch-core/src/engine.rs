@@ -84,6 +84,13 @@ pub enum EngineEvent {
         /// 这一轮是否因此被停掉。
         stopped: bool,
     },
+    /// Agent 提了一个要人回答的问题。
+    QuestionAsked {
+        question_id: String,
+        ticket_id: String,
+        ticket_key: String,
+        body: String,
+    },
     /// 后端子任务产出了接口文档，等它的子任务解锁。
     ApiDocReady {
         ticket_key: String,
@@ -206,6 +213,8 @@ struct Inner {
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// 合并会动项目主检出的索引和 HEAD，同一时间只做一个。
     merging: Mutex<()>,
+    /// 本地接口开着时的地址和签发运行令牌用的密钥。
+    api: Mutex<Option<ApiEndpoint>>,
     wake: (Mutex<bool>, Condvar),
     shutdown: AtomicBool,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -239,6 +248,7 @@ impl Engine {
             listener,
             cancels: Mutex::new(HashMap::new()),
             merging: Mutex::new(()),
+            api: Mutex::new(None),
             wake: (Mutex::new(false), Condvar::new()),
             shutdown: AtomicBool::new(false),
             workers: Mutex::new(Vec::new()),
@@ -310,6 +320,7 @@ impl Engine {
             }
             run
         };
+        self.inner.stop_delegated(run_id);
         self.inner.changed(run.ticket_id, run.task_id, Some(run.id));
         Ok(())
     }
@@ -1031,6 +1042,9 @@ fn slug(name: &str, id: &str) -> String {
 #[path = "engine_ticket.rs"]
 mod ticket_flow;
 pub use ticket_flow::{CodeReviewOptions, Finalized};
+#[path = "engine_api.rs"]
+mod api_flow;
+pub use api_flow::{ApiEndpoint, DelegateInput, RUN_TOKEN_ENV};
 
 struct Finished {
     status: &'static str,
@@ -1197,10 +1211,13 @@ impl Inner {
             let (run, cancel) = {
                 let conn = lock(&self.db);
                 let max = settings::get(&conn)?.max_concurrency;
-                if runs::count_running(&conn)? >= max {
-                    return Ok(());
-                }
-                let Some(run) = runs::next_queued(&conn)? else {
+                // 委派出去的运行不占并发名额：调用方正占着名额等它，否则并发上限为 1 时会互相等死
+                let next = if runs::count_running(&conn)? >= max {
+                    runs::next_queued_delegate(&conn)?
+                } else {
+                    runs::next_queued(&conn)?
+                };
+                let Some(run) = next else {
                     return Ok(());
                 };
                 // 取消标记要在持有数据库锁时登记：stop_run 也是先拿这把锁再查标记，
@@ -1231,6 +1248,8 @@ impl Inner {
                 .name(format!("tw-run-{}", run.id))
                 .spawn(move || {
                     me.execute(&run, &cancel);
+                    // 调用方结束了，它委派出去还没跑完的也不用再跑
+                    me.stop_delegated(&run.id);
                     me.cancels.lock().unwrap().remove(&run.id);
                     me.wake();
                 })?;
@@ -1730,10 +1749,22 @@ impl Inner {
         let images = {
             let conn = lock(&self.db);
             let workspace = st.workspace(&self.cfg.data_dir);
+            // Agent 之前提的问题有了回答：附在这一轮 Prompt 的末尾
+            let answered = match (&run.task_id, &run.ticket_id) {
+                (Some(task), Some(ticket)) => {
+                    crate::store::questions::take_answers(&conn, ticket, Some(task), &run.id)?
+                }
+                _ => vec![],
+            };
+            let prompt = format!(
+                "{}{}",
+                run.prompt,
+                crate::store::questions::answers_md(&answered)
+            );
             crate::store::attachments::prepare_prompt(
                 &conn,
                 &workspace,
-                &run.prompt,
+                &prompt,
                 &crate::store::attachments::PrepareOptions {
                     dir: &workspace.join("tmp").join(&run.id).join("images"),
                     text_only: provider.as_ref().is_some_and(|p| p.text_only),
@@ -1787,6 +1818,10 @@ impl Inner {
             if spec.model.is_none() {
                 spec.model = inj.model;
             }
+        }
+        if let Some((mcp, token)) = self.mcp_for(run, kind) {
+            spec.env.push((RUN_TOKEN_ENV.into(), token));
+            spec.mcp = Some(mcp);
         }
         let attempt = {
             let conn = lock(&self.db);
