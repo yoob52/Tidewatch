@@ -302,11 +302,72 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
       return [p.error ? 'alert' : 'spark', 'Agent', `委派给 ${AGENTS[p.agent as string]?.name ?? p.agent} 的只读检查${p.error ? `没有完成：${p.error}` : '完成'}`];
     case 'comment':
       return ['edit', '你', `评论：${p.body ?? ''}`];
+    case 'source_linked':
+      return ['upload', '系统', `从${p.kind === 'github' ? ' GitHub Issue ' : '飞书文档'}导入（${p.source ?? ''}）`];
+    case 'source_comment':
+      return ['edit', `${p.author ?? '有人'}（GitHub）`, `评论：${p.body ?? ''}`];
+    case 'source_changed':
+      return ['info', '系统', '外部来源的内容变了，等你决定要不要导入'];
+    case 'source_applied':
+      return ['check', '你', p.version ? `把外部来源的新内容导入为 PRD v${p.version}` : '同步了外部来源的新标题'];
+    case 'source_dismissed':
+      return ['x', '你', '忽略了外部来源的这次变更'];
+    case 'source_written_back':
+      return ['check', '系统', `已在 GitHub Issue #${p.number ?? ''} 下评论并关闭`];
     case 'assigned':
       return ['info', '你', p.assignee ? `指派给 ${p.assignee}` : '取消了指派'];
     default:
       return ['info', '系统', e.type];
   }
+}
+
+/** 源已变更：外部的 Issue / 文档有一版还没导入。 */
+function SourceChanged({ d }: { d: TicketDetail }) {
+  const ui = useUi();
+  const [open, setOpen] = useState(false);
+  const src = d.source;
+  if (!src?.pending_rev) return null;
+  const t = d.ticket;
+  const what = src.kind === 'github' ? 'GitHub Issue' : '飞书文档';
+  const locked = !(['draft', 'human_review'].includes(t.status) || (t.type === 'bug' && ['developing', 'acceptance'].includes(t.status)));
+  const apply = async () => {
+    if (
+      locked &&
+      !(await ui.confirm(
+        '导入会先发起变更',
+        '这张工单的需求已经定稿。导入外部的新内容会让它回到人工审核，正在跑的子任务会跑完当前这一轮；之后要重新定稿。',
+        '发起变更并导入',
+      ))
+    )
+      return;
+    await ui.attempt(api.syncApply(t.id), '已导入为新的 PRD 版本');
+  };
+  const titleChanged = src.pending_title && src.pending_title !== t.title;
+  return (
+    <div className="callout cin">
+      <Icon name="info" size={15} />
+      <div style={{ flex: 1 }}>
+        <b>源已变更：</b>
+        {what}在导入之后有改动{titleChanged ? `（标题改成了「${src.pending_title}」）` : ''}。现在的 PRD 没有动。
+        <div className="row" style={{ gap: 6, marginTop: 8 }}>
+          <button className="btn sm primary" onClick={() => void apply()}>
+            导入为新版本
+          </button>
+          <button className="btn sm" onClick={() => setOpen((x) => !x)}>
+            {open ? '收起' : '看新内容'}
+          </button>
+          <button className="btn sm ghost" onClick={() => void ui.attempt(api.syncDismiss(t.id), '已忽略这次变更')}>
+            忽略
+          </button>
+        </div>
+        {open && (
+          <pre className="plain boxed" style={{ whiteSpace: 'pre-wrap', marginTop: 8, maxHeight: 320, overflow: 'auto' }}>
+            {src.pending_md}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /** Agent 经 MCP 提的、还没回答的问题。回答会写进对应子任务下一轮的 Prompt。 */
@@ -374,6 +435,7 @@ function OverviewTab({ d }: { d: TicketDetail }) {
     <div className="page ov">
       <div className="ov-main">
         <Questions d={d} />
+        <SourceChanged d={d} />
         {t.status === 'ai_review' && (
           <div className="callout tide">
             <Icon name="spark" size={15} />
@@ -488,6 +550,18 @@ function OverviewTab({ d }: { d: TicketDetail }) {
           <dd>
             <Stamp type={t.type} /> {TYPES[t.type]?.name}
           </dd>
+          {d.source && (
+            <>
+              <dt>来源</dt>
+              <dd>
+                {d.source.kind === 'github' ? `GitHub Issue #${d.source.external_id}` : '飞书文档'}
+                {d.source.remote_state === 'closed' && '（已关闭）'}
+                <div className="mono dim" style={{ wordBreak: 'break-all', userSelect: 'text' }}>
+                  {d.source.url}
+                </div>
+              </dd>
+            </>
+          )}
           <dt>绑定项目</dt>
           <dd>
             {t.projects.length ? (

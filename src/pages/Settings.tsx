@@ -1,12 +1,12 @@
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SystemInfo, type TemplateInfo, type UpdateInfo } from '../lib/api';
+import { api, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type UpdateInfo } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
-import { AGENTS, Modal, PERMISSIONS, Seg, Switch, useUi } from '../lib/ui';
+import { AGENTS, Field, Modal, PERMISSIONS, Seg, Switch, TYPES, useUi } from '../lib/ui';
 
-const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '接口与成员', '本机环境'];
+const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '接口与成员', '外部同步', '本机环境'];
 
 /** 编辑一个 Prompt 模板：左边改，右边看用示例数据填出来的效果。 */
 function TemplateEditor({ tpl, onClose, onSaved }: { tpl: TemplateInfo; onClose: () => void; onSaved: (list: TemplateInfo[]) => void }) {
@@ -319,6 +319,293 @@ function ApiSection({ settings, save }: { settings: Settings; save: (patch: Part
           <p className="dim" style={{ marginTop: 8 }}>
             用法：请求头带上 <span className="mono">Authorization: Bearer {'<令牌>'}</span>。
           </p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const BLANK_SOURCE: SourceConfig = {
+  repo: '',
+  labels: [],
+  write_back: false,
+  app_id: '',
+  api_base: null,
+  project_id: null,
+  ticket_type: 'feature_mixed',
+};
+
+function reportText(r: SyncReport): string {
+  const parts = [
+    r.created.length ? `新建 ${r.created.length} 张工单（${r.created.join('、')}）` : '',
+    r.changed.length ? `${r.changed.length} 张工单的来源有更新（${r.changed.join('、')}）` : '',
+    r.comments ? `${r.comments} 条新评论` : '',
+    r.written_back.length ? `回写并关闭 ${r.written_back.length} 个 Issue` : '',
+  ].filter(Boolean);
+  const head = parts.length ? parts.join('；') : '没有新的内容';
+  return r.warnings.length ? `${head}。注意：${r.warnings.join('；')}` : head;
+}
+
+/** 新建 / 编辑一个同步来源。 */
+function SourceEditor({ current, onClose, onSaved }: { current: SyncSource | null; onClose: () => void; onSaved: () => void }) {
+  const ui = useUi();
+  const { projects } = useData();
+  const [f, setF] = useState<SourceInput>(
+    current ? { kind: current.kind, name: current.name, config: current.config, enabled: current.enabled } : { kind: 'github', name: '', config: BLANK_SOURCE, enabled: true },
+  );
+  const [secret, setSecret] = useState('');
+  const [clear, setClear] = useState(false);
+  const cfg = (patch: Partial<SourceConfig>) => setF((x) => ({ ...x, config: { ...x.config, ...patch } }));
+  const github = f.kind === 'github';
+  const ready = f.name.trim() && (github ? f.config.repo.trim() : f.config.app_id.trim());
+  const submit = async () => {
+    const saved = await ui.attempt(api.syncSourceSave(current?.id ?? null, f, secret.trim() ? secret.trim() : clear ? '' : undefined), '已保存');
+    if (saved) onSaved();
+  };
+  return (
+    <Modal
+      title={current ? `编辑「${current.name}」` : '添加同步来源'}
+      hint={
+        github
+          ? '把一个 GitHub 仓库的 Issue 拉成草稿工单。外部改了内容只会提示「源已变更」，要不要导入由你决定。'
+          : '用飞书自建应用按链接导入新版文档。这部分按开放平台文档写成，还没有对着真实的飞书验证过。'
+      }
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button className="btn primary" disabled={!ready} onClick={() => void submit()}>
+            保存
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        {!current && (
+          <Field label="类型">
+            <Seg
+              value={f.kind}
+              onChange={(k) => setF((x) => ({ ...x, kind: k }))}
+              options={[
+                ['github', 'GitHub Issues'],
+                ['feishu', '飞书文档'],
+              ]}
+            />
+          </Field>
+        )}
+        <Field label="名称">
+          <input className="input" value={f.name} onChange={(e) => setF((x) => ({ ...x, name: e.target.value }))} placeholder={github ? '例如：商城仓库' : '例如：产品文档'} />
+        </Field>
+        {github ? (
+          <>
+            <Field label="仓库" hint="owner/name，或者仓库地址">
+              <input className="input mono" value={f.config.repo} onChange={(e) => cfg({ repo: e.target.value })} placeholder="acme/shop" />
+            </Field>
+            <Field label="只拉带这些 label 的 Issue" hint="逗号分隔，全部都要有；留空拉全部">
+              <input
+                className="input mono"
+                value={f.config.labels.join(', ')}
+                onChange={(e) => cfg({ labels: e.target.value.split(/[,，]+/).map((l) => l.trimStart()) })}
+                placeholder="tidewatch"
+              />
+            </Field>
+            <Field
+              label="访问令牌"
+              hint={current?.has_secret ? '已保存；留空不改' : '留空时用本机 gh 登录的账号；公开仓库不填也能拉，但回写需要令牌'}
+            >
+              <input className="input mono" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" aria-label="访问令牌" />
+            </Field>
+          </>
+        ) : (
+          <>
+            <Field label="App ID" hint="飞书开放平台里自建应用的凭证">
+              <input className="input mono" value={f.config.app_id} onChange={(e) => cfg({ app_id: e.target.value })} placeholder="cli_xxxxxxxx" />
+            </Field>
+            <Field label="App Secret" hint={current?.has_secret ? '已保存；留空不改' : '只存进系统凭据管理器'}>
+              <input className="input mono" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" aria-label="App Secret" />
+            </Field>
+            <p className="dim" style={{ margin: 0 }}>
+              应用要开通「查看新版文档」权限（知识库里的文档还要「查看知识库」），并把要导入的文档分享给这个应用。
+            </p>
+          </>
+        )}
+        {current?.has_secret && (
+          <label className="row">
+            <input type="checkbox" checked={clear} onChange={(e) => setClear(e.target.checked)} />
+            清除已保存的{github ? '令牌' : ' App Secret'}
+          </label>
+        )}
+        <div className="form-grid">
+          <Field label="新工单的类型" hint={github ? '带 bug label 的 Issue 总是建成 Bug' : undefined}>
+            <select className="input" value={f.config.ticket_type} onChange={(e) => cfg({ ticket_type: e.target.value as TicketType })}>
+              {Object.entries(TYPES).map(([k, t]) => (
+                <option key={k} value={k}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="新工单绑定的项目" hint="可选">
+            <select className="input" value={f.config.project_id ?? ''} onChange={(e) => cfg({ project_id: e.target.value || null })}>
+              <option value="">不绑定</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <Field label="接口地址" hint={github ? '可选；GitHub Enterprise 填 https://<域名>/api/v3' : '可选；私有化部署或 Lark 国际版（https://open.larksuite.com）时填'}>
+          <input className="input mono" value={f.config.api_base ?? ''} onChange={(e) => cfg({ api_base: e.target.value || null })} placeholder={github ? 'https://api.github.com' : 'https://open.feishu.cn'} />
+        </Field>
+        {github && (
+          <label className="row">
+            <input type="checkbox" checked={f.config.write_back} onChange={(e) => cfg({ write_back: e.target.checked })} />
+            工单完成后，在 Issue 下评论一条并关闭它（下次同步时执行）
+          </label>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/** 外部同步：GitHub Issues 拉成工单，飞书文档按链接导入。都只在点「同步」/「导入」时联网。 */
+function SyncSection() {
+  const ui = useUi();
+  const [sources, setSources] = useState<SyncSource[]>([]);
+  const [editing, setEditing] = useState<SyncSource | 'new' | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [importing, setImporting] = useState<SyncSource | null>(null);
+  const [url, setUrl] = useState('');
+
+  const refresh = () => void api.syncSourceList().then(setSources, () => undefined);
+  useEffect(refresh, []);
+
+  const run = async (s: SyncSource) => {
+    setBusy(s.id);
+    const r = await ui.attempt(api.syncRun(s.id));
+    setBusy(null);
+    if (r) ui.toast(reportText(r));
+    refresh();
+  };
+  const toggle = async (s: SyncSource) => {
+    await ui.attempt(api.syncSourceSave(s.id, { kind: s.kind, name: s.name, config: s.config, enabled: !s.enabled }));
+    refresh();
+  };
+  const remove = async (s: SyncSource) => {
+    if (!(await ui.confirm(`删除同步来源「${s.name}」？`, '已经建好的工单会留着，只是不再和外部关联；保存的令牌一并清除。', '删除', true))) return;
+    await ui.attempt(api.syncSourceDelete(s.id));
+    refresh();
+  };
+  const importDoc = async () => {
+    if (!importing) return;
+    setBusy(importing.id);
+    const done = await ui.attempt(api.syncFeishuImport(importing.id, url));
+    setBusy(null);
+    if (!done) return;
+    setImporting(null);
+    setUrl('');
+    ui.toast(done.warnings.length ? `已导入为 ${done.ticket.key}。注意：${done.warnings.join('；')}` : `已导入为 ${done.ticket.key}`);
+    window.location.hash = `#/ticket/${done.ticket.key}`;
+  };
+
+  return (
+    <div className="card">
+      {sources.length === 0 && (
+        <div className="srow">
+          <div>
+            <b>还没有同步来源</b>
+            <p>可以把 GitHub 仓库的 Issue 拉成草稿工单，或者按链接导入飞书文档。只在你点「同步」或「导入」时联网，不会在后台自动拉。</p>
+          </div>
+        </div>
+      )}
+      {sources.map((s) => (
+        <div className="srow" key={s.id}>
+          <div>
+            <b>{s.name}</b>
+            <p>
+              {s.kind === 'github' ? (
+                <>
+                  GitHub Issues · <span className="mono">{s.config.repo}</span>
+                  {s.config.labels.length > 0 && ` · label：${s.config.labels.join('、')}`}
+                  {s.config.write_back && ' · 完成后回写'}
+                </>
+              ) : (
+                <>
+                  飞书文档 · <span className="mono">{s.config.app_id}</span> · 未对真实飞书验证
+                </>
+              )}
+              {s.last_synced_at ? ` · 上次同步 ${s.last_synced_at.slice(0, 16).replace('T', ' ')}` : ' · 还没同步过'}
+            </p>
+            {s.last_error && <p style={{ color: 'var(--cinnabar)' }}>上次失败：{s.last_error}</p>}
+            {s.kind === 'feishu' && !s.has_secret && <p style={{ color: 'var(--cinnabar)' }}>还没有填 App Secret。</p>}
+          </div>
+          <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {!s.enabled && <span className="tag amber">已停用</span>}
+            {s.kind === 'feishu' && (
+              <button className="btn sm" disabled={!s.enabled || busy === s.id} onClick={() => setImporting(s)}>
+                导入文档…
+              </button>
+            )}
+            <button className="btn sm" disabled={!s.enabled || busy === s.id} onClick={() => void run(s)}>
+              {busy === s.id ? '同步中…' : s.kind === 'feishu' ? '检查更新' : '同步'}
+            </button>
+            <button className="btn sm" onClick={() => setEditing(s)}>
+              编辑
+            </button>
+            <button className="btn sm" onClick={() => void toggle(s)}>
+              {s.enabled ? '停用' : '启用'}
+            </button>
+            <button className="btn sm ghost" onClick={() => void remove(s)} aria-label={`删除 ${s.name}`}>
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className="srow">
+        <div>
+          <b>添加来源</b>
+          <p>令牌和 App Secret 只存进系统凭据管理器，不进数据库。</p>
+        </div>
+        <div className="sctl">
+          <button className="btn sm" onClick={() => setEditing('new')}>
+            添加…
+          </button>
+        </div>
+      </div>
+      {editing && (
+        <SourceEditor
+          current={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            refresh();
+          }}
+        />
+      )}
+      {importing && (
+        <Modal
+          title="按链接导入飞书文档"
+          hint="支持新版文档（/docx/）和知识库（/wiki/）里的新版文档。导入后是一张草稿工单，图片作为参考图附上。"
+          width={620}
+          onClose={() => setImporting(null)}
+          footer={
+            <>
+              <span className="grow" />
+              <button className="btn" onClick={() => setImporting(null)}>
+                取消
+              </button>
+              <button className="btn primary" disabled={!url.trim() || busy === importing.id} onClick={() => void importDoc()}>
+                {busy === importing.id ? '导入中…' : '导入'}
+              </button>
+            </>
+          }
+        >
+          <input className="input mono" style={{ width: '100%' }} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://<企业>.feishu.cn/docx/…" aria-label="飞书文档链接" autoFocus />
         </Modal>
       )}
     </div>
@@ -682,6 +969,9 @@ export function SettingsPage({
         <ApiSection settings={settings} save={save} />
 
         <h3 id="set-7">{SECTIONS[7]}</h3>
+        <SyncSection />
+
+        <h3 id="set-8">{SECTIONS[8]}</h3>
         <div className="card">
           <div className="srow">
             <div>

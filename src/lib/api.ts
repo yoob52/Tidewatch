@@ -70,6 +70,62 @@ export interface Member {
   last_seen_at: string | null;
 }
 
+export interface SourceConfig {
+  /** GitHub：owner/name。 */
+  repo: string;
+  labels: string[];
+  write_back: boolean;
+  /** 飞书：自建应用的 App ID。 */
+  app_id: string;
+  api_base: string | null;
+  project_id: string | null;
+  ticket_type: TicketType;
+}
+
+export interface SyncSource {
+  id: string;
+  kind: 'github' | 'feishu';
+  name: string;
+  config: SourceConfig;
+  enabled: boolean;
+  has_secret: boolean;
+  last_synced_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+export interface SourceInput {
+  kind: 'github' | 'feishu';
+  name: string;
+  config: SourceConfig;
+  enabled: boolean;
+}
+
+/** 工单的外部来源；pending_* 是外部还没导入的那一版。 */
+export interface TicketSource {
+  ticket_id: string;
+  source_id: string;
+  kind: 'github' | 'feishu';
+  source_name: string;
+  external_id: string;
+  url: string;
+  rev: string;
+  pending_rev: string | null;
+  pending_title: string | null;
+  pending_md: string | null;
+  pending_at: string | null;
+  remote_state: string | null;
+  written_back_at: string | null;
+}
+
+export interface SyncReport {
+  created: string[];
+  changed: string[];
+  comments: number;
+  written_back: string[];
+  warnings: string[];
+}
+
 export interface ApiStatus {
   running: boolean;
   port: number | null;
@@ -586,6 +642,7 @@ export interface TicketDetail {
   code_reviews: CodeReview[];
   questions: Question[];
   assignee: string | null;
+  source: TicketSource | null;
 }
 
 export interface RunDetail {
@@ -668,6 +725,17 @@ export const api = {
   memberUpdate: (m: Member) => invoke<Member>('member_update', { id: m.id, name: m.name, role: m.role, disabled: m.disabled }),
   memberResetToken: (id: string) => invoke<{ member: Member; token: string }>('member_reset_token', { id }),
   memberDelete: (id: string) => invoke<void>('member_delete', { id }),
+  syncSourceList: () => invoke<SyncSource[]>('sync_source_list'),
+  /** secret：undefined 不动现有令牌 / App Secret，空串清除。 */
+  syncSourceSave: (id: string | null, input: SourceInput, secret?: string) =>
+    invoke<SyncSource>('sync_source_save', { id, input, secret: secret ?? null }),
+  syncSourceDelete: (id: string) => invoke<void>('sync_source_delete', { id }),
+  syncRun: (id: string) => invoke<SyncReport>('sync_run', { id }),
+  syncFeishuImport: (sourceId: string, url: string) =>
+    invoke<{ ticket: Ticket; warnings: string[] }>('sync_feishu_import', { sourceId, url }),
+  /** 把外部的新版本导入为新的 PRD 版本（已定稿的工单会先发起变更）。 */
+  syncApply: (ticketId: string) => invoke<Ticket>('sync_apply', { ticketId }),
+  syncDismiss: (ticketId: string) => invoke<void>('sync_dismiss', { ticketId }),
   ticketAssign: (id: string, memberId: string | null) => invoke<Ticket>('ticket_assign', { id, memberId }),
   /** 不传工单：所有还没回答的问题。 */
   questionList: (ticketId?: string) => invoke<Question[]>('question_list', { ticketId: ticketId ?? null }),
