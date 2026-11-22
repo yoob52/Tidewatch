@@ -559,3 +559,76 @@ fn display_masks_only_secrets() {
     assert!(shown.contains("ANTHROPIC_AUTH_TOKEN=sk-****7890"));
     assert!(!shown.contains("sk-secret"));
 }
+
+/// 观澜的 MCP 服务：令牌只以环境变量名出现，各家都预先放行它的工具。
+#[test]
+fn mcp_server_is_injected_without_the_token() {
+    use tidewatch_core::agent::McpServer;
+    let spec = |permission| RunSpec {
+        prompt: "p".into(),
+        cwd: "/w".into(),
+        permission,
+        binary: Some("/bin/x".into()),
+        allowed_tools: vec!["Bash(npm test:*)".into()],
+        mcp: Some(McpServer {
+            url: "http://127.0.0.1:47600/mcp".into(),
+            token_env: "TIDEWATCH_MCP_TOKEN".into(),
+        }),
+        ..Default::default()
+    };
+    let after = |args: &[String], flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .map(|i| args[i + 1].clone())
+    };
+
+    let claude = adapter(AgentKind::ClaudeCode);
+    let c = claude
+        .build_command(&spec(PermissionMode::WorkspaceWrite))
+        .unwrap();
+    assert_eq!(
+        after(&c.args, "--allowedTools").unwrap(),
+        "Bash(npm test:*),mcp__tidewatch"
+    );
+    let config: serde_json::Value =
+        serde_json::from_str(&after(&c.args, "--mcp-config").unwrap()).unwrap();
+    assert_eq!(
+        config["mcpServers"]["tidewatch"]["headers"]["Authorization"],
+        "Bearer ${TIDEWATCH_MCP_TOKEN}"
+    );
+    let c = claude
+        .build_command(&spec(PermissionMode::ReadOnly))
+        .unwrap();
+    assert_eq!(after(&c.args, "--allowedTools").unwrap(), "mcp__tidewatch");
+    let c = claude
+        .build_command(&spec(PermissionMode::FullAuto))
+        .unwrap();
+    assert_eq!(after(&c.args, "--allowedTools"), None);
+
+    let c = adapter(AgentKind::Codex)
+        .build_command(&spec(PermissionMode::WorkspaceWrite))
+        .unwrap();
+    for want in [
+        r#"mcp_servers.tidewatch.url="http://127.0.0.1:47600/mcp""#,
+        r#"mcp_servers.tidewatch.bearer_token_env_var="TIDEWATCH_MCP_TOKEN""#,
+        r#"mcp_servers.tidewatch.default_tools_approval_mode="approve""#,
+    ] {
+        assert!(c.args.iter().any(|a| a == want), "{want}: {:?}", c.args);
+    }
+
+    let c = adapter(AgentKind::OpenCode)
+        .build_command(&spec(PermissionMode::WorkspaceWrite))
+        .unwrap();
+    let config: serde_json::Value = serde_json::from_str(
+        &c.env
+            .iter()
+            .find(|(k, _)| k == "OPENCODE_CONFIG_CONTENT")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(
+        config["mcp"]["tidewatch"]["headers"]["Authorization"],
+        "Bearer {env:TIDEWATCH_MCP_TOKEN}"
+    );
+}

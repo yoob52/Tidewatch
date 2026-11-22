@@ -366,3 +366,117 @@ fn real_agent_reads_the_prd_image() {
     println!("code.txt: {code:?}");
     assert_eq!(code.trim(), "TW-7391-KQ");
 }
+
+/// 真实 Agent 经观澜注入的 MCP 服务读工单并提问（要求 Agent 支持 MCP：Claude Code、Codex、OpenCode）。
+#[test]
+#[ignore = "需要真实 Agent 的账号和网络"]
+fn real_agent_calls_tidewatch_mcp_tools() {
+    use tidewatch_core::engine::StartOptions;
+    use tidewatch_core::store::{questions, tasks};
+    let agent = std::env::var("TW_REAL_AGENT").expect("设置 TW_REAL_AGENT");
+    let dir = tempfile::tempdir().unwrap();
+    let root = tidewatch_core::util::canonical(dir.path()).unwrap();
+    init_repo(&root.join("api"), &[("README.md", "# shop-api\n")]);
+    let conn = db::open(&root.join("data/tidewatch.db")).unwrap();
+    let secrets = MemoryStore::default();
+    let mut st = settings::Settings {
+        default_agent: agent.clone(),
+        ..Default::default()
+    };
+    if let Ok(base_url) = std::env::var("TW_REAL_BASE_URL") {
+        let model = std::env::var("TW_REAL_MODEL").ok();
+        let provider = providers::create(
+            &conn,
+            providers::ProviderInput {
+                name: "real".into(),
+                protocol: std::env::var("TW_REAL_PROTOCOL")
+                    .unwrap_or_else(|_| "openai_responses".into()),
+                base_url: Some(base_url),
+                models: model.clone().into_iter().collect(),
+                default_model: model,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let key = std::env::var("TW_REAL_KEY").expect("设置了 TW_REAL_BASE_URL 就要给 TW_REAL_KEY");
+        providers::store_secret(&conn, &secrets, &provider.id, Some(&key)).unwrap();
+        st.default_provider_id = Some(provider.id);
+    }
+    settings::save(&conn, &st).unwrap();
+    let project = projects::create(
+        &conn,
+        projects::ProjectInput {
+            name: "shop-api".into(),
+            kind: "backend".into(),
+            local_path: root.join("api").display().to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let engine = Arc::new(
+        Engine::start(
+            db::shared(conn),
+            Box::new(secrets),
+            EngineConfig {
+                data_dir: root.join("data"),
+                mock_binary: None,
+            },
+            Arc::new(|_| {}),
+        )
+        .unwrap(),
+    );
+    let _server = tidewatch_core::api::ApiServer::start(engine.clone(), 0, false).unwrap();
+    let (ticket, task) = {
+        let mut conn = lock(engine.db());
+        let ticket = tickets::create(
+            &mut conn,
+            tickets::TicketInput {
+                title: "订单列表为空时崩溃".into(),
+                kind: "bug".into(),
+                content_md: "暗号是 TIDE-4711。\n\n请按顺序做三件事：\n1. 调用 tidewatch 这个 MCP 服务的 tw_ticket_read 工具读当前工单。\n2. 调用它的 tw_ask_user 工具，question 填「空列表时返回 [] 还是 null？」。\n3. 在 README.md 末尾追加一行 `mcp ok`。\n\n如果找不到这些 MCP 工具，在 README.md 末尾追加一行 `mcp missing`。".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task = tasks::create(
+            &mut conn,
+            tasks::TaskInput {
+                ticket_id: ticket.id.clone(),
+                kind: "bug".into(),
+                project_id: project.id,
+                title: "修复".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (ticket.id, task.id)
+    };
+    let run = engine.start_task(&task, StartOptions::default()).unwrap();
+    let run = wait_run(&engine, &run.id);
+    let events: Vec<String> = runs::events(&lock(engine.db()), &run.id, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind.contains("tool"))
+        .map(|e| e.payload.to_string().chars().take(300).collect())
+        .collect();
+    println!(
+        "状态 {} {:?}\n工具事件：\n{}",
+        run.status,
+        run.error,
+        events.join("\n")
+    );
+    if let Some(raw) = run
+        .raw_log_path
+        .as_deref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+    {
+        for line in raw.lines().filter(|l| l.contains("mcp")) {
+            println!("原始：{}", line.chars().take(900).collect::<String>());
+        }
+    }
+    assert_eq!(run.status, "succeeded", "{:?}", run.error);
+    let asked = questions::list_for_ticket(&lock(engine.db()), &ticket).unwrap();
+    assert_eq!(asked.len(), 1, "Agent 没有经 MCP 提问");
+    assert!(asked[0].body.contains("空列表"), "{}", asked[0].body);
+    assert_eq!(asked[0].task_id.as_deref(), Some(task.as_str()));
+}

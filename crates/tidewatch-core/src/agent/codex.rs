@@ -43,6 +43,9 @@ impl AgentAdapter for CodexAdapter {
                     "mcp_servers.{name}.bearer_token_env_var={:?}",
                     mcp.token_env
                 ),
+                // exec 的审批策略是 never，MCP 工具默认要审批，不预先放行就全部被拒
+                "-c".into(),
+                format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\""),
             ]);
         }
         args.extend(spec.extra_args.iter().cloned());

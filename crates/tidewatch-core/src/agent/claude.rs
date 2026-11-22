@@ -26,8 +26,17 @@ impl AgentAdapter for ClaudeAdapter {
             PermissionMode::FullAuto => "bypassPermissions",
         };
         args.extend(["--permission-mode".into(), mode.into()]);
-        if spec.permission == PermissionMode::WorkspaceWrite && !spec.allowed_tools.is_empty() {
-            args.extend(["--allowedTools".into(), spec.allowed_tools.join(",")]);
+        let mut allowed = if spec.permission == PermissionMode::WorkspaceWrite {
+            spec.allowed_tools.clone()
+        } else {
+            Vec::new()
+        };
+        // 无人值守时没放行的 MCP 工具会被拒；观澜自己的服务整个放行
+        if spec.mcp.is_some() && spec.permission != PermissionMode::FullAuto {
+            allowed.push(format!("mcp__{}", super::MCP_SERVER_NAME));
+        }
+        if !allowed.is_empty() {
+            args.extend(["--allowedTools".into(), allowed.join(",")]);
         }
         if let Some(id) = &spec.resume_session {
             args.extend(["--resume".into(), id.clone()]);
