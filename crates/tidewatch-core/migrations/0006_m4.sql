@@ -41,3 +41,33 @@ CREATE TABLE question (
   UNIQUE (run_id, client_request_id)
 );
 CREATE INDEX question_ticket ON question (ticket_id, status);
+
+-- 外部同步：一个来源是一个 GitHub 仓库（按 label 拉 Issue）或一个飞书自建应用（按链接导入文档）。
+-- 令牌 / App Secret 在凭据管理器里，这里只记条目名。
+CREATE TABLE sync_source (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,              -- github | feishu
+  name TEXT NOT NULL,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  secret_ref TEXT,
+  last_synced_at TEXT,
+  last_error TEXT,
+  created_at TEXT
+);
+
+-- 工单和它的外部来源。rev 是已经导入的那一版；外部又改了就记在 pending_* 里等用户决定。
+CREATE TABLE ticket_source (
+  ticket_id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL,
+  external_id TEXT NOT NULL,       -- GitHub：Issue 编号；飞书：文档 id
+  url TEXT NOT NULL,
+  rev TEXT NOT NULL,
+  pending_rev TEXT,
+  pending_title TEXT,
+  pending_md TEXT,
+  pending_at TEXT,
+  remote_state TEXT,               -- GitHub：open | closed
+  written_back_at TEXT,
+  UNIQUE (source_id, external_id)
+);

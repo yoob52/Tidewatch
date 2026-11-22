@@ -83,7 +83,21 @@ pub fn import(
     bytes: &[u8],
     base_dir: Option<&Path>,
 ) -> Result<Imported> {
-    let mut p = parse(file_name, bytes, base_dir)?;
+    store(
+        conn,
+        workspace,
+        file_name,
+        parse(file_name, bytes, base_dir)?,
+    )
+}
+
+/// 把解析结果里的图片存成附件，正文里的 `import:<下标>` 换成附件引用。
+pub fn store(
+    conn: &rusqlite::Connection,
+    workspace: &Path,
+    file_name: &str,
+    mut p: Parsed,
+) -> Result<Imported> {
     let mut atts: Vec<Attachment> = vec![];
     let mut md = p.markdown.clone();
     for (i, img) in p.images.iter().enumerate() {

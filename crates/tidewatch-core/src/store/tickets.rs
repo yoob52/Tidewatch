@@ -339,6 +339,19 @@ pub fn update(conn: &mut Connection, id: &str, input: TicketInput) -> Result<Tic
     get(conn, id)
 }
 
+/// 只改标题（外部来源改了标题时用）。
+pub fn rename(conn: &Connection, id: &str, title: &str) -> Result<()> {
+    let title = required(title, "标题")?;
+    conn.execute(
+        "UPDATE ticket SET title = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![id, title, crate::util::now()],
+    )?;
+    let content = current_prd(conn, id)?
+        .map(|v| v.content_md)
+        .unwrap_or_default();
+    index(conn, id, &title, &content)
+}
+
 /// 保存正文为新版本（版本不可变）。定稿后不能直接改。
 pub fn save_prd(
     conn: &mut Connection,
