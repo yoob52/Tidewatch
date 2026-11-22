@@ -48,6 +48,9 @@ pub struct SyncSource {
     pub has_secret: bool,
     pub last_synced_at: Option<String>,
     pub last_error: Option<String>,
+    /// 上次没拉完：下次从这个更新时间接着拉（GitHub）。
+    #[serde(skip)]
+    pub resume_since: Option<String>,
     pub created_at: String,
 }
 
@@ -93,7 +96,7 @@ pub struct SyncReport {
 }
 
 const COLS: &str =
-    "id, kind, name, config_json, enabled, secret_ref, last_synced_at, last_error, created_at";
+    "id, kind, name, config_json, enabled, secret_ref, last_synced_at, last_error, created_at, resume_since";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<SyncSource> {
     Ok(SyncSource {
@@ -106,6 +109,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<SyncSource> {
         last_synced_at: r.get(6)?,
         last_error: r.get(7)?,
         created_at: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+        resume_since: r.get(9)?,
     })
 }
 
@@ -184,10 +188,32 @@ pub fn create(conn: &Connection, input: SourceInput) -> Result<SyncSource> {
     get(conn, &id)
 }
 
-/// 类型建好之后不能改。
+/// 类型建好之后不能改。已经有工单的 GitHub 来源也不能换仓库：工单是按 Issue 编号对应的，
+/// 换了仓库同一个编号就是另一条 Issue。
 pub fn update(conn: &Connection, id: &str, mut input: SourceInput) -> Result<SyncSource> {
-    input.kind = get(conn, id)?.kind;
+    let old = get(conn, id)?;
+    input.kind = old.kind.clone();
     let (name, config) = check(conn, &input)?;
+    if old.kind == "github"
+        && (config.repo != old.config.repo || config.api_base != old.config.api_base)
+    {
+        let linked: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM ticket_source WHERE source_id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        if linked > 0 {
+            return Err(Error::invalid(format!(
+                "「{}」已经有 {linked} 张工单来自 {}，不能改成别的仓库。要同步另一个仓库，请新建一个同步来源。",
+                old.name, old.config.repo
+            )));
+        }
+        // 还没有工单：换仓库后从头拉
+        conn.execute(
+            "UPDATE sync_source SET last_synced_at = NULL, resume_since = NULL WHERE id = ?1",
+            [id],
+        )?;
+    }
     conn.execute(
         "UPDATE sync_source SET name = ?2, config_json = ?3, enabled = ?4 WHERE id = ?1",
         rusqlite::params![id, name, to_json(&config), input.enabled],
@@ -471,7 +497,10 @@ pub fn run(
     let conn = lock(db);
     match &result {
         Ok(_) => conn.execute(
-            "UPDATE sync_source SET last_synced_at = ?2, last_error = NULL WHERE id = ?1",
+            // 没拉完（resume_since 还在）就不动 last_synced_at：评论要从上次完整同步算起
+            "UPDATE sync_source SET last_error = NULL,
+               last_synced_at = CASE WHEN resume_since IS NULL THEN ?2 ELSE last_synced_at END
+             WHERE id = ?1",
             rusqlite::params![source.id, started],
         )?,
         Err(e) => conn.execute(
@@ -500,11 +529,19 @@ fn run_github(db: &Db, secrets: &dyn SecretStore, source: &SyncSource) -> Result
         repo: &cfg.repo,
         token: token.as_deref(),
     };
-    let issues = client.issues(
-        &cfg.labels,
-        since(source.last_synced_at.as_deref()).as_deref(),
-    )?;
+    // 上次没拉完就从断点接着拉；否则拉上次同步以来有更新的
+    let last = since(source.last_synced_at.as_deref());
+    let from = source.resume_since.clone().or_else(|| last.clone());
+    let github::Fetched {
+        issues,
+        resume_since,
+    } = client.issues(&cfg.labels, from.as_deref(), last.as_deref())?;
     let mut report = SyncReport::default();
+    if resume_since.is_some() {
+        report
+            .warnings
+            .push("Issue 太多，这次没有拉完。再同步一次会从停下的地方接着拉。".into());
+    }
     let mut to_close: Vec<(String, String, u64)> = vec![];
     {
         let mut conn = lock(db);
@@ -576,6 +613,10 @@ fn run_github(db: &Db, secrets: &dyn SecretStore, source: &SyncSource) -> Result
                 }
             }
         }
+        conn.execute(
+            "UPDATE sync_source SET resume_since = ?2 WHERE id = ?1",
+            rusqlite::params![source.id, resume_since],
+        )?;
         if cfg.write_back {
             let mut st = conn.prepare(
                 "SELECT t.id, t.key, ts.external_id FROM ticket_source ts JOIN ticket t ON t.id = ts.ticket_id

@@ -38,6 +38,13 @@ impl Issue {
     }
 }
 
+/// 一次拉取的结果。
+pub struct Fetched {
+    pub issues: Vec<Issue>,
+    /// 没拉完时：下次用它做 `since` 接着拉。
+    pub resume_since: Option<String>,
+}
+
 pub struct Client<'a> {
     pub api: &'a str,
     /// `owner/name`
@@ -79,12 +86,28 @@ impl Client<'_> {
     }
 
     /// 拉 Issue。第一次（`since` 为空）只拉还开着的；之后拉 `since` 以来有更新的全部状态。
-    pub fn issues(&self, labels: &[String], since: Option<&str>) -> Result<Vec<Issue>> {
+    ///
+    /// 按更新时间从旧到新拉。一次拉不完（页数或评论次数到了上限）就停在那里，`resume_since`
+    /// 是第一条没处理的 Issue 的更新时间，下次从它接着拉。
+    ///
+    /// `comments_since` 单独给：接着拉的时候 Issue 从断点开始，评论仍然要从上次完整同步算起。
+    pub fn issues(
+        &self,
+        labels: &[String],
+        since: Option<&str>,
+        comments_since: Option<&str>,
+    ) -> Result<Fetched> {
         let mut out = vec![];
         let mut budget = MAX_COMMENT_FETCHES;
+        let stop = |issues, at: &Value| {
+            Ok(Fetched {
+                issues,
+                resume_since: at["updated_at"].as_str().map(String::from),
+            })
+        };
         for page in 1..=MAX_PAGES {
             let mut url = format!(
-                "{}/issues?per_page=100&page={page}&sort=updated&direction=desc&state={}",
+                "{}/issues?per_page=100&page={page}&sort=updated&direction=asc&state={}",
                 self.base(),
                 if since.is_some() { "all" } else { "open" }
             );
@@ -99,23 +122,32 @@ impl Client<'_> {
             let list = resp.json();
             let items = list.as_array().cloned().unwrap_or_default();
             let n = items.len();
-            for item in items {
+            for item in &items {
                 // 这个接口把 PR 也当 Issue 返回
                 if item.get("pull_request").is_some() {
                     continue;
                 }
-                let mut issue = parse_issue(&item);
-                if item["comments"].as_u64().unwrap_or(0) > 0 && budget > 0 {
+                let mut issue = parse_issue(item);
+                if item["comments"].as_u64().unwrap_or(0) > 0 {
+                    if budget == 0 {
+                        return stop(out, item);
+                    }
                     budget -= 1;
-                    issue.comments = self.comments(issue.number, since)?;
+                    issue.comments = self.comments(issue.number, comments_since)?;
                 }
                 out.push(issue);
             }
             if n < 100 {
                 break;
             }
+            if page == MAX_PAGES {
+                return stop(out, &items[n - 1]);
+            }
         }
-        Ok(out)
+        Ok(Fetched {
+            issues: out,
+            resume_since: None,
+        })
     }
 
     fn comments(&self, number: u64, since: Option<&str>) -> Result<Vec<Comment>> {

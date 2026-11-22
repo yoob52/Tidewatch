@@ -53,6 +53,7 @@ CREATE TABLE sync_source (
   secret_ref TEXT,
   last_synced_at TEXT,
   last_error TEXT,
+  resume_since TEXT,               -- 上次没拉完：下次从这个更新时间接着拉
   created_at TEXT
 );
 

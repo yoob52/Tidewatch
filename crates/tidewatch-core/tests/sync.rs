@@ -245,12 +245,113 @@ fn github_issues_become_tickets_and_changes_wait_for_the_user() {
         .is_empty());
     assert_eq!(fake.requests("POST").len(), 1);
 
+    // 已经有工单的来源不能换仓库：同一个编号在别的仓库里是另一条 Issue
+    let mut other = SourceInput {
+        kind: "github".into(),
+        name: source.name.clone(),
+        config: source.config.clone(),
+        enabled: true,
+    };
+    other.config.repo = "acme/other".into();
+    let e = sync::update(&lock(&db), &source.id, other.clone()).unwrap_err();
+    assert!(e.to_string().contains("acme/shop"), "{e}");
+    assert_eq!(
+        sync::get(&lock(&db), &source.id).unwrap().config.repo,
+        "acme/shop"
+    );
+    other.config.repo = "acme/shop".into();
+    other.name = "商城（改名）".into();
+    sync::update(&lock(&db), &source.id, other).unwrap();
+
     // 删掉来源：工单留着，令牌清掉
     sync::delete(&lock(&db), &secrets, &source.id).unwrap();
     assert!(sync::ticket_source(&lock(&db), &bug.id).unwrap().is_none());
     assert_eq!(tickets::list(&lock(&db), None).unwrap().len(), 2);
     use tidewatch_core::secrets::SecretStore;
     assert_eq!(secrets.get(&sync::secret_name(&source.id)).unwrap(), None);
+}
+
+/// 一次拉不完（这里是带评论的 Issue 超过了每次的评论次数上限）：停在那里，下次从断点接着拉，
+/// 不会因为「上次同步时间」往前走了就再也拉不到剩下的。
+#[test]
+fn github_sync_that_hits_the_limit_resumes_where_it_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let all: Vec<Value> = (1..=70)
+        .map(|n| {
+            json!({ "number": n, "title": format!("问题 {n}"), "body": "x", "state": "open",
+                "html_url": format!("https://github.com/acme/big/issues/{n}"), "labels": [], "comments": 1,
+                "updated_at": format!("2026-01-01T00:{:02}:{:02}Z", n / 60, n % 60) })
+        })
+        .collect();
+    let fake = Fake::start(move |method, path, _| match (method, path) {
+        ("GET", p) if p.starts_with("/repos/acme/big/issues?") => {
+            assert!(p.contains("direction=asc"), "{p}");
+            let since = p
+                .split("since=")
+                .nth(1)
+                .map(|s| s.split('&').next().unwrap().replace("%3A", ":"));
+            reply(Value::Array(
+                all.iter()
+                    .filter(|i| {
+                        since
+                            .as_deref()
+                            .is_none_or(|s| i["updated_at"].as_str().unwrap() >= s)
+                    })
+                    .cloned()
+                    .collect(),
+            ))
+        }
+        ("GET", p) if p.contains("/comments") => {
+            // 接着拉的时候评论不能只取断点之后的
+            assert!(!p.contains("since="), "{p}");
+            let n: u64 = p.split('/').nth(5).unwrap().parse().unwrap();
+            reply(
+                json!([{ "id": 1000 + n, "user": { "login": "liu" }, "body": "评论", "html_url": "" }]),
+            )
+        }
+        _ => (
+            404,
+            "application/json",
+            br#"{"message":"Not Found"}"#.to_vec(),
+        ),
+    });
+    let db = db::shared(db::open(&dir.path().join("t.db")).unwrap());
+    let secrets = MemoryStore::default();
+    let source = sync::create(
+        &lock(&db),
+        SourceInput {
+            kind: "github".into(),
+            name: "大仓库".into(),
+            config: SourceConfig {
+                repo: "acme/big".into(),
+                api_base: Some(fake.url.clone()),
+                ..Default::default()
+            },
+            enabled: true,
+        },
+    )
+    .unwrap();
+
+    let first = sync::run(&db, &secrets, dir.path(), &source.id).unwrap();
+    assert_eq!((first.created.len(), first.comments), (60, 60));
+    assert!(
+        first.warnings.iter().any(|w| w.contains("没有拉完")),
+        "{first:?}"
+    );
+    assert_eq!(
+        sync::get(&lock(&db), &source.id).unwrap().last_synced_at,
+        None,
+        "没拉完不算同步完"
+    );
+
+    let second = sync::run(&db, &secrets, dir.path(), &source.id).unwrap();
+    assert_eq!((second.created.len(), second.comments), (10, 10));
+    assert!(second.warnings.is_empty(), "{second:?}");
+    assert!(sync::get(&lock(&db), &source.id)
+        .unwrap()
+        .last_synced_at
+        .is_some());
+    assert_eq!(tickets::list(&lock(&db), None).unwrap().len(), 70);
 }
 
 #[test]
