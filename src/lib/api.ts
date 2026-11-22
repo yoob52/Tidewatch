@@ -773,6 +773,8 @@ export const api = {
   updateCheck: () => invoke<UpdateInfo>('update_check'),
   /** 下载、校验签名并安装，然后重启；成功时不会返回。 */
   updateInstall: () => invoke<void>('update_install'),
+  /** 用系统浏览器打开一个 https 地址。 */
+  openUrl: (url: string) => invoke<void>('open_url', { url }),
   backupList: () => invoke<BackupFile[]>('backup_list'),
   backupNow: () => invoke<BackupFile[]>('backup_now'),
   /** 导出到 dest 下新建的一个目录。 */

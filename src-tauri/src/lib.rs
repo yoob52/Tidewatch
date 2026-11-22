@@ -1048,6 +1048,16 @@ async fn update_install(app: tauri::AppHandle, state: State<'_>) -> CmdResult<()
     res
 }
 
+/// 用系统浏览器打开发布页一类的地址。只接受 https，免得页面内容借它打开本地文件或别的协议。
+#[tauri::command]
+fn open_url(app: tauri::AppHandle, url: String) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    if !url.starts_with("https://") {
+        return Err("只能打开 https 地址。".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(err)
+}
+
 #[tauri::command]
 fn backup_list(state: State) -> Vec<backup::BackupFile> {
     backup::list(&state.data_dir)
@@ -1365,6 +1375,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = match std::env::var_os("TIDEWATCH_DATA_DIR") {
                 Some(p) => PathBuf::from(p),
@@ -1479,6 +1490,7 @@ pub fn run() {
             code_review_start,
             update_check,
             update_install,
+            open_url,
             backup_list,
             backup_now,
             export_tickets,

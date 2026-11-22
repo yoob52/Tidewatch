@@ -1,7 +1,8 @@
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, onUpdateProgress, type UpdateProgress, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type Stage, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type UpdateInfo, type Workflow, type WorkflowInput } from '../lib/api';
+import { api, type UpdateProgress, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type Stage, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type Workflow, type WorkflowInput } from '../lib/api';
+import { installUpdate as runInstall, setUpdateInfo, useUpdate } from '../lib/update';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { AGENTS, Field, Modal, PERMISSIONS, Seg, Switch, TYPES, useUi } from '../lib/ui';
@@ -842,14 +843,10 @@ export function SettingsPage({
     if (typeof dir === 'string') await save({ workspace_dir: dir });
   };
 
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
-  const [progress, setProgress] = useState<UpdateProgress | null>(null);
-  const [updateError, setUpdateError] = useState<string | null>(null);
-  useEffect(() => onUpdateProgress(setProgress), []);
+  const { info: update, progress, error: updateError } = useUpdate();
   const checkUpdate = async () => {
     const u = await ui.attempt(api.updateCheck());
-    if (u) setUpdate(u);
-    setUpdateError(null);
+    if (u) setUpdateInfo(u);
   };
   const installUpdate = async () => {
     if (!update?.latest) return;
@@ -861,15 +858,7 @@ export function SettingsPage({
       </>,
       '下载并安装',
     );
-    if (!ok) return;
-    setUpdateError(null);
-    setProgress({ phase: 'checking' });
-    try {
-      await api.updateInstall();
-    } catch (e) {
-      setUpdateError(String(e));
-    }
-    setProgress(null);
+    if (ok) await runInstall();
   };
   const backupNow = async () => {
     const list = await ui.attempt(api.backupNow(), '已备份数据库');
@@ -1205,7 +1194,18 @@ export function SettingsPage({
                       {update.install_blocked
                         ? `${update.install_blocked}请到发布页下载：`
                         : '可以直接在这里安装，也可以到发布页下载：'}
-                      <span className="mono">{update.url}</span>
+                      {update.url && (
+                        <a
+                          className="mono"
+                          href={update.url}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            void ui.attempt(api.openUrl(update.url ?? ''));
+                          }}
+                        >
+                          {update.url}
+                        </a>
+                      )}
                     </p>
                     {update.notes && (
                       <details className="rec-why">
