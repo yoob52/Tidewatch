@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { api, type Priority, type TicketDraft, type TicketStatus, type TicketType } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
-import { imageFiles, imageMd, insertAt, parseImages, uploadImage } from '../lib/images';
+import { imageFiles, imageMd, insertAt, parseImages, selectionOf, uploadImage } from '../lib/images';
 import { Field, Md, PRIO, Prio, STAGE_NAME, Seg, Stamp, TYPES, go, useUi } from '../lib/ui';
 
 type Mode = 'paste' | 'file' | 'form';
@@ -64,13 +64,14 @@ export function NewTicketPage() {
 
   // 粘贴 / 拖进来的截图：存成用户图（默认权威），在光标处插入引用
   const addImages = async (files: File[], el: HTMLTextAreaElement | null) => {
-    let next = raw;
+    const sel = selectionOf(el);
+    const added: string[] = [];
     for (const f of files) {
       const id = await ui.attempt(uploadImage(null, f));
-      if (!id) return;
-      next = insertAt(next, el, imageMd('需求方截图', id, 'authoritative'));
+      if (!id) break;
+      added.push(imageMd('需求方截图', id, 'authoritative'));
     }
-    setRaw(next);
+    setRaw((cur) => insertAt(cur, sel, added));
   };
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const files = imageFiles(e.clipboardData);

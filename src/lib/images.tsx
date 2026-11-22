@@ -45,8 +45,16 @@ const rewrite = (md: string, id: string, f: (r: ImageRef) => string): string => 
   return r ? md.slice(0, r.start) + f(r) + md.slice(r.end) : md;
 };
 
-export const setAuthority = (md: string, id: string, authority: Authority) =>
-  rewrite(md, id, (r) => imageMd(r.alt, r.id, authority, authority === 'authoritative' ? null : r.supersededBy));
+/** 改成仅参考时，"被它取代"的标记一并去掉：取代别的图的只能是权威图。 */
+export function setAuthority(md: string, id: string, authority: Authority): string {
+  let next = rewrite(md, id, (r) =>
+    imageMd(r.alt, r.id, authority, authority === 'authoritative' ? null : r.supersededBy),
+  );
+  if (authority === 'reference')
+    for (const r of parseImages(next).filter((x) => x.supersededBy === id))
+      next = rewrite(next, r.id, (x) => imageMd(x.alt, x.id, x.authority, null));
+  return next;
+}
 
 export const setAlt = (md: string, id: string, alt: string) =>
   rewrite(md, id, (r) => imageMd(alt, r.id, r.authority, r.supersededBy));
@@ -59,13 +67,20 @@ export function removeImage(md: string, id: string): string {
   return next.replace(/\n{3,}/g, '\n\n');
 }
 
-/** 新图标为权威并放在原图位置；原图留在其后，标为已被取代的参考图。 */
-export const replaceImage = (md: string, oldId: string, newId: string, alt: string) =>
-  rewrite(
-    md,
+/**
+ * 新图标为权威并放在原图位置；原图留在其后，标为已被取代的参考图。
+ * 之前被原图取代的旧图改为指向新图，连续替换几次之后标记仍然有效。
+ */
+export function replaceImage(md: string, oldId: string, newId: string, alt: string): string {
+  let next = md;
+  for (const r of parseImages(md).filter((x) => x.supersededBy === oldId))
+    next = rewrite(next, r.id, (x) => imageMd(x.alt, x.id, x.authority, newId));
+  return rewrite(
+    next,
     oldId,
     (r) => `${imageMd(alt, newId, 'authoritative')}\n\n${imageMd(r.alt || '原 PRD 图', r.id, 'reference', newId)}`,
   );
+}
 
 const toBase64 = (file: Blob) =>
   new Promise<string>((resolve, reject) => {
@@ -87,11 +102,23 @@ export function imageFiles(data: DataTransfer | null): File[] {
 }
 
 /** 把一段文字插到 textarea 的光标处，前后各留一个空行。 */
-export function insertAt(text: string, el: HTMLTextAreaElement | null, snippet: string): string {
-  const at = el ? el.selectionStart : text.length;
-  const before = text.slice(0, at).replace(/\n*$/, '');
-  const after = text.slice(el ? el.selectionEnd : at).replace(/^\n*/, '');
-  return `${before}${before ? '\n\n' : ''}${snippet}\n${after ? `\n${after}` : ''}`;
+export interface Selection {
+  start: number;
+  end: number;
+}
+
+/** 输入框当前的选区。上传是异步的，要在上传之前取，之后光标可能已经动了。 */
+export const selectionOf = (el: HTMLTextAreaElement | null): Selection | null =>
+  el ? { start: el.selectionStart, end: el.selectionEnd } : null;
+
+/** 把几段内容一次插到选区处（没有选区就接在末尾），各占一段。 */
+export function insertAt(text: string, sel: Selection | null, snippets: string[]): string {
+  if (!snippets.length) return text;
+  const start = Math.min(sel ? sel.start : text.length, text.length);
+  const end = Math.min(Math.max(sel ? sel.end : start, start), text.length);
+  const before = text.slice(0, start).replace(/\n*$/, '');
+  const after = text.slice(end).replace(/^\n*/, '');
+  return `${before}${before ? '\n\n' : ''}${snippets.join('\n\n')}\n${after ? `\n${after}` : ''}`;
 }
 
 const cache = new Map<string, Promise<string>>();

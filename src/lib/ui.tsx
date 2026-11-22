@@ -322,6 +322,24 @@ export function Inline({ text }: { text: string }) {
   return <>{inline(text, 0)}</>;
 }
 
+const IMAGE_RE = /!\[[^\]\n]*\]\(attachment:[^)]*\)/g;
+
+/** 一段里夹着图片引用（导入的 docx 表格里常见）：文字照常排，图片就地显示。 */
+function rich(text: string, images?: ImageActions): ReactNode {
+  const imgs = parseImages(text);
+  if (!imgs.length) return inline(text, 0);
+  const out: ReactNode[] = [];
+  let at = 0;
+  imgs.forEach((img, k) => {
+    const before = text.slice(at, img.start);
+    if (before.trim()) out.push(inline(before, k * 2));
+    out.push(<PrdImage key={k * 2 + 1} img={img} actions={images} />);
+    at = img.end;
+  });
+  if (text.slice(at).trim()) out.push(inline(text.slice(at), imgs.length * 2));
+  return out;
+}
+
 /** `prev`：上一版正文，用来标出本版新增的行。 */
 const cells = (l: string) =>
   l
@@ -348,13 +366,13 @@ export function Md({ src, prev, images }: { src: string; prev?: string | null; i
         out.push(
           <table key={`t${out.length}`} className="mdtable">
             <thead>
-              <tr>{rows[0]?.map((c, i) => <th key={i}>{inline(c, 0)}</th>)}</tr>
+              <tr>{rows[0]?.map((c, i) => <th key={i}>{rich(c, images)}</th>)}</tr>
             </thead>
             <tbody>
               {rows.slice(1).map((r, i) => (
                 <tr key={i}>
                   {r.map((c, j) => (
-                    <td key={j}>{c.split('<br>').map((x, k) => <div key={k}>{inline(x, 0)}</div>)}</td>
+                    <td key={j}>{c.split('<br>').map((x, k) => <div key={k}>{rich(x, images)}</div>)}</td>
                   ))}
                 </tr>
               ))}
@@ -391,8 +409,11 @@ export function Md({ src, prev, images }: { src: string; prev?: string | null; i
       }
       if (table.length) flush();
       const imgs = parseImages(l);
-      if (imgs.length && !l.replace(/!\[[^\]\n]*\]\(attachment:[^)]*\)/g, '').trim()) {
+      if (imgs.length) {
+        // 图片各占一块；同一行里的文字留在前面照常显示
         flush();
+        const rest = l.replace(IMAGE_RE, ' ').trim();
+        if (rest) out.push(<p key={i} className={cls}>{inline(rest, 0)}</p>);
         imgs.forEach((img, k) => out.push(<PrdImage key={`${i}-${k}`} img={img} actions={images} added={!!cls} />));
         return;
       }

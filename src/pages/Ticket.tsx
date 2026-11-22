@@ -8,6 +8,7 @@ import {
   imageFiles,
   imageMd,
   insertAt,
+  selectionOf,
   removeImage,
   replaceImage,
   setAuthority,
@@ -501,13 +502,14 @@ function PrdTab({ d, reload }: TabProps) {
       if (id) await saveImages(replaceImage(cur.content_md, target.replace, id, '需求方截图'), '替换了一张图片');
       return;
     }
-    let next = draft ?? cur.content_md;
+    const sel = selectionOf(area.current);
+    const added: string[] = [];
     for (const f of files) {
       const id = await ui.attempt(uploadImage(t.id, f));
-      if (!id) return;
-      next = insertAt(next, area.current, imageMd('需求方截图', id, 'authoritative'));
+      if (!id) break;
+      added.push(imageMd('需求方截图', id, 'authoritative'));
     }
-    setDraft(next);
+    setDraft((d) => insertAt(d ?? cur.content_md, sel, added));
   };
   const imageActions = useMemo<ImageActions>(
     () => ({
