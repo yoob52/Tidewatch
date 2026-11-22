@@ -441,3 +441,48 @@ fn feishu_doc_is_imported_by_url_and_new_revisions_wait_for_the_user() {
         "13"
     );
 }
+
+/// 对着真实的 GitHub 只读拉一次：`TW_GITHUB_REPO=owner/name cargo test --test sync -- --ignored real_github`。
+#[test]
+#[ignore]
+fn real_github_pull() {
+    let Ok(repo) = std::env::var("TW_GITHUB_REPO") else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let db = db::shared(db::open(&dir.path().join("t.db")).unwrap());
+    let secrets = MemoryStore::default();
+    let source = sync::create(
+        &lock(&db),
+        SourceInput {
+            kind: "github".into(),
+            name: "real".into(),
+            enabled: true,
+            config: SourceConfig {
+                repo,
+                labels: std::env::var("TW_GITHUB_LABELS")
+                    .map(|l| l.split(',').map(String::from).collect())
+                    .unwrap_or_default(),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let r = sync::run(&db, &secrets, dir.path(), &source.id).unwrap();
+    println!(
+        "created {} comments {} warnings {:?}",
+        r.created.len(),
+        r.comments,
+        r.warnings
+    );
+    assert!(!r.created.is_empty());
+    let list = tickets::list(&lock(&db), None).unwrap();
+    for t in list.iter().take(5) {
+        let ts = sync::ticket_source(&lock(&db), &t.id).unwrap().unwrap();
+        println!("{} [{}] {} <- {}", t.key, t.kind, t.title, ts.url);
+        assert!(ts.url.starts_with("https://github.com/"));
+    }
+    // 第二次不重复建单
+    let again = sync::run(&db, &secrets, dir.path(), &source.id).unwrap();
+    assert!(again.created.is_empty(), "{again:?}");
+}
