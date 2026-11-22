@@ -456,6 +456,17 @@ export interface TaskDiff {
   truncated: boolean;
 }
 
+export interface TicketDraft {
+  title: string;
+  type: TicketType;
+  content_md: string;
+  priority: Priority;
+  labels: string[];
+  project_ids: string[];
+  bug_info: { steps?: string; expected?: string; actual?: string } | null;
+  reasons: string[];
+}
+
 export interface UpdateInfo {
   current: string;
   /** 还没有任何发布时为 null。 */
@@ -624,8 +635,8 @@ export const api = {
   ticketSavePrd: (id: string, content: string, note?: string, origin?: 'edit' | 'image') =>
     invoke<PrdVersion>('ticket_save_prd', { id, content, note: note ?? null, origin: origin ?? null }),
   ticketTransition: (id: string, to: TicketStatus) => invoke<Ticket>('ticket_transition', { id, to }),
-  ticketDraft: (markdown: string) =>
-    invoke<{ title: string; type: TicketType; content_md: string }>('ticket_draft', { markdown }),
+  /** 智能创建：本机规则识别出的预填内容，reasons 说明每一项的依据。 */
+  ticketDraft: (markdown: string) => invoke<TicketDraft>('ticket_draft', { markdown }),
   readTextFile: (path: string) => invoke<string>('read_text_file', { path }),
   importDocument: (path: string) => invoke<Imported>('import_document', { path }),
 

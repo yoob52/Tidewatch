@@ -602,10 +602,12 @@ fn prompt_save(
     ))
 }
 
-/// 从粘贴的 Markdown 预填标题和类型。
+/// 智能创建：从粘贴 / 导入的 Markdown 预填标题、类型、建议的项目、优先级、标签和 Bug 三要素。
+/// 只用本机规则，不联网。
 #[tauri::command]
-fn ticket_draft(markdown: String) -> tickets::Draft {
-    tickets::draft_from_markdown(&markdown)
+fn ticket_draft(state: State, markdown: String) -> CmdResult<tickets::Draft> {
+    let all = projects::list(&lock(state.engine.db())).map_err(err)?;
+    Ok(tickets::smart_draft(&markdown, &all))
 }
 
 /// 读取用户在文件对话框里选中的 Markdown / 文本文件。

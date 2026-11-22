@@ -1,7 +1,7 @@
 // 新建工单：左边放原文，右边是预填的属性
 import { open } from '@tauri-apps/plugin-dialog';
 import { useRef, useState } from 'react';
-import { api, type Priority, type TicketStatus, type TicketType } from '../lib/api';
+import { api, type Priority, type TicketDraft, type TicketStatus, type TicketType } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { imageFiles, imageMd, insertAt, parseImages, uploadImage } from '../lib/images';
@@ -24,6 +24,8 @@ export function NewTicketPage() {
   const [labels, setLabels] = useState('');
   const [due, setDue] = useState('');
   const [recognized, setRecognized] = useState(false);
+  const [bugInfo, setBugInfo] = useState<TicketDraft['bug_info']>(null);
+  const [reasons, setReasons] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -36,9 +38,11 @@ export function NewTicketPage() {
     if (!d) return;
     setTitle(d.title);
     setType(d.type);
-    // 正文里提到了哪个项目的名字，就预选它
-    const hit = projects.filter((p) => text.toLowerCase().includes(p.name.toLowerCase())).map((p) => p.id);
-    setPicked(hit.length ? hit : projects.length === 1 ? [projects[0].id] : []);
+    setPriority(d.priority);
+    setLabels(d.labels.join(' '));
+    setPicked(d.project_ids);
+    setBugInfo(d.bug_info);
+    setReasons(d.reasons);
     setRecognized(true);
   };
 
@@ -110,6 +114,7 @@ export function NewTicketPage() {
           subdir: null,
         })),
         acceptance_criteria: [],
+        bug_info: type === 'bug' ? bugInfo : null,
         source_kind: mode === 'file' ? 'file' : 'manual',
         default_agent: null,
         default_provider_id: null,
@@ -263,8 +268,25 @@ export function NewTicketPage() {
         <div className="sec-title">
           <Icon name="spark" size={15} />
           {mode === 'form' ? '工单属性' : '识别结果'}
-          {mode !== 'form' && recognized && <small>已根据原文预填，可修改</small>}
+          {mode !== 'form' && recognized && <small>已根据原文预填，确认或修改后再创建</small>}
         </div>
+        {mode !== 'form' && recognized && reasons.length > 0 && (
+          <details className="rec-why">
+            <summary>识别依据（{reasons.length} 项，本机规则，没有调用 AI）</summary>
+            <ul>
+              {reasons.map((r) => (
+                <li key={r}>{r}</li>
+              ))}
+            </ul>
+            {type === 'bug' && bugInfo && (
+              <ul>
+                {bugInfo.steps && <li>复现步骤：{bugInfo.steps}</li>}
+                {bugInfo.expected && <li>期望：{bugInfo.expected}</li>}
+                {bugInfo.actual && <li>实际：{bugInfo.actual}</li>}
+              </ul>
+            )}
+          </details>
+        )}
         <div className="rec">
           {showProps ? (
             <>

@@ -649,6 +649,220 @@ pub struct Draft {
     #[serde(rename = "type")]
     pub kind: String,
     pub content_md: String,
+    pub priority: String,
+    pub labels: Vec<String>,
+    /// 建议绑定的项目。
+    pub project_ids: Vec<String>,
+    /// Bug：从正文里抽出的 `{steps, expected, actual}`。
+    pub bug_info: Option<serde_json::Value>,
+    /// 每一项是怎么识别出来的，给用户看。
+    pub reasons: Vec<String>,
+}
+
+/// 智能创建：在 [`draft_from_markdown`] 之上再识别建议绑定的项目、优先级、标签和 Bug 三要素。
+/// 全部是本机规则，不联网、不调 Agent；结果只用来预填表单，用户确认后才建单。
+pub fn smart_draft(md: &str, projects: &[super::projects::Project]) -> Draft {
+    let mut d = draft_from_markdown(md);
+    let lower = d.content_md.to_lowercase();
+    let type_label = match d.kind.as_str() {
+        "bug" => "Bug",
+        "feature_frontend" => "前端需求",
+        "feature_backend" => "后端需求",
+        _ => "前后端需求",
+    };
+    d.reasons
+        .push(format!("类型：按正文里的关键词判断为{type_label}"));
+
+    // 项目：先看正文有没有直接提到项目名，再看和项目上下文卡片里的英文关键词重合多少
+    let mut scored: Vec<(usize, &super::projects::Project, String)> = projects
+        .iter()
+        .filter_map(|p| {
+            let name = p.name.trim().to_lowercase();
+            if !name.is_empty() && lower.contains(&name) {
+                return Some((usize::MAX, p, format!("正文提到了项目「{}」", p.name)));
+            }
+            let mut words: Vec<String> = format!("{} {}", p.name, p.context_md)
+                .to_lowercase()
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+                .filter(|w| w.len() >= 4 && w.chars().any(|c| c.is_ascii_alphabetic()))
+                .map(String::from)
+                .collect();
+            words.sort();
+            words.dedup();
+            let hits: Vec<&String> = words
+                .iter()
+                .filter(|w| lower.contains(w.as_str()))
+                .collect();
+            (hits.len() >= 2).then(|| {
+                let shown: Vec<&str> = hits.iter().take(3).map(|w| w.as_str()).collect();
+                (
+                    hits.len(),
+                    p,
+                    format!(
+                        "正文和项目「{}」的上下文都提到 {}",
+                        p.name,
+                        shown.join("、")
+                    ),
+                )
+            })
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    if let Some(best) = scored.first().map(|x| x.0) {
+        for (n, p, why) in scored.iter().filter(|x| x.0 == best || x.0 == usize::MAX) {
+            let _ = n;
+            d.project_ids.push(p.id.clone());
+            d.reasons.push(format!("项目：{why}"));
+        }
+    } else {
+        // 没有线索时，只有在不会选错的情况下才预选：每种角色恰好一个项目
+        let only = |kind: &str| {
+            let mut it = projects.iter().filter(|p| p.kind == kind);
+            match (it.next(), it.next()) {
+                (Some(p), None) => Some(p),
+                _ => None,
+            }
+        };
+        let picks: Vec<&super::projects::Project> = if projects.len() == 1 {
+            vec![&projects[0]]
+        } else {
+            match d.kind.as_str() {
+                "feature_frontend" => only("frontend").into_iter().collect(),
+                "feature_backend" => only("backend").into_iter().collect(),
+                "feature_mixed" => match (only("backend"), only("frontend")) {
+                    (Some(b), Some(f)) => vec![b, f],
+                    _ => vec![],
+                },
+                _ => vec![],
+            }
+        };
+        for p in picks {
+            d.project_ids.push(p.id.clone());
+            d.reasons
+                .push(format!("项目：这类工单只有「{}」一个项目可选", p.name));
+        }
+    }
+
+    for (level, label, words) in [
+        (
+            "urgent",
+            "紧急",
+            &["紧急", "urgent", "p0", "线上故障", "阻塞", "立即", "马上"][..],
+        ),
+        (
+            "high",
+            "高",
+            &["尽快", "高优", "p1", "重要", "优先处理"][..],
+        ),
+        (
+            "low",
+            "低",
+            &["不急", "低优", "p3", "有空再", "低优先级"][..],
+        ),
+    ] {
+        if let Some(w) = words.iter().find(|w| lower.contains(**w)) {
+            d.priority = level.into();
+            d.reasons
+                .push(format!("优先级：正文里有「{w}」，预填为{label}"));
+            break;
+        }
+    }
+
+    // 标签：`标签：a、b` 这样的一行
+    for line in d.content_md.lines() {
+        let l = line.trim().trim_start_matches(['-', '*', '#', ' ']);
+        let low = l.to_lowercase();
+        let Some(rest) = ["标签", "labels", "tags", "label", "tag"]
+            .iter()
+            .find_map(|k| low.strip_prefix(k).map(|_| &l[k.len()..]))
+            .and_then(|r| r.trim_start().strip_prefix([':', '：']))
+        else {
+            continue;
+        };
+        d.labels = rest
+            .split([',', '，', '、', ' ', ';', '；'])
+            .map(|t| t.trim().trim_start_matches('#'))
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+            .collect();
+        if !d.labels.is_empty() {
+            d.reasons.push("标签：取自正文里的标签行".into());
+            break;
+        }
+    }
+
+    if d.kind == "bug" {
+        d.bug_info = bug_sections(&d.content_md);
+        if d.bug_info.is_some() {
+            d.reasons
+                .push("Bug：从正文里抽出了复现步骤 / 期望 / 实际".into());
+        }
+    }
+    d
+}
+
+/// 找 `复现步骤：…` / `期望：…` / `实际：…` 这样的段落（冒号结尾的一行或小标题，内容到下一段为止）。
+fn bug_sections(md: &str) -> Option<serde_json::Value> {
+    const KEYS: [(&str, &[&str]); 3] = [
+        (
+            "steps",
+            &[
+                "复现步骤",
+                "重现步骤",
+                "操作步骤",
+                "steps to reproduce",
+                "复现",
+            ],
+        ),
+        (
+            "expected",
+            &["期望结果", "预期结果", "期望", "预期", "expected"],
+        ),
+        ("actual", &["实际结果", "实际", "actual"]),
+    ];
+    let mut found: Vec<(&str, String)> = vec![];
+    let mut current: Option<usize> = None;
+    for line in md.lines() {
+        let head = line
+            .trim()
+            .trim_start_matches(['#', '*', '-', ' ', '【'])
+            .trim_end_matches(['*', '】', ' ']);
+        let low = head.to_lowercase();
+        let hit = KEYS.iter().find_map(|(field, names)| {
+            names.iter().find_map(|n| {
+                let rest = low.strip_prefix(n)?;
+                let rest = rest.trim_start_matches(['*', '】', ' ']);
+                // 关键词后面要么结束，要么是冒号：避免把"实际上……"这种句子当成小节
+                (rest.is_empty() || rest.starts_with([':', '：'])).then(|| {
+                    let body = head[head.len() - rest.len()..].trim_start_matches([':', '：', ' ']);
+                    (*field, body.to_string())
+                })
+            })
+        });
+        match hit {
+            Some((field, body)) if !found.iter().any(|(f, _)| *f == field) => {
+                found.push((field, body));
+                current = Some(found.len() - 1);
+            }
+            _ if line.trim_start().starts_with('#') => current = None,
+            _ => {
+                if let Some(i) = current {
+                    if !found[i].1.is_empty() {
+                        found[i].1.push('\n');
+                    }
+                    found[i].1.push_str(line.trim_end());
+                }
+            }
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for (field, body) in found {
+        let body = body.trim();
+        if !body.is_empty() {
+            out.insert(field.into(), body.into());
+        }
+    }
+    (!out.is_empty()).then(|| serde_json::Value::Object(out))
 }
 
 pub fn draft_from_markdown(md: &str) -> Draft {
@@ -687,6 +901,11 @@ pub fn draft_from_markdown(md: &str) -> Draft {
         title,
         kind: kind.into(),
         content_md: md.to_string(),
+        priority: "medium".into(),
+        labels: vec![],
+        project_ids: vec![],
+        bug_info: None,
+        reasons: vec![],
     }
 }
 
@@ -835,5 +1054,68 @@ mod tests {
         );
         let d = draft_from_markdown("优惠券叠加规则\n后端接口需要支持……前端页面展示……");
         assert_eq!(d.kind, "feature_mixed");
+    }
+
+    #[test]
+    fn smart_draft_prefills_project_priority_labels_and_bug_sections() {
+        use crate::store::projects::Project;
+        let project = |id: &str, name: &str, kind: &str, ctx: &str| Project {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
+            local_path: String::new(),
+            git_url: None,
+            default_branch: "main".into(),
+            context_md: ctx.into(),
+            commands: Default::default(),
+            default_agent: None,
+            default_provider_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let all = [
+            project(
+                "p1",
+                "mall-api",
+                "backend",
+                "Spring Boot，订单模块在 order-service，用 MyBatis",
+            ),
+            project(
+                "p2",
+                "mall-web",
+                "frontend",
+                "Vue3 + Pinia，结算页在 checkout 目录",
+            ),
+            project("p3", "admin-web", "frontend", "React 后台"),
+        ];
+        let md = "# 结算页金额显示为负数\n\n紧急，线上用户反馈。\n\n标签：支付、结算\n\n## 复现步骤\n1. 加两张优惠券\n2. 打开结算页\n\n**期望**：金额不小于 0\n实际：显示 -3.00\n\n## 备注\n实际上只有 checkout 用了 Pinia 的这个 store\n";
+        let d = smart_draft(md, &all);
+        assert_eq!(d.kind, "bug");
+        assert_eq!(d.priority, "urgent");
+        assert_eq!(d.labels, ["支付", "结算"]);
+        assert_eq!(d.project_ids, ["p2"], "{:?}", d.reasons);
+        let bug = d.bug_info.unwrap();
+        assert_eq!(bug["steps"], "1. 加两张优惠券\n2. 打开结算页");
+        assert_eq!(bug["expected"], "金额不小于 0");
+        assert_eq!(bug["actual"], "显示 -3.00");
+        assert!(
+            d.reasons.iter().any(|r| r.contains("checkout")),
+            "{:?}",
+            d.reasons
+        );
+
+        // 直接提到项目名
+        let d = smart_draft("给 mall-api 加一个导出订单的接口", &all);
+        assert_eq!(
+            (d.kind.as_str(), d.project_ids.as_slice()),
+            ("feature_backend", &["p1".to_string()][..])
+        );
+        assert_eq!(d.priority, "medium");
+        assert!(d.bug_info.is_none());
+
+        // 没有线索：后端只有一个项目可以预选，前端有两个就不猜
+        assert_eq!(smart_draft("新增数据库字段", &all).project_ids, ["p1"]);
+        assert!(smart_draft("页面样式调整", &all).project_ids.is_empty());
+        assert!(smart_draft("页面样式调整", &[]).project_ids.is_empty());
     }
 }
