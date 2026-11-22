@@ -255,14 +255,14 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>单次运行花费上限</b>
-              <p>这一轮的花费（Agent 上报，或按 Provider 单价估算）超过它就停止并记为失败。单位：美元，0 表示不限。</p>
+              <p>这一轮的花费（Agent 上报，或按 Provider 单价估算）超过它就停止并记为失败。单位：美元，0 表示不限。Claude Code 运行中途按 Provider 单价估算（没填单价就只能在结束时判定）；Codex 只在一轮结束时上报用量，超限只能事后记为失败。</p>
             </div>
             <div className="sctl">{stepper(settings.budget_usd_per_run, 0, 100, 1, (n) => void save({ budget_usd_per_run: n }))}</div>
           </div>
           <div className="srow">
             <div>
               <b>单次运行 Token 上限</b>
-              <p>输入加输出 Token 超过它就停止。单位：万 Token，0 表示不限。</p>
+              <p>输入加输出 Token 超过它就停止。单位：万 Token，0 表示不限。Claude Code 每次请求后累计一次；Codex 只在一轮结束时上报。</p>
             </div>
             <div className="sctl">{stepper(Math.round(settings.budget_tokens_per_run / 10000), 0, 5000, 50, (n) => void save({ budget_tokens_per_run: n * 10000 }))}</div>
           </div>
