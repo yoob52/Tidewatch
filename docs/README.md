@@ -5,7 +5,7 @@
 1. **为什么做**：[产品愿景与痛点](01-product/vision.md) → [功能清单](01-product/features.md)
 2. **工单怎么流转**：[工单模型](02-workflow/ticket-model.md) → [工作流与状态机](02-workflow/workflow.md) → [PRD 审核](02-workflow/prd-review.md) → [工单来源](02-workflow/ticket-sources.md) → [PRD 中的图片](02-workflow/prd-images.md)
 3. **Agent 怎么干活**：[Agent 适配层](03-agent/agent-adapter.md) → [自定义 Provider](03-agent/providers.md) → [执行与隔离](03-agent/execution.md) → [Prompt 与上下文](03-agent/prompt-context.md) → [Agent 管理（参考 T3 Code）](03-agent/agent-management.md)
-4. **系统怎么搭**：[系统架构](04-architecture/overview.md) → [数据模型](04-architecture/data-model.md) → [安全与存储](04-architecture/security-storage.md)
+4. **系统怎么搭**：[系统架构](04-architecture/overview.md) → [数据模型](04-architecture/data-model.md) → [安全与存储](04-architecture/security-storage.md) → [本地接口与轻量协作](04-architecture/local-api.md)
 5. **长什么样**：[界面设计](05-ui/ui-design.md)
 6. **怎么推进**：[路线图](06-roadmap/roadmap.md) → [待决问题](06-roadmap/open-questions.md)
 
@@ -33,7 +33,8 @@ docs/
 ├── 04-architecture/
 │   ├── overview.md              # 总体架构
 │   ├── data-model.md            # 数据模型
-│   └── security-storage.md      # 安全与本地存储
+│   ├── security-storage.md      # 安全与本地存储
+│   └── local-api.md             # 本地 HTTP / MCP 接口、成员与角色（M4）
 ├── 05-ui/
 │   └── ui-design.md             # 界面与交互
 ├── 06-roadmap/

@@ -211,3 +211,4 @@ CREATE VIRTUAL TABLE ticket_fts USING fts5(title, content, ticket_id UNINDEXED);
 - 数据库迁移使用版本化 SQL 脚本。
 - 实际落地的结构以 `crates/tidewatch-core/migrations/` 为准。M1 的 `0002_m1.sql` 在上面的基础上加了：`ticket.cancelled_from`（取消前的状态，用于恢复）、`task.merged_commit`、`run.number`（子任务内第几次运行）、`run.queued_at`、`run.permission`、`run.resume_session_id`、`run.error`、`run.diff_stat_json`（合并后 worktree 已清理，Diff 统计从这里读）。
 - 预留 `owner` / `assignee` 字段的扩展位，未来多人时添加。
+- M4 的 `0006_m4.sql` 加了：`member`（成员与令牌哈希）、`ticket.assignee_id`、`timeline_event.actor`、`delegation`（Agent 委派出去的运行）、`question`（Agent 提给人的问题）、`sync_source` / `ticket_source`（外部同步来源，以及工单对应的外部条目和待处理的「源已变更」）、`workflow` / `ticket_stage`（自定义工作流与已通过的环节）、`task.compare_of`（多 Agent 对比的候选指向原子任务）。
