@@ -634,7 +634,9 @@ fn run_tokens_are_scoped_to_their_ticket_and_stopping_the_caller_stops_its_deleg
 
     // 运行令牌：只能用 MCP，只看得到自己的工单，工具列表里有委派
     assert_eq!(f.http("GET", "/api/v1/tickets", Some(&token), None).0, 403);
-    let forged = format!("{}0", &token[..token.len() - 1]);
+    // 换掉最后一个字符（原来正好是 0 的话换成 1，不然伪造出来的就是原令牌）
+    let last = if token.ends_with('0') { '1' } else { '0' };
+    let forged = format!("{}{last}", &token[..token.len() - 1]);
     assert_eq!(
         f.http("POST", "/mcp", Some(&forged), Some(json!({}))).0,
         401
