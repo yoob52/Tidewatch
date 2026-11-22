@@ -458,8 +458,12 @@ function Questions({ d }: { d: TicketDetail }) {
 }
 
 function OverviewTab({ d }: { d: TicketDetail }) {
+  const ui = useUi();
   const { projects, providers, settings } = useData();
   const t = d.ticket;
+  const { data: members } = useLoad(() => api.memberList(), []);
+  // 停用的成员不能再指派，但已经是负责人的还要显示出来
+  const assignable = (members ?? []).filter((m) => !m.disabled || m.id === t.assignee_id);
   const live = d.tasks.filter((k) => k.status !== 'cancelled');
   const wait = live.filter((k) => k.status === 'review');
   const openIssues = d.issues.filter((i) => i.resolution === 'open' || i.resolution === 'pending_confirm');
@@ -580,10 +584,24 @@ function OverviewTab({ d }: { d: TicketDetail }) {
       </div>
       <aside className="ov-side">
         <dl className="props">
-          {d.assignee && (
+          {(d.assignee || assignable.length > 0) && (
             <>
               <dt>负责人</dt>
-              <dd>{d.assignee}</dd>
+              <dd>
+                <select
+                  className="input"
+                  aria-label="负责人"
+                  value={t.assignee_id ?? ''}
+                  onChange={(e) => void ui.attempt(api.ticketAssign(t.id, e.target.value || null))}
+                >
+                  <option value="">未指派</option>
+                  {assignable.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </dd>
             </>
           )}
           <dt>类型</dt>

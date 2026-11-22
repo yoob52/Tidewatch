@@ -371,7 +371,10 @@ fn ticket_assign(
     id: String,
     member_id: Option<String>,
 ) -> CmdResult<tickets::Ticket> {
-    tickets::set_assignee(&lock(state.engine.db()), &id, member_id.as_deref()).map_err(err)
+    let t =
+        tickets::set_assignee(&lock(state.engine.db()), &id, member_id.as_deref()).map_err(err)?;
+    state.engine.ticket_changed(&t.id);
+    Ok(t)
 }
 
 // ---- Agent 的提问 ----
