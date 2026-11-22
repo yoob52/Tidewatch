@@ -1,12 +1,142 @@
-// 设置：工作区与并发、默认执行配置、自动化、通知与外观、本机环境
+// 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type Detection, type Settings, type SystemInfo } from '../lib/api';
+import { api, type Detection, type Settings, type SystemInfo, type TemplateInfo } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
-import { AGENTS, PERMISSIONS, Seg, Switch, useUi } from '../lib/ui';
+import { AGENTS, Modal, PERMISSIONS, Seg, Switch, useUi } from '../lib/ui';
 
-const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', '通知与外观', '本机环境'];
+const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '本机环境'];
+
+/** 编辑一个 Prompt 模板：左边改，右边看用示例数据填出来的效果。 */
+function TemplateEditor({ tpl, onClose, onSaved }: { tpl: TemplateInfo; onClose: () => void; onSaved: (list: TemplateInfo[]) => void }) {
+  const ui = useUi();
+  const [text, setText] = useState(tpl.content);
+  const [preview, setPreview] = useState<{ text: string; unknown_variables: string[] } | null>(null);
+
+  // 停止输入 300ms 后刷新预览
+  useEffect(() => {
+    let stale = false;
+    const timer = setTimeout(() => {
+      api.promptPreview(tpl.name, text).then(
+        (p) => !stale && setPreview(p),
+        () => undefined,
+      );
+    }, 300);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [tpl.name, text]);
+
+  const save = async (content: string | null) => {
+    const unknown = content === null ? [] : (preview?.unknown_variables ?? []);
+    if (
+      unknown.length &&
+      !(await ui.confirm('模板里有不认识的变量', `${unknown.map((v) => `{{${v}}}`).join('、')} 不会被替换，会原样发给 Agent。仍然保存吗？`, '仍然保存'))
+    )
+      return;
+    const list = await ui.attempt(api.promptSave(tpl.name, content), content === null ? '已恢复默认模板' : '模板已保存，下一次运行生效');
+    if (list) onSaved(list);
+  };
+
+  return (
+    <Modal
+      title={`Prompt 模板 · ${tpl.title}`}
+      hint={tpl.description}
+      width={1040}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" disabled={text === tpl.default} onClick={() => setText(tpl.default)} title="把编辑框里的内容换回内置模板（还要点保存）">
+            填回默认内容
+          </button>
+          {tpl.customized && (
+            <button className="btn" onClick={() => void save(null)}>
+              恢复默认并保存
+            </button>
+          )}
+          <span className="grow" />
+          <button className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button className="btn primary" disabled={!text.trim() || text === tpl.content} onClick={() => void save(text)}>
+            保存
+          </button>
+        </>
+      }
+    >
+      <div className="row" style={{ flexWrap: 'wrap', marginBottom: 8 }}>
+        <span className="dim">可用变量（点击追加到末尾）：</span>
+        {tpl.variables.map((v) => (
+          <button key={v} className="tag line mono" onClick={() => setText((x) => `${x}{{${v}}}`)}>
+            {`{{${v}}}`}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <textarea className="textarea mono" style={{ minHeight: 420 }} value={text} onChange={(e) => setText(e.target.value)} aria-label="模板内容" />
+        <div>
+          <pre className="plain boxed" style={{ minHeight: 420, maxHeight: 520, overflow: 'auto', margin: 0, whiteSpace: 'pre-wrap' }} aria-label="预览">
+            {preview?.text ?? '生成预览中…'}
+          </pre>
+        </div>
+      </div>
+      <p className="dim" style={{ marginTop: 8 }}>
+        右边是用示例数据填出来的效果。
+        {['review', 'split', 'impact'].includes(tpl.name) && '末尾的输出格式由系统固定追加，不在模板里，改模板不会让结果解析失败。'}
+        {preview && preview.unknown_variables.length > 0 && (
+          <span style={{ color: 'var(--cinnabar)' }}> 不认识的变量：{preview.unknown_variables.map((v) => `{{${v}}}`).join('、')}</span>
+        )}
+      </p>
+    </Modal>
+  );
+}
+
+function PromptTemplates() {
+  const [list, setList] = useState<TemplateInfo[] | null>(null);
+  const [editing, setEditing] = useState<TemplateInfo | null>(null);
+  useEffect(() => {
+    api.promptTemplates().then(setList, () => setList([]));
+  }, []);
+  return (
+    <div className="card">
+      {list === null && (
+        <div className="srow">
+          <div>
+            <p>读取中…</p>
+          </div>
+        </div>
+      )}
+      {(list ?? []).map((tpl) => (
+        <div className="srow" key={tpl.name}>
+          <div>
+            <b>{tpl.title}</b>
+            <p>{tpl.description}</p>
+          </div>
+          <div className="sctl">
+            {tpl.customized && <span className="tag tide">已自定义</span>}
+            <button className="btn sm" onClick={() => setEditing(tpl)}>
+              <Icon name="edit" size={13} />
+              编辑
+            </button>
+          </div>
+        </div>
+      ))}
+      {editing && (
+        <TemplateEditor
+          key={editing.name}
+          tpl={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(l) => {
+            setList(l);
+            setEditing(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
 const PERMISSION_HINT: Record<string, string> = {
   read_only: '只读，不改文件',
   workspace_write: '可改 worktree 内的文件',
@@ -158,6 +288,24 @@ export function SettingsPage({
         <div className="card">
           <div className="srow">
             <div>
+              <b>确认拆分后立刻开始开发</b>
+              <p>确认拆分建议或变更影响分析后，能开始的子任务直接入队。关闭时要自己点「开始开发」。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.auto_develop} onChange={(v) => void save({ auto_develop: v })} label="确认拆分后立刻开始开发" />
+            </div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>依赖满足后自动开始</b>
+              <p>后端写出接口文档、或依赖的子任务跑完后，等它的子任务自动入队。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.auto_start_unblocked} onChange={(v) => void save({ auto_start_unblocked: v })} label="依赖满足后自动开始" />
+            </div>
+          </div>
+          <div className="srow">
+            <div>
               <b>运行结束后自动检查</b>
               <p>依次执行项目配置的 Lint、类型检查、测试和构建命令，结果显示在验收页。</p>
             </div>
@@ -193,6 +341,9 @@ export function SettingsPage({
         </div>
 
         <h3 id="set-3">{SECTIONS[3]}</h3>
+        <PromptTemplates />
+
+        <h3 id="set-4">{SECTIONS[4]}</h3>
         <div className="card">
           <div className="srow">
             <div>
@@ -221,7 +372,7 @@ export function SettingsPage({
           </div>
         </div>
 
-        <h3 id="set-4">{SECTIONS[4]}</h3>
+        <h3 id="set-5">{SECTIONS[5]}</h3>
         <div className="card">
           <div className="srow">
             <div>

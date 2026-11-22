@@ -33,6 +33,10 @@ export interface Settings {
   delete_branch_after_merge: boolean;
   notifications: boolean;
   run_timeout_minutes: number;
+  /** 确认拆分 / 影响分析后立刻开始开发。 */
+  auto_develop: boolean;
+  /** 依赖满足（比如接口文档出来）后，等它的子任务自动入队。 */
+  auto_start_unblocked: boolean;
 }
 
 export interface Commands {
@@ -139,6 +143,9 @@ export interface Ticket {
   default_agent: string | null;
   default_provider_id: string | null;
   cancelled_from: TicketStatus | null;
+  /** 变更进行中：发起变更时的定稿版本。 */
+  change_from_version_id: string | null;
+  change_reason: string | null;
   created_at: string;
   updated_at: string;
   projects: TicketProject[];
@@ -148,6 +155,7 @@ export interface TicketSummary extends Ticket {
   tasks_total: number;
   tasks_done: number;
   tasks_running: number;
+  issues_open: number;
 }
 
 export interface PrdVersion {
@@ -193,6 +201,8 @@ export interface TaskInput {
   model: string | null;
   permission_profile: string | null;
   depends_on: string[];
+  /** depends_on 里只等接口文档的那些。 */
+  api_doc_deps?: string[];
 }
 
 export interface Task extends TaskInput {
@@ -298,6 +308,102 @@ export interface RunPlan {
   permission: string;
   resume: [string, string] | null;
   prompt: string;
+  handoff: { from_run_id: string; summary_md: string } | null;
+}
+
+export type Severity = 'blocker' | 'major' | 'minor' | 'suggestion';
+export type Resolution = 'open' | 'accepted' | 'manual' | 'ignored' | 'pending_confirm';
+
+export interface Review {
+  id: string;
+  ticket_id: string;
+  prd_version_id: string | null;
+  run_id: string | null;
+  summary: string;
+  scope: { backend?: boolean; frontend?: boolean } | null;
+  criteria_draft: string[];
+  error: string | null;
+  created_at: string;
+}
+
+export interface Issue {
+  id: string;
+  review_id: string;
+  ticket_id: string;
+  code: string;
+  severity: Severity;
+  category: string;
+  location: string;
+  problem: string;
+  question: string | null;
+  suggestion: string | null;
+  resolution: Resolution;
+  resolution_note: string | null;
+  resolved_in_version_id: string | null;
+  updated_at: string;
+}
+
+export interface TaskDraft {
+  ref: string;
+  kind: string;
+  /** 项目名或项目 id。 */
+  project: string;
+  title: string;
+  spec: string;
+  acceptance_criteria: string[];
+  depends_on: string[];
+  dependency_kind: string | null;
+  agent: string | null;
+}
+
+export interface TaskImpact {
+  task_id: string;
+  impact: 'none' | 'rework';
+  instruction: string;
+}
+
+export interface Proposal {
+  id: string;
+  ticket_id: string;
+  kind: 'split' | 'impact';
+  prd_version_id: string | null;
+  run_id: string | null;
+  status: 'running' | 'pending' | 'applied' | 'discarded' | 'failed';
+  content: { summary?: string; tasks?: unknown[]; new_tasks?: unknown[] } | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Artifact {
+  id: string;
+  task_id: string;
+  kind: string;
+  path: string;
+  commit_sha: string | null;
+  created_at: string;
+}
+
+export interface InlineComment {
+  file_path: string;
+  line: number | null;
+  body: string;
+}
+
+export interface RejectInput {
+  note: string;
+  comments?: InlineComment[];
+  rerun?: boolean;
+}
+
+export interface TemplateInfo {
+  name: string;
+  title: string;
+  description: string;
+  default: string;
+  content: string;
+  customized: boolean;
+  variables: string[];
 }
 
 export interface TaskDiff {
@@ -313,6 +419,11 @@ export interface TicketDetail {
   tasks: Task[];
   runs: Run[];
   timeline: TimelineEvent[];
+  reviews: Review[];
+  issues: Issue[];
+  split: Proposal | null;
+  impact: Proposal | null;
+  artifacts: Artifact[];
 }
 
 export interface RunDetail {
@@ -359,7 +470,10 @@ export type EngineEvent =
       task_title: string;
       status: RunStatus;
       failed_checks: string[];
-    };
+    }
+  | { type: 'review_finished'; ticket_id: string; ticket_key: string; ticket_title: string; issues: number; blockers: number; error: string | null }
+  | { type: 'proposal_ready'; ticket_id: string; ticket_key: string; ticket_title: string; kind: 'split' | 'impact'; error: string | null }
+  | { type: 'api_doc_ready'; ticket_key: string; task_title: string; path: string; unblocked: number };
 
 export const api = {
   systemInfo: () => invoke<SystemInfo>('system_info'),
@@ -390,12 +504,37 @@ export const api = {
     invoke<{ title: string; type: TicketType; content_md: string }>('ticket_draft', { markdown }),
   readTextFile: (path: string) => invoke<string>('read_text_file', { path }),
 
+  reviewStart: (id: string) => invoke<Run>('review_start', { id }),
+  reviewSkip: (id: string) => invoke<Ticket>('review_skip', { id }),
+  issuePreview: (id: string, action: 'accept' | 'ignore', note?: string) =>
+    invoke<string>('issue_preview', { id, action, note: note ?? null }),
+  /** action：accept 采纳 / manual 手动修改 / ignore 忽略（要理由）/ pending 待确认 / reopen 重新打开。 */
+  issueResolve: (id: string, action: 'accept' | 'manual' | 'ignore' | 'pending' | 'reopen', note?: string, content?: string) =>
+    invoke<Issue>('issue_resolve', { id, action, note: note ?? null, content: content ?? null }),
+  questionsExport: (id: string) => invoke<string>('questions_export', { id }),
+  criteriaSet: (id: string, criteria: string[]) => invoke<Ticket>('criteria_set', { id, criteria }),
+  ticketFinalize: (id: string, split: boolean) => invoke<{ ticket: Ticket; run: Run | null }>('ticket_finalize', { id, split }),
+  proposalRegenerate: (ticketId: string) => invoke<Run>('proposal_regenerate', { id: ticketId }),
+  proposalDiscard: (proposalId: string) => invoke<void>('proposal_discard', { id: proposalId }),
+  splitApply: (ticketId: string, tasks: TaskDraft[]) => invoke<Task[]>('split_apply', { id: ticketId, tasks }),
+  impactApply: (ticketId: string, impacts: TaskImpact[], newTasks: TaskDraft[]) =>
+    invoke<Task[]>('impact_apply', { id: ticketId, impacts, newTasks }),
+  developmentStart: (ticketId: string) => invoke<Run[]>('development_start', { id: ticketId }),
+  changeRequest: (ticketId: string, reason: string, stopRunning: boolean) =>
+    invoke<Ticket>('change_request', { id: ticketId, reason, stopRunning }),
+
+  promptTemplates: () => invoke<TemplateInfo[]>('prompt_templates'),
+  promptPreview: (name: string, content: string) =>
+    invoke<{ text: string; unknown_variables: string[] }>('prompt_preview', { name, content }),
+  /** content 为 null 恢复默认。 */
+  promptSave: (name: string, content: string | null) => invoke<TemplateInfo[]>('prompt_save', { name, content }),
+
   taskCreate: (input: TaskInput) => invoke<Task>('task_create', { input }),
   taskUpdate: (id: string, input: TaskInput) => invoke<Task>('task_update', { id, input }),
   taskPlan: (id: string, options: StartOptions = {}) => invoke<RunPlan>('task_plan', { id, options }),
   taskStart: (id: string, options: StartOptions = {}) => invoke<Run>('task_start', { id, options }),
   taskAccept: (id: string) => invoke<Task>('task_accept', { id }),
-  taskReject: (id: string, note: string) => invoke<Task>('task_reject', { id, note }),
+  taskReject: (id: string, input: RejectInput) => invoke<Task>('task_reject', { id, input }),
   taskMerge: (id: string) => invoke<Task>('task_merge', { id }),
   taskCancel: (id: string) => invoke<Task>('task_cancel', { id }),
   taskDiff: (id: string) => invoke<TaskDiff>('task_diff', { id }),

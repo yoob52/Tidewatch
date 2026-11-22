@@ -24,8 +24,24 @@ pub struct Task {
     pub base_commit: Option<String>,
     pub merged_commit: Option<String>,
     pub depends_on: Vec<String>,
+    /// `depends_on` 里只等接口文档的那些：对方产出接口文档就解锁，不用等它做完。
+    #[serde(default)]
+    pub api_doc_deps: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// 子任务的产物。目前只有接口文档（`api_doc`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Artifact {
+    pub id: String,
+    pub task_id: String,
+    pub kind: String,
+    /// 仓库内的相对路径。
+    pub path: String,
+    /// 含有它的提交；Agent 还在跑、没提交时为空。
+    pub commit_sha: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -42,6 +58,7 @@ pub struct TaskInput {
     pub model: Option<String>,
     pub permission_profile: Option<String>,
     pub depends_on: Vec<String>,
+    pub api_doc_deps: Vec<String>,
 }
 
 const COLS: &str = "id, ticket_id, kind, project_id, title, spec_md, acceptance_criteria_json, status, agent, provider_id, model, permission_profile, branch, worktree_path, base_commit, merged_commit, created_at, updated_at";
@@ -65,17 +82,27 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         base_commit: r.get(14)?,
         merged_commit: r.get(15)?,
         depends_on: vec![],
+        api_doc_deps: vec![],
         created_at: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
         updated_at: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
     })
 }
 
 fn with_deps(conn: &Connection, mut t: Task) -> Result<Task> {
-    let mut st = conn
-        .prepare("SELECT depends_on_task_id FROM task_dependency WHERE task_id = ?1 ORDER BY 1")?;
-    t.depends_on = st
-        .query_map([&t.id], |r| r.get(0))?
-        .collect::<rusqlite::Result<Vec<String>>>()?;
+    let mut st = conn.prepare(
+        "SELECT depends_on_task_id, artifact_kind FROM task_dependency WHERE task_id = ?1 ORDER BY 1",
+    )?;
+    let deps = st
+        .query_map([&t.id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, kind) in deps {
+        if kind.as_deref() == Some("api_doc") {
+            t.api_doc_deps.push(id.clone());
+        }
+        t.depends_on.push(id);
+    }
     Ok(t)
 }
 
@@ -133,9 +160,14 @@ pub fn create(conn: &mut Connection, input: TaskInput) -> Result<Task> {
         ],
     )?;
     for d in &input.depends_on {
+        let kind = if input.api_doc_deps.contains(d) {
+            "api_doc"
+        } else {
+            "done"
+        };
         tx.execute(
-            "INSERT OR IGNORE INTO task_dependency (task_id, depends_on_task_id, artifact_kind) VALUES (?1, ?2, 'done')",
-            rusqlite::params![id, d],
+            "INSERT OR IGNORE INTO task_dependency (task_id, depends_on_task_id, artifact_kind) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, d, kind],
         )?;
     }
     add_timeline(
@@ -186,7 +218,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Task> {
 
 pub fn list_for_ticket(conn: &Connection, ticket_id: &str) -> Result<Vec<Task>> {
     let mut st = conn.prepare(&format!(
-        "SELECT {COLS} FROM task WHERE ticket_id = ?1 ORDER BY created_at, id"
+        "SELECT {COLS} FROM task WHERE ticket_id = ?1 ORDER BY created_at, rowid"
     ))?;
     let rows = st
         .query_map([ticket_id], row)?
@@ -195,7 +227,9 @@ pub fn list_for_ticket(conn: &Connection, ticket_id: &str) -> Result<Vec<Task>> 
 }
 
 pub fn list_all(conn: &Connection) -> Result<Vec<Task>> {
-    let mut st = conn.prepare(&format!("SELECT {COLS} FROM task ORDER BY created_at, id"))?;
+    let mut st = conn.prepare(&format!(
+        "SELECT {COLS} FROM task ORDER BY created_at, rowid"
+    ))?;
     let rows = st
         .query_map([], row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -233,20 +267,23 @@ pub fn set_merged(conn: &Connection, id: &str, commit: &str) -> Result<()> {
     Ok(())
 }
 
-/// 还没满足的第一个依赖（依赖的子任务没到待验收 / 已通过 / 已合并）。
+/// 还没满足的第一个依赖：依赖的子任务没到待验收 / 已通过 / 已合并；只等接口文档的，文档还没出。
 /// 不只看"等依赖"状态：依赖被打回时，后面的子任务可能正处于已停止 / 失败 / 排队。
 pub fn unmet_dependency(conn: &Connection, task: &Task) -> Result<Option<Task>> {
     for d in &task.depends_on {
         let dep = get(conn, d)?;
-        if !workflow::task_satisfies_dependency(&dep.status) {
+        let met = workflow::task_satisfies_dependency(&dep.status)
+            || (task.api_doc_deps.contains(d) && artifact(conn, d, "api_doc")?.is_some());
+        if !met {
             return Ok(Some(dep));
         }
     }
     Ok(None)
 }
 
-/// 按依赖是否满足，在"待开始"和"等依赖"之间切换该工单下的子任务。
-pub fn refresh_blocked(conn: &Connection, ticket_id: &str) -> Result<()> {
+/// 按依赖是否满足，在"待开始"和"等依赖"之间切换该工单下的子任务。返回这次解锁的子任务 id。
+pub fn refresh_blocked(conn: &Connection, ticket_id: &str) -> Result<Vec<String>> {
+    let mut unblocked = Vec::new();
     for t in list_for_ticket(conn, ticket_id)? {
         if !matches!(t.status.as_str(), "pending" | "blocked") {
             continue;
@@ -255,14 +292,129 @@ pub fn refresh_blocked(conn: &Connection, ticket_id: &str) -> Result<()> {
         for d in &t.depends_on {
             let s: String =
                 conn.query_row("SELECT status FROM task WHERE id = ?1", [d], |r| r.get(0))?;
-            ready &= workflow::task_satisfies_dependency(&s);
+            ready &= workflow::task_satisfies_dependency(&s)
+                || (t.api_doc_deps.contains(d) && artifact(conn, d, "api_doc")?.is_some());
         }
         let want = if ready { "pending" } else { "blocked" };
         if want != t.status {
             set_status(conn, &t.id, want)?;
+            if ready {
+                unblocked.push(t.id);
+            }
         }
     }
+    Ok(unblocked)
+}
+
+/// "开始开发"时这个返工子任务的依赖还没满足：记下来，依赖满足后自动入队。
+pub fn set_start_when_ready(conn: &Connection, id: &str, on: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE task SET start_when_ready = ?2 WHERE id = ?1",
+        rusqlite::params![id, on],
+    )?;
     Ok(())
+}
+
+/// 这张工单不再等着自动开始任何子任务（发起了新的变更）。
+pub fn clear_start_when_ready(conn: &Connection, ticket_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE task SET start_when_ready = 0 WHERE ticket_id = ?1",
+        [ticket_id],
+    )?;
+    Ok(())
+}
+
+/// 记过"依赖满足后自动入队"、现在依赖已经满足的返工子任务。
+pub fn ready_deferred(conn: &Connection, ticket_id: &str) -> Result<Vec<String>> {
+    let mut st = conn.prepare(
+        "SELECT id FROM task WHERE ticket_id = ?1 AND start_when_ready = 1
+         AND status = 'changes_requested' ORDER BY created_at, rowid",
+    )?;
+    let ids = st
+        .query_map([ticket_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut ready = vec![];
+    for id in ids {
+        if unmet_dependency(conn, &get(conn, &id)?)?.is_none() {
+            ready.push(id);
+        }
+    }
+    Ok(ready)
+}
+
+/// 产物作废（需求变了，要等它重新产出）。
+pub fn remove_artifact(conn: &Connection, task_id: &str, kind: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM artifact WHERE task_id = ?1 AND kind = ?2",
+        [task_id, kind],
+    )?;
+    Ok(())
+}
+
+/// 记下子任务的产物；同一类已有记录时更新路径和提交。
+pub fn record_artifact(
+    conn: &Connection,
+    task_id: &str,
+    kind: &str,
+    path: &str,
+    commit_sha: Option<&str>,
+) -> Result<Artifact> {
+    match artifact(conn, task_id, kind)? {
+        Some(a) => {
+            conn.execute(
+                "UPDATE artifact SET path = ?2, commit_sha = COALESCE(?3, commit_sha) WHERE id = ?1",
+                rusqlite::params![a.id, path, commit_sha],
+            )?;
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO artifact (id, task_id, kind, path, commit_sha, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![crate::util::new_id(), task_id, kind, path, commit_sha, crate::util::now()],
+            )?;
+        }
+    }
+    Ok(artifact(conn, task_id, kind)?.expect("刚写入的产物"))
+}
+
+pub fn artifact(conn: &Connection, task_id: &str, kind: &str) -> Result<Option<Artifact>> {
+    use rusqlite::OptionalExtension;
+    Ok(conn
+        .query_row(
+            "SELECT id, task_id, kind, path, commit_sha, created_at FROM artifact
+             WHERE task_id = ?1 AND kind = ?2 ORDER BY created_at DESC LIMIT 1",
+            [task_id, kind],
+            |r| {
+                Ok(Artifact {
+                    id: r.get(0)?,
+                    task_id: r.get(1)?,
+                    kind: r.get(2)?,
+                    path: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    commit_sha: r.get(4)?,
+                    created_at: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                })
+            },
+        )
+        .optional()?)
+}
+
+pub fn artifacts_for_ticket(conn: &Connection, ticket_id: &str) -> Result<Vec<Artifact>> {
+    let mut st = conn.prepare(
+        "SELECT a.id, a.task_id, a.kind, a.path, a.commit_sha, a.created_at FROM artifact a
+         JOIN task t ON t.id = a.task_id WHERE t.ticket_id = ?1 ORDER BY a.created_at",
+    )?;
+    let rows = st
+        .query_map([ticket_id], |r| {
+            Ok(Artifact {
+                id: r.get(0)?,
+                task_id: r.get(1)?,
+                kind: r.get(2)?,
+                path: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                commit_sha: r.get(4)?,
+                created_at: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 #[cfg(test)]

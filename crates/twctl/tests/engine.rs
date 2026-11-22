@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tidewatch_core::db::{self, lock, Db};
-use tidewatch_core::engine::{Engine, EngineConfig, EngineEvent, StartOptions};
+use tidewatch_core::engine::{
+    Engine, EngineConfig, EngineEvent, InlineComment, RejectInput, StartOptions,
+};
 use tidewatch_core::git;
 use tidewatch_core::secrets::MemoryStore;
-use tidewatch_core::store::{projects, runs, settings, stats, tasks, tickets};
+use tidewatch_core::store::{projects, reviews, runs, settings, stats, tasks, tickets};
 
 struct Fixture {
     engine: Engine,
@@ -40,11 +42,20 @@ fn init_repo(dir: &Path) {
 
 /// `test_command`：项目的测试命令。`git --version` 两个平台都返回 0。
 fn fixture(max_concurrency: u32, test_command: Option<&str>) -> Fixture {
+    fixture_with(max_concurrency, test_command, |_| {})
+}
+
+/// `seed`：在引擎启动前往库里放数据（模拟上次退出时留下的状态）。
+fn fixture_with(
+    max_concurrency: u32,
+    test_command: Option<&str>,
+    seed: impl FnOnce(&mut tidewatch_core::rusqlite::Connection),
+) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let root = tidewatch_core::util::canonical(dir.path()).unwrap();
     let repo = root.join("repo");
     init_repo(&repo);
-    let conn = db::open(&root.join("data/tidewatch.db")).unwrap();
+    let mut conn = db::open(&root.join("data/tidewatch.db")).unwrap();
     let st = settings::Settings {
         max_concurrency,
         default_agent: "mock".into(),
@@ -65,6 +76,7 @@ fn fixture(max_concurrency: u32, test_command: Option<&str>) -> Fixture {
         },
     )
     .unwrap();
+    seed(&mut conn);
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
     let engine = Engine::start(
@@ -117,6 +129,98 @@ impl Fixture {
         )
         .unwrap();
         (ticket.id, task.id)
+    }
+
+    /// 再建一个前端项目，以及绑了前后端两个项目的混合需求工单。返回 (工单 id, 前端项目 id)。
+    fn mixed(&self, title: &str, body: &str) -> (String, String) {
+        let web = self.repo.parent().unwrap().join("web");
+        init_repo(&web);
+        let mut conn = lock(self.db());
+        let web = projects::create(
+            &conn,
+            projects::ProjectInput {
+                name: "演示 web".into(),
+                kind: "frontend".into(),
+                local_path: web.display().to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let ticket = tickets::create(
+            &mut conn,
+            tickets::TicketInput {
+                title: title.into(),
+                kind: "feature_mixed".into(),
+                content_md: body.into(),
+                projects: vec![
+                    tickets::TicketProject {
+                        project_id: self.project_id.clone(),
+                        role: "backend".into(),
+                        subdir: None,
+                    },
+                    tickets::TicketProject {
+                        project_id: web.id.clone(),
+                        role: "frontend".into(),
+                        subdir: None,
+                    },
+                ],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (ticket.id, web.id)
+    }
+
+    /// 后端 + 前端两个子任务的拆分草稿，前端只等后端的接口文档。
+    fn be_fe_drafts(&self, web: &str, be_spec: &str) -> Vec<reviews::TaskDraft> {
+        vec![
+            reviews::TaskDraft {
+                r#ref: "T1".into(),
+                kind: "backend".into(),
+                project: self.project_id.clone(),
+                title: "后端".into(),
+                spec: be_spec.into(),
+                ..Default::default()
+            },
+            reviews::TaskDraft {
+                r#ref: "T2".into(),
+                kind: "frontend".into(),
+                project: web.into(),
+                title: "前端".into(),
+                depends_on: vec!["T1".into()],
+                dependency_kind: Some("api_doc".into()),
+                ..Default::default()
+            },
+        ]
+    }
+
+    fn ticket(&self, id: &str) -> tickets::Ticket {
+        tickets::get(&lock(self.db()), id).unwrap()
+    }
+
+    fn wait_for(&self, what: &str, pred: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !pred() {
+            assert!(Instant::now() < deadline, "等待「{what}」超时");
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    }
+
+    /// 等这张工单上所有运行结束。
+    fn wait_idle(&self, ticket: &str) {
+        self.wait_for("工单上的运行全部结束", || {
+            runs::list_for_ticket(&lock(self.db()), ticket)
+                .unwrap()
+                .iter()
+                .all(|r| !runs::ACTIVE.contains(&r.status.as_str()))
+        });
+    }
+
+    fn last_run(&self, task: &str) -> runs::Run {
+        runs::list_for_task(&lock(self.db()), task)
+            .unwrap()
+            .pop()
+            .expect("子任务还没有运行")
     }
 
     fn run(&self, id: &str) -> runs::Run {
@@ -433,9 +537,11 @@ fn failures_and_failed_checks_are_reported() {
         "检查没过也交给人验收，由人决定"
     );
     assert_eq!(f.ticket_status(&ticket2), "acceptance");
-    let events = f.events.lock().unwrap();
-    assert!(events.iter().any(|e| matches!(e,
-        EngineEvent::RunFinished { run_id, failed_checks, .. } if *run_id == r.id && failed_checks == &["test".to_string()])));
+    // 事件在运行落库之后才发出，等一下
+    f.wait_for("RunFinished 带上没过的检查", || {
+        f.events.lock().unwrap().iter().any(|e| matches!(e,
+            EngineEvent::RunFinished { run_id, failed_checks, .. } if *run_id == r.id && failed_checks == &["test".to_string()]))
+    });
 }
 
 #[test]
@@ -527,6 +633,13 @@ fn rejection_sends_the_note_back_to_the_same_session() {
 #[test]
 fn rejecting_a_task_blocks_its_dependents_again() {
     let f = fixture(2, None);
+    // 这里要看"解锁"本身，不让解锁的子任务自动入队
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_start_unblocked = false;
+        settings::save(&conn, &st).unwrap();
+    }
     let (ticket, first) = f.bug("依赖", "x [mock:steps=1] [mock:delay=50]", "medium");
     let second = tasks::create(
         &mut lock(f.db()),
@@ -640,7 +753,7 @@ fn unfinished_runs_become_orphans_on_restart() {
     let run = runs::enqueue(
         &conn,
         runs::NewRun {
-            task_id: &task.id,
+            task_id: Some(&task.id),
             ticket_id: &ticket.id,
             purpose: "dev",
             parent_run_id: None,
@@ -689,9 +802,741 @@ fn unfinished_runs_become_orphans_on_restart() {
     );
 }
 
+// ---------- M2：预审 → 定稿 → 拆分 → 接口文档 → 打回 → 完成 ----------
+
+#[test]
+fn mixed_prd_from_draft_through_review_split_api_doc_and_rework_to_done() {
+    let f = fixture(2, None);
+    let (ticket, _web) = f.mixed("优惠券列表", "## 背景\n在个人中心展示用户的优惠券。\n");
+    assert_eq!(f.ticket_status(&ticket), "draft");
+
+    // 预审：工单进入 AI 预审，结束后回到人工审核，带着问题清单
+    let review_run = f.engine.start_review(&ticket).unwrap();
+    assert_eq!(
+        (
+            review_run.purpose.as_str(),
+            review_run.permission.as_deref().unwrap_or_default(),
+            &review_run.task_id
+        ),
+        ("review", "read_only", &None)
+    );
+    assert_eq!(f.ticket_status(&ticket), "ai_review");
+    assert!(f.engine.start_review(&ticket).is_err(), "预审中不能再提交");
+    assert_eq!(f.wait_done(&review_run.id).status, "succeeded");
+    assert_eq!(f.ticket_status(&ticket), "human_review");
+    let (review, issues) = {
+        let conn = lock(f.db());
+        (
+            reviews::list(&conn, &ticket).unwrap().pop().unwrap(),
+            reviews::issues(&conn, &ticket).unwrap(),
+        )
+    };
+    assert_eq!(review.error, None);
+    assert_eq!(review.criteria_draft.len(), 2);
+    assert_eq!(
+        issues
+            .iter()
+            .map(|i| (i.code.as_str(), i.severity.as_str()))
+            .collect::<Vec<_>>(),
+        [("I-1", "blocker"), ("I-2", "suggestion")]
+    );
+    f.wait_for("ReviewFinished 事件", || {
+        f.events.lock().unwrap().iter().any(|e| {
+            matches!(
+                e,
+                EngineEvent::ReviewFinished {
+                    issues: 2,
+                    blockers: 1,
+                    error: None,
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        git::git(&f.repo, &["status", "--porcelain"])
+            .unwrap()
+            .trim()
+            .is_empty(),
+        "预审只读，不改项目目录"
+    );
+
+    // 定稿被拦住：先是验收标准为空，再是阻塞级问题没处理
+    let err = f.engine.finalize(&ticket, true).unwrap_err().to_string();
+    assert!(err.contains("阻塞级"), "{err}");
+    {
+        let mut conn = lock(f.db());
+        // 采纳阻塞级问题的建议：正文存为新版本
+        let fixed = reviews::resolve(&mut conn, &issues[0].id, "accept", None, None).unwrap();
+        assert_eq!(fixed.resolution, "accepted");
+        let prd = tickets::current_prd(&conn, &ticket).unwrap().unwrap();
+        assert_eq!(prd.origin.as_deref(), Some("ai_suggestion"));
+        assert!(prd
+            .content_md
+            .contains("演示补充：列表为空时显示「暂无数据」"));
+        assert_eq!(
+            fixed.resolved_in_version_id.as_deref(),
+            Some(prd.id.as_str())
+        );
+        // 忽略必须写理由，理由进"不做范围"
+        assert!(reviews::resolve(&mut conn, &issues[1].id, "ignore", Some(" "), None).is_err());
+        reviews::resolve(&mut conn, &issues[1].id, "ignore", Some("首版不分页"), None).unwrap();
+        let prd = tickets::current_prd(&conn, &ticket).unwrap().unwrap();
+        assert!(prd.content_md.contains("## 不做范围") && prd.content_md.contains("首版不分页"));
+    }
+    let err = f.engine.finalize(&ticket, true).unwrap_err().to_string();
+    assert!(err.contains("验收标准"), "{err}");
+    tickets::set_criteria(&lock(f.db()), &ticket, review.criteria_draft.clone()).unwrap();
+
+    // 再预审一次：处理过的问题不再提
+    let again = f.engine.start_review(&ticket).unwrap();
+    f.wait_done(&again.id);
+    assert_eq!(reviews::issues(&lock(f.db()), &ticket).unwrap().len(), 2);
+
+    // 定稿并拆分：锁定版本，拆分建议出来之前不能开始开发
+    let fin = f.engine.finalize(&ticket, true).unwrap();
+    assert_eq!(fin.ticket.status, "finalized");
+    assert_eq!(
+        fin.ticket.finalized_version_id,
+        fin.ticket.current_version_id
+    );
+    let split_run = fin.run.unwrap();
+    assert_eq!(split_run.purpose, "split");
+    assert!(f.engine.start_development(&ticket).is_err());
+    assert_eq!(f.wait_done(&split_run.id).status, "succeeded");
+    let proposal = reviews::latest_proposal(&lock(f.db()), &ticket, "split")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (proposal.status.as_str(), &proposal.error),
+        ("pending", &None)
+    );
+    let mut drafts: Vec<reviews::TaskDraft> =
+        serde_json::from_value(proposal.content["tasks"].clone()).unwrap();
+    assert_eq!(drafts.len(), 2);
+    // 人可以在确认前改建议：这里让后端跑久一点，好看到"文档一出、前端就开始"
+    drafts[0].spec.push_str(" [mock:steps=12] [mock:delay=200]");
+    let created = f.engine.apply_split(&ticket, drafts).unwrap();
+    let (be, fe) = (created[0].id.clone(), created[1].id.clone());
+    assert_eq!(
+        (created[0].kind.as_str(), created[0].status.as_str()),
+        ("backend", "pending")
+    );
+    assert_eq!(
+        (created[1].kind.as_str(), created[1].status.as_str()),
+        ("frontend", "blocked")
+    );
+    assert_eq!(created[1].api_doc_deps, vec![be.clone()]);
+    assert_ne!(created[0].project_id, created[1].project_id);
+
+    // 开始开发：只有后端入队；后端写出接口文档后前端自动开始，这时后端还在跑
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].task_id.as_deref(), Some(be.as_str()));
+    assert_eq!(f.ticket_status(&ticket), "developing");
+    f.wait_for("前端被接口文档解锁", || {
+        f.task(&fe).status != "blocked"
+    });
+    assert!(
+        runs::ACTIVE.contains(&f.run(&started[0].id).status.as_str()),
+        "接口文档一出就解锁，不用等后端做完"
+    );
+    f.wait_for("前端自动入队", || {
+        !runs::list_for_task(&lock(f.db()), &fe).unwrap().is_empty()
+    });
+    let fe_run = f.last_run(&fe);
+    assert!(
+        fe_run.prompt.contains("GET /api/items"),
+        "前端的 Prompt 带上接口文档"
+    );
+    f.wait_idle(&ticket);
+    assert_eq!(
+        (f.task(&be).status, f.task(&fe).status),
+        ("review".into(), "review".into())
+    );
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+    let doc = tasks::artifact(&lock(f.db()), &be, "api_doc")
+        .unwrap()
+        .unwrap();
+    assert_eq!(doc.path, "docs/api/TW-1.md");
+    assert!(doc.commit_sha.is_some(), "运行结束后记下含有文档的提交");
+    assert!(f
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e, EngineEvent::ApiDocReady { unblocked: 1, .. })));
+
+    // 验收打回一次：行内评论进返工 Prompt，续接原会话
+    f.engine
+        .reject_task_with(
+            &fe,
+            RejectInput {
+                note: "空状态没做".into(),
+                comments: vec![InlineComment {
+                    file_path: "TIDEWATCH_DEMO.md".into(),
+                    line: Some(3),
+                    body: "这里要显示「暂无数据」".into(),
+                }],
+                rerun: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(f.ticket_status(&ticket), "developing");
+    let rework = f.last_run(&fe);
+    assert_eq!(rework.number, 2);
+    assert_eq!(rework.resume_session_id, fe_run_session(&f, &fe_run.id));
+    assert!(rework.prompt.contains("空状态没做"));
+    assert!(rework
+        .prompt
+        .contains("`TIDEWATCH_DEMO.md:3`：这里要显示「暂无数据」"));
+    f.wait_idle(&ticket);
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+
+    // 通过、合并，工单完成；接口文档进了后端项目的主分支
+    for t in [&be, &fe] {
+        f.engine.accept_task(t).unwrap();
+        f.engine.merge_task(t).unwrap();
+    }
+    assert_eq!(f.ticket_status(&ticket), "done");
+    assert!(f.repo.join("docs/api/TW-1.md").is_file());
+}
+
+fn fe_run_session(f: &Fixture, run_id: &str) -> Option<String> {
+    f.run(run_id).agent_session_id
+}
+
+#[test]
+fn change_after_finalize_runs_impact_analysis_and_reworks_affected_tasks() {
+    let f = fixture(2, None);
+    let (ticket, web) = f.mixed("导出报表", "## 背景\n导出订单报表。\n");
+    {
+        let mut conn = lock(f.db());
+        tickets::set_criteria(&conn, &ticket, vec!["能导出 CSV".into()]).unwrap();
+        tickets::transition(&mut conn, &ticket, "ai_review").unwrap();
+        tickets::transition(&mut conn, &ticket, "human_review").unwrap();
+    }
+    // 不让 AI 拆，手动给子任务
+    let fin = f.engine.finalize(&ticket, false).unwrap();
+    assert!(fin.run.is_none());
+    let created = f
+        .engine
+        .apply_split(&ticket, f.be_fe_drafts(&web, "导出接口"))
+        .unwrap();
+    let (be, fe) = (created[0].id.clone(), created[1].id.clone());
+    f.engine.start_development(&ticket).unwrap();
+    f.wait_for("前端自动入队", || {
+        !runs::list_for_task(&lock(f.db()), &fe).unwrap().is_empty()
+    });
+    f.wait_idle(&ticket);
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+    let v1 = f.ticket(&ticket).finalized_version_id.unwrap();
+
+    // 验收阶段不能发起变更的话先打回到开发中；这里直接在验收中打回一个再发起
+    f.engine.reject_task(&fe, "先等变更").unwrap();
+    assert!(
+        f.engine.request_change(&ticket, " ", false).is_err(),
+        "变更原因必填"
+    );
+    let t = f
+        .engine
+        .request_change(&ticket, "还要支持 Excel", false)
+        .unwrap();
+    assert_eq!(t.status, "human_review");
+    assert_eq!(t.change_from_version_id.as_deref(), Some(v1.as_str()));
+    assert!(
+        f.engine.start_task(&fe, StartOptions::default()).is_err(),
+        "变更没定稿前不能继续开发"
+    );
+    tickets::save_prd(
+        &mut lock(f.db()),
+        &ticket,
+        "## 背景\n导出订单报表，支持 CSV 和 Excel。\n",
+        None,
+    )
+    .unwrap();
+    tickets::set_criteria(
+        &lock(f.db()),
+        &ticket,
+        vec!["能导出 CSV".into(), "能导出 Excel".into()],
+    )
+    .unwrap();
+
+    // 再次定稿：已有子任务，跑的是影响分析而不是拆分
+    let fin = f.engine.finalize(&ticket, false).unwrap();
+    let impact_run = fin.run.unwrap();
+    assert_eq!(impact_run.purpose, "impact");
+    assert!(
+        impact_run.prompt.contains("还要支持 Excel")
+            && impact_run.prompt.contains("支持 CSV 和 Excel")
+    );
+    // 验收标准不在 PRD 版本里，变更前后的两份都要给到 AI
+    assert!(
+        impact_run
+            .prompt
+            .contains("## 旧版验收标准\n- 能导出 CSV\n\n")
+            && impact_run
+                .prompt
+                .contains("## 新版验收标准\n- 能导出 CSV\n- 能导出 Excel\n"),
+        "{}",
+        impact_run.prompt
+    );
+    assert_ne!(
+        fin.ticket.finalized_version_id.as_deref(),
+        Some(v1.as_str())
+    );
+    f.wait_done(&impact_run.id);
+    let proposal = reviews::latest_proposal(&lock(f.db()), &ticket, "impact")
+        .unwrap()
+        .unwrap();
+    assert_eq!(proposal.status, "pending");
+    let impacts: Vec<reviews::TaskImpact> =
+        serde_json::from_value(proposal.content["tasks"].clone()).unwrap();
+    assert_eq!(
+        impacts
+            .iter()
+            .map(|i| (i.task_id.as_str(), i.impact.as_str()))
+            .collect::<Vec<_>>(),
+        [(be.as_str(), "rework"), (fe.as_str(), "none")]
+    );
+    assert!(
+        f.engine.start_development(&ticket).is_err(),
+        "影响分析没确认前不能开始"
+    );
+    // 新增的子任务有问题时整个确认失败，已有子任务不动
+    let bad = reviews::TaskDraft {
+        kind: "backend".into(),
+        project: "不存在的项目".into(),
+        title: "多出来的".into(),
+        ..Default::default()
+    };
+    assert!(f
+        .engine
+        .apply_impact(&ticket, impacts.clone(), vec![bad])
+        .is_err());
+    assert_eq!(f.task(&be).status, "review");
+    assert!(tasks::artifact(&lock(f.db()), &be, "api_doc")
+        .unwrap()
+        .is_some());
+
+    f.engine.apply_impact(&ticket, impacts, vec![]).unwrap();
+    assert_eq!(f.task(&be).status, "changes_requested");
+    assert!(
+        tasks::artifact(&lock(f.db()), &be, "api_doc")
+            .unwrap()
+            .is_none(),
+        "需求变了，旧的接口文档作废"
+    );
+    let t = f.ticket(&ticket);
+    assert_eq!((t.change_from_version_id, t.change_reason), (None, None));
+
+    // 继续开发：后端在原 worktree 里增量返工，Prompt 里是变更原因和要追加的工作
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert_eq!(
+        started.len(),
+        1,
+        "只有后端（变更）入队；前端（之前打回的）等后端重新给出接口文档"
+    );
+    let be_run = &started[0];
+    assert_eq!(be_run.task_id.as_deref(), Some(be.as_str()));
+    assert!(be_run.prompt.contains("还要支持 Excel") && be_run.prompt.contains("更新接口文档"));
+    assert_eq!(be_run.number, 2);
+    assert_eq!(f.task(&fe).status, "changes_requested");
+    f.wait_for("后端返工完后前端自动入队", || {
+        runs::list_for_task(&lock(f.db()), &fe).unwrap().len() == 2
+    });
+    assert!(
+        !runs::ACTIVE.contains(&f.run(&be_run.id).status.as_str())
+            || tasks::artifact(&lock(f.db()), &be, "api_doc")
+                .unwrap()
+                .is_some(),
+        "前端入队时，后端要么已经返工完，要么已经写出新文档"
+    );
+    f.wait_idle(&ticket);
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+}
+
+#[test]
+fn failed_backend_rework_does_not_republish_the_stale_api_doc() {
+    let f = fixture(2, None);
+    let (ticket, web) = f.mixed("导出报表", "## 背景\n导出订单报表。\n");
+    {
+        let mut conn = lock(f.db());
+        tickets::set_criteria(&conn, &ticket, vec!["能导出 CSV".into()]).unwrap();
+        tickets::transition(&mut conn, &ticket, "ai_review").unwrap();
+        tickets::transition(&mut conn, &ticket, "human_review").unwrap();
+    }
+    f.engine.finalize(&ticket, false).unwrap();
+    let created = f
+        .engine
+        .apply_split(
+            &ticket,
+            f.be_fe_drafts(&web, "x [mock:steps=1] [mock:delay=50]"),
+        )
+        .unwrap();
+    let (be, fe) = (created[0].id.clone(), created[1].id.clone());
+    f.engine.start_development(&ticket).unwrap();
+    f.wait_for("前端自动入队", || {
+        !runs::list_for_task(&lock(f.db()), &fe).unwrap().is_empty()
+    });
+    f.wait_idle(&ticket);
+
+    // 两个都返工，后端的旧文档作废（需求变更确认后的状态），这一轮后端没改文档就失败了
+    f.engine.reject_task(&fe, "跟着接口改").unwrap();
+    f.engine.reject_task(&be, "接口要改 [mock:fail]").unwrap();
+    tasks::remove_artifact(&lock(f.db()), &be, "api_doc").unwrap();
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert_eq!(started.len(), 1);
+    assert_eq!(f.wait_done(&started[0].id).status, "failed");
+    f.wait_idle(&ticket);
+    assert!(
+        tasks::artifact(&lock(f.db()), &be, "api_doc")
+            .unwrap()
+            .is_none(),
+        "worktree 里留着的是作废的那一版"
+    );
+    assert_eq!(runs::list_for_task(&lock(f.db()), &fe).unwrap().len(), 1);
+    assert_eq!(f.task(&fe).status, "changes_requested");
+}
+
+#[test]
+fn split_with_a_dependency_cycle_creates_nothing() {
+    let f = fixture(2, None);
+    let (ticket, web) = f.mixed("环", "## 背景\n随便。\n");
+    {
+        let mut conn = lock(f.db());
+        tickets::set_criteria(&conn, &ticket, vec!["能用".into()]).unwrap();
+        tickets::transition(&mut conn, &ticket, "ai_review").unwrap();
+        tickets::transition(&mut conn, &ticket, "human_review").unwrap();
+    }
+    f.engine.finalize(&ticket, false).unwrap();
+    let mut drafts = f.be_fe_drafts(&web, "接口");
+    drafts[0].depends_on = vec!["T2".into()];
+    drafts.insert(
+        0,
+        reviews::TaskDraft {
+            r#ref: "T0".into(),
+            kind: "doc".into(),
+            project: f.project_id.clone(),
+            title: "和环无关的文档".into(),
+            ..Default::default()
+        },
+    );
+    let err = f.engine.apply_split(&ticket, drafts).unwrap_err();
+    assert!(err.to_string().contains("环"), "{err}");
+    assert!(
+        tasks::list_for_ticket(&lock(f.db()), &ticket)
+            .unwrap()
+            .is_empty(),
+        "有环时一个子任务都不该建，否则改完重试会重复"
+    );
+}
+
+#[test]
+fn start_development_queues_reworked_dependents_after_their_prerequisite() {
+    let f = fixture(2, None);
+    let (ticket, first) = f.bug("先后", "x [mock:steps=1] [mock:delay=50]", "medium");
+    let second = tasks::create(
+        &mut lock(f.db()),
+        tasks::TaskInput {
+            ticket_id: ticket.clone(),
+            kind: "bug".into(),
+            project_id: f.project_id.clone(),
+            title: "后续".into(),
+            depends_on: vec![first.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .id;
+    let run = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+    f.wait_for("后续自动入队", || {
+        !runs::list_for_task(&lock(f.db()), &second)
+            .unwrap()
+            .is_empty()
+    });
+    f.wait_idle(&ticket);
+    // 两个都打回：后续要等前一个返工完
+    f.engine.reject_task(&second, "跟着改").unwrap();
+    f.engine.reject_task(&first, "还差一步").unwrap();
+
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].task_id.as_deref(), Some(first.as_str()));
+    f.wait_for("前一个返工完后，后续自动入队", || {
+        runs::list_for_task(&lock(f.db()), &second).unwrap().len() == 2
+    });
+    assert_eq!(f.run(&started[0].id).status, "succeeded");
+    f.wait_idle(&ticket);
+    assert_eq!(f.task(&second).status, "review");
+}
+
+#[test]
+fn deferred_task_switched_to_full_auto_waits_for_the_user() {
+    let f = fixture(2, None);
+    let (ticket, first) = f.bug("先后", "x [mock:steps=1] [mock:delay=300]", "medium");
+    let second = tasks::create(
+        &mut lock(f.db()),
+        tasks::TaskInput {
+            ticket_id: ticket.clone(),
+            kind: "bug".into(),
+            project_id: f.project_id.clone(),
+            title: "后续".into(),
+            depends_on: vec![first.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .id;
+    let run = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+    f.wait_for("后续自动入队", || {
+        !runs::list_for_task(&lock(f.db()), &second)
+            .unwrap()
+            .is_empty()
+    });
+    f.wait_idle(&ticket);
+    f.engine.reject_task(&second, "跟着改").unwrap();
+    f.engine.reject_task(&first, "还差一步").unwrap();
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert_eq!(started.len(), 1);
+
+    // 等前一个返工的时候把后续改成 full_auto
+    tasks::update(
+        &lock(f.db()),
+        &second,
+        tasks::TaskInput {
+            title: "后续".into(),
+            permission_profile: Some("full_auto".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(f.run(&started[0].id).finished_at, None, "前一个还在返工");
+    assert_eq!(f.wait_done(&started[0].id).status, "succeeded");
+    // 依赖方的入队发生在 RunFinished 事件之前
+    f.wait_for("前一个返工的 RunFinished", || {
+        f.events.lock().unwrap().iter().any(
+            |e| matches!(e, EngineEvent::RunFinished { run_id, .. } if *run_id == started[0].id),
+        )
+    });
+    assert_eq!(
+        runs::list_for_task(&lock(f.db()), &second).unwrap().len(),
+        1,
+        "full_auto 不会被自动入队"
+    );
+    assert_eq!(f.task(&second).status, "changes_requested");
+    // 用户自己点开始（界面上会先确认）还是可以的
+    let run = f
+        .engine
+        .start_task(&second, StartOptions::default())
+        .unwrap();
+    assert_eq!(f.wait_done(&run.id).status, "succeeded");
+}
+
+#[test]
+fn full_auto_tasks_are_never_started_without_the_user() {
+    let f = fixture(2, None);
+    let (ticket, first) = f.bug("权限", "x [mock:steps=1] [mock:delay=50]", "medium");
+    let make = |title: &str, depends_on: Vec<String>| {
+        tasks::create(
+            &mut lock(f.db()),
+            tasks::TaskInput {
+                ticket_id: ticket.clone(),
+                kind: "bug".into(),
+                project_id: f.project_id.clone(),
+                title: title.into(),
+                permission_profile: Some("full_auto".into()),
+                depends_on,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id
+    };
+    let unattended = make("不经确认执行命令", vec![]);
+    let dependent = make("依赖满足后", vec![first.clone()]);
+    // 先让工单进入开发中
+    let run = f
+        .engine
+        .start_task(&first, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+    assert_eq!(f.task(&dependent).status, "pending", "依赖满足，已解锁");
+
+    let started = f.engine.start_development(&ticket).unwrap();
+    assert!(started.is_empty(), "批量开始不带上 full_auto 的子任务");
+    f.wait_idle(&ticket);
+    for id in [&unattended, &dependent] {
+        assert!(runs::list_for_task(&lock(f.db()), id).unwrap().is_empty());
+        assert_eq!(f.task(id).status, "pending");
+    }
+    // 用户自己点开始（界面在这一步弹确认）仍然可以
+    let run = f
+        .engine
+        .start_task(&unattended, StartOptions::default())
+        .unwrap();
+    assert_eq!(run.permission.as_deref(), Some("full_auto"));
+    f.engine.stop_run(&run.id).unwrap();
+    f.wait_done(&run.id);
+}
+
+#[test]
+fn failed_review_keeps_the_error_and_can_be_retried() {
+    let f = fixture(1, None);
+    let (ticket, _) = f.mixed("会失败的预审", "正文 [mock:fail]");
+    let run = f.engine.start_review(&ticket).unwrap();
+    assert_eq!(f.wait_done(&run.id).status, "failed");
+    f.wait_for("工单回到人工审核", || {
+        f.ticket_status(&ticket) == "human_review"
+    });
+    let review = reviews::list(&lock(f.db()), &ticket)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(review.error.is_some());
+    assert!(reviews::issues(&lock(f.db()), &ticket).unwrap().is_empty());
+    assert!(f
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e, EngineEvent::ReviewFinished { error: Some(_), .. })));
+
+    // 改掉正文后重试成功
+    tickets::save_prd(&mut lock(f.db()), &ticket, "正文", None).unwrap();
+    let run = f.engine.start_review(&ticket).unwrap();
+    assert_eq!(f.wait_done(&run.id).status, "succeeded");
+    f.wait_for("工单回到人工审核", || {
+        f.ticket_status(&ticket) == "human_review"
+    });
+    assert_eq!(reviews::issues(&lock(f.db()), &ticket).unwrap().len(), 2);
+
+    // 排队中的预审被停掉：工单同样回到人工审核
+    let (other, _) = {
+        let mut conn = lock(f.db());
+        let t = tickets::create(
+            &mut conn,
+            tickets::TicketInput {
+                title: "占住并发".into(),
+                kind: "bug".into(),
+                content_md: "x [mock:steps=20] [mock:delay=200]".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task = tasks::create(
+            &mut conn,
+            tasks::TaskInput {
+                ticket_id: t.id.clone(),
+                kind: "bug".into(),
+                project_id: f.project_id.clone(),
+                title: "占位".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (t.id, task.id)
+    };
+    let _ = other;
+    let busy_task = tasks::list_all(&lock(f.db())).unwrap().pop().unwrap().id;
+    let busy = f
+        .engine
+        .start_task(&busy_task, StartOptions::default())
+        .unwrap();
+    f.wait_run(&busy.id, "占位运行开始", |r| r.status == "running");
+    let queued = f.engine.start_review(&ticket).unwrap();
+    assert_eq!(f.run(&queued.id).status, "queued");
+    f.engine.stop_run(&queued.id).unwrap();
+    assert_eq!(f.ticket_status(&ticket), "human_review");
+    f.engine.stop_run(&busy.id).unwrap();
+    f.wait_done(&busy.id);
+}
+
+#[test]
+fn review_interrupted_by_exit_returns_to_human_review_on_next_start() {
+    let f = fixture_with(1, None, |conn| {
+        let t = tickets::create(
+            conn,
+            tickets::TicketInput {
+                title: "上次没跑完".into(),
+                kind: "feature_backend".into(),
+                content_md: "正文".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        tickets::transition(conn, &t.id, "ai_review").unwrap();
+    });
+    let conn = lock(f.db());
+    let t = tickets::list(&conn, None).unwrap().pop().unwrap();
+    assert_eq!(t.status, "human_review");
+    let review = reviews::list(&conn, &t.id).unwrap().pop().unwrap();
+    assert!(review.error.unwrap().contains("重新运行"));
+    assert_eq!(review.run_id, None);
+}
+
+#[test]
+fn switching_agent_starts_a_new_session_with_a_handoff_summary() {
+    let f = fixture(1, None);
+    let (_ticket, task) = f.bug("换 Agent", "x [mock:steps=1] [mock:delay=20]", "medium");
+    let r1 = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_done(&r1.id);
+    f.engine.reject_task(&task, "还差一步").unwrap();
+    // 要求新开会话：不续接，Prompt 是完整的首轮说明 + 上一轮的情况
+    let plan = f
+        .engine
+        .plan(
+            &task,
+            &StartOptions {
+                fresh_session: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(plan.resume.is_none());
+    let h = plan.handoff.expect("新会话要有上一轮的摘要");
+    assert_eq!(h.from_run_id, r1.id);
+    assert!(plan.prompt.contains("## 上一轮的情况") && plan.prompt.contains("TIDEWATCH_DEMO.md"));
+    assert!(plan.prompt.contains("还差一步"));
+    let r2 = f
+        .engine
+        .start_task(
+            &task,
+            StartOptions {
+                fresh_session: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let recorded: String = lock(f.db())
+        .query_row(
+            "SELECT from_run_ids_json FROM context_handoff WHERE target_run_id = ?1",
+            [&r2.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(recorded.contains(&r1.id));
+    f.wait_done(&r2.id);
+}
+
 #[test]
 fn dependents_that_already_ran_wait_for_a_rejected_prerequisite() {
     let f = fixture(1, None);
+    // 这里手动控制后续子任务什么时候开始
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_start_unblocked = false;
+        settings::save(&conn, &st).unwrap();
+    }
     let (ticket, first) = f.bug("依赖返工", "x [mock:steps=2] [mock:delay=100]", "medium");
     let second = tasks::create(
         &mut lock(f.db()),

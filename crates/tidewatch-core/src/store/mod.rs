@@ -1,6 +1,7 @@
 //! 数据访问：项目、工单、子任务、运行、Provider、设置。函数只做库内读写，不碰进程和 git。
 pub mod projects;
 pub mod providers;
+pub mod reviews;
 pub mod runs;
 pub mod settings;
 pub mod stats;

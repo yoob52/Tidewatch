@@ -5,10 +5,13 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tidewatch_core::agent::{adapter, mock_process, AgentKind, Detection};
 use tidewatch_core::db::{self, lock};
-use tidewatch_core::engine::{Engine, EngineConfig, EngineEvent, RunPlan, StartOptions, TaskDiff};
+use tidewatch_core::engine::{
+    Engine, EngineConfig, EngineEvent, Finalized, RejectInput, RunPlan, StartOptions, TaskDiff,
+};
 use tidewatch_core::git;
+use tidewatch_core::prompt;
 use tidewatch_core::secrets;
-use tidewatch_core::store::{projects, providers, runs, settings, stats, tasks, tickets};
+use tidewatch_core::store::{projects, providers, reviews, runs, settings, stats, tasks, tickets};
 
 /// 推给界面的事件名。
 pub const ENGINE_EVENT: &str = "tw://engine";
@@ -183,12 +186,15 @@ struct TicketSummary {
     /// 待验收 / 已通过 / 已合并
     tasks_done: usize,
     tasks_running: usize,
+    /// 预审提出、还没处理的问题数。
+    issues_open: usize,
 }
 
 #[tauri::command]
 fn ticket_list(state: State, query: Option<String>) -> CmdResult<Vec<TicketSummary>> {
     let conn = lock(state.engine.db());
     let all_tasks = tasks::list_all(&conn).map_err(err)?;
+    let open_issues = reviews::open_counts(&conn).map_err(err)?;
     Ok(tickets::list(&conn, query.as_deref())
         .map_err(err)?
         .into_iter()
@@ -203,6 +209,7 @@ fn ticket_list(state: State, query: Option<String>) -> CmdResult<Vec<TicketSumma
                 running += matches!(t.status.as_str(), "queued" | "running") as usize;
             }
             TicketSummary {
+                issues_open: open_issues.get(&ticket.id).copied().unwrap_or(0),
                 ticket,
                 tasks_total: total,
                 tasks_done: done,
@@ -219,6 +226,13 @@ struct TicketDetail {
     tasks: Vec<tasks::Task>,
     runs: Vec<runs::Run>,
     timeline: Vec<tickets::TimelineEvent>,
+    /// 每次 AI 预审的结果，旧的在前。
+    reviews: Vec<reviews::Review>,
+    issues: Vec<reviews::Issue>,
+    /// 最近一份拆分建议 / 变更影响分析。
+    split: Option<reviews::Proposal>,
+    impact: Option<reviews::Proposal>,
+    artifacts: Vec<tasks::Artifact>,
 }
 
 #[tauri::command]
@@ -230,6 +244,11 @@ fn ticket_get(state: State, id: String) -> CmdResult<TicketDetail> {
         tasks: tasks::list_for_ticket(&conn, &ticket.id).map_err(err)?,
         runs: runs::list_for_ticket(&conn, &ticket.id).map_err(err)?,
         timeline: tickets::timeline(&conn, &ticket.id).map_err(err)?,
+        reviews: reviews::list(&conn, &ticket.id).map_err(err)?,
+        issues: reviews::issues(&conn, &ticket.id).map_err(err)?,
+        split: reviews::latest_proposal(&conn, &ticket.id, "split").map_err(err)?,
+        impact: reviews::latest_proposal(&conn, &ticket.id, "impact").map_err(err)?,
+        artifacts: tasks::artifacts_for_ticket(&conn, &ticket.id).map_err(err)?,
         ticket,
     })
 }
@@ -258,9 +277,208 @@ fn ticket_save_prd(
     tickets::save_prd(&mut lock(state.engine.db()), &id, &content, note.as_deref()).map_err(err)
 }
 
+/// 手动流转。提交预审和定稿各有自己的命令（要起 AI 运行、做校验），这里转过去，
+/// 免得从看板拖动时绕开它们。
 #[tauri::command]
 fn ticket_transition(state: State, id: String, to: String) -> CmdResult<tickets::Ticket> {
-    tickets::transition(&mut lock(state.engine.db()), &id, &to).map_err(err)
+    match to.as_str() {
+        "ai_review" => {
+            let run = state.engine.start_review(&id).map_err(err)?;
+            let ticket_id = run.ticket_id.unwrap_or(id);
+            tickets::get(&lock(state.engine.db()), &ticket_id).map_err(err)
+        }
+        "finalized" => Ok(state.engine.finalize(&id, false).map_err(err)?.ticket),
+        _ => {
+            let current = tickets::get(&lock(state.engine.db()), &id).map_err(err)?;
+            match (current.status.as_str(), to.as_str()) {
+                // 定稿后开始开发：能开始的子任务一起入队
+                ("finalized", "developing") => {
+                    state.engine.start_development(&current.id).map_err(err)?;
+                }
+                // 预审还在跑：停掉它，引擎收尾时把工单送回人工审核
+                ("ai_review", "human_review") => {
+                    let active: Vec<String> =
+                        runs::list_for_ticket(&lock(state.engine.db()), &current.id)
+                            .map_err(err)?
+                            .into_iter()
+                            .filter(|r| {
+                                r.task_id.is_none() && runs::ACTIVE.contains(&r.status.as_str())
+                            })
+                            .map(|r| r.id)
+                            .collect();
+                    if active.is_empty() {
+                        tickets::transition(&mut lock(state.engine.db()), &current.id, &to)
+                            .map_err(err)?;
+                    }
+                    for run_id in active {
+                        state.engine.stop_run(&run_id).map_err(err)?;
+                    }
+                }
+                _ => {
+                    tickets::transition(&mut lock(state.engine.db()), &current.id, &to)
+                        .map_err(err)?;
+                }
+            }
+            tickets::get(&lock(state.engine.db()), &current.id).map_err(err)
+        }
+    }
+}
+
+// ---- 预审与定稿 ----
+
+/// 提交 AI 预审。
+#[tauri::command]
+fn review_start(state: State, id: String) -> CmdResult<runs::Run> {
+    state.engine.start_review(&id).map_err(err)
+}
+
+/// 不跑 AI，直接进入人工审核（没有可用的 Agent，或者这份需求不需要预审）。
+#[tauri::command]
+fn review_skip(state: State, id: String) -> CmdResult<tickets::Ticket> {
+    let mut conn = lock(state.engine.db());
+    let t = tickets::get(&conn, &id).map_err(err)?;
+    if t.status == "draft" {
+        tickets::transition(&mut conn, &t.id, "ai_review").map_err(err)?;
+    }
+    tickets::transition(&mut conn, &t.id, "human_review").map_err(err)
+}
+
+/// 采纳 / 忽略这个问题后正文会变成什么样（确认前预览，可以再改）。
+#[tauri::command]
+fn issue_preview(
+    state: State,
+    id: String,
+    action: String,
+    note: Option<String>,
+) -> CmdResult<String> {
+    let conn = lock(state.engine.db());
+    let issue = reviews::issue(&conn, &id).map_err(err)?;
+    let prd = tickets::current_prd(&conn, &issue.ticket_id)
+        .map_err(err)?
+        .map(|v| v.content_md)
+        .unwrap_or_default();
+    reviews::proposed_prd(&prd, &issue, &action, note.as_deref().unwrap_or("")).map_err(err)
+}
+
+#[tauri::command]
+fn issue_resolve(
+    state: State,
+    id: String,
+    action: String,
+    note: Option<String>,
+    content: Option<String>,
+) -> CmdResult<reviews::Issue> {
+    reviews::resolve(
+        &mut lock(state.engine.db()),
+        &id,
+        &action,
+        note.as_deref(),
+        content.as_deref(),
+    )
+    .map_err(err)
+}
+
+/// 把待确认的问题整理成一段可以发给需求方的文字。
+#[tauri::command]
+fn questions_export(state: State, id: String) -> CmdResult<String> {
+    reviews::export_questions(&lock(state.engine.db()), &id).map_err(err)
+}
+
+#[tauri::command]
+fn criteria_set(state: State, id: String, criteria: Vec<String>) -> CmdResult<tickets::Ticket> {
+    tickets::set_criteria(&lock(state.engine.db()), &id, criteria).map_err(err)
+}
+
+/// 定稿；`split` 为真时让 AI 给出拆分建议（变更后再次定稿且已有子任务时，改为影响分析）。
+#[tauri::command]
+fn ticket_finalize(state: State, id: String, split: bool) -> CmdResult<Finalized> {
+    state.engine.finalize(&id, split).map_err(err)
+}
+
+#[tauri::command]
+fn proposal_regenerate(state: State, id: String) -> CmdResult<runs::Run> {
+    state.engine.regenerate_proposal(&id).map_err(err)
+}
+
+#[tauri::command]
+fn proposal_discard(state: State, id: String) -> CmdResult<()> {
+    state.engine.discard_proposal(&id).map_err(err)
+}
+
+#[tauri::command]
+fn split_apply(
+    state: State,
+    id: String,
+    tasks: Vec<reviews::TaskDraft>,
+) -> CmdResult<Vec<tasks::Task>> {
+    state.engine.apply_split(&id, tasks).map_err(err)
+}
+
+#[tauri::command]
+fn impact_apply(
+    state: State,
+    id: String,
+    impacts: Vec<reviews::TaskImpact>,
+    new_tasks: Vec<reviews::TaskDraft>,
+) -> CmdResult<Vec<tasks::Task>> {
+    state
+        .engine
+        .apply_impact(&id, impacts, new_tasks)
+        .map_err(err)
+}
+
+/// 开始开发：能开始的子任务全部入队。
+#[tauri::command]
+fn development_start(state: State, id: String) -> CmdResult<Vec<runs::Run>> {
+    state.engine.start_development(&id).map_err(err)
+}
+
+/// 发起变更：定稿后的工单回到人工审核。
+#[tauri::command]
+async fn change_request(
+    state: State<'_>,
+    id: String,
+    reason: String,
+    stop_running: bool,
+) -> CmdResult<tickets::Ticket> {
+    blocking(state, move |e| e.request_change(&id, &reason, stop_running)).await
+}
+
+// ---- Prompt 模板 ----
+
+#[tauri::command]
+fn prompt_templates(state: State) -> CmdResult<Vec<prompt::TemplateInfo>> {
+    let ov = prompt::load_overrides(&lock(state.engine.db())).map_err(err)?;
+    Ok(prompt::template_infos(&ov))
+}
+
+#[derive(Serialize)]
+struct PromptPreview {
+    text: String,
+    /// 模板里写了、但这个模板不认识的变量（多半是拼错了）。
+    unknown_variables: Vec<String>,
+}
+
+#[tauri::command]
+fn prompt_preview(name: String, content: String) -> CmdResult<PromptPreview> {
+    Ok(PromptPreview {
+        text: prompt::preview(&name, &content).map_err(err)?,
+        unknown_variables: prompt::unknown_variables(&name, &content).map_err(err)?,
+    })
+}
+
+/// 保存自定义模板；`content` 为空恢复默认。
+#[tauri::command]
+fn prompt_save(
+    state: State,
+    name: String,
+    content: Option<String>,
+) -> CmdResult<Vec<prompt::TemplateInfo>> {
+    let conn = lock(state.engine.db());
+    prompt::save_override(&conn, &name, content.as_deref()).map_err(err)?;
+    Ok(prompt::template_infos(
+        &prompt::load_overrides(&conn).map_err(err)?,
+    ))
 }
 
 /// 从粘贴的 Markdown 预填标题和类型。
@@ -316,9 +534,10 @@ fn task_accept(state: State, id: String) -> CmdResult<tasks::Task> {
     state.engine.accept_task(&id).map_err(err)
 }
 
+/// 打回，可以带 Diff 上的行内评论；`input.rerun` 时立刻入队返工。
 #[tauri::command]
-fn task_reject(state: State, id: String, note: String) -> CmdResult<tasks::Task> {
-    state.engine.reject_task(&id, &note).map_err(err)
+fn task_reject(state: State, id: String, input: RejectInput) -> CmdResult<tasks::Task> {
+    state.engine.reject_task_with(&id, input).map_err(err)
 }
 
 #[tauri::command]
@@ -421,15 +640,78 @@ fn stats_get(state: State) -> CmdResult<stats::Stats> {
 
 fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
     use tauri_plugin_notification::NotificationExt;
-    let EngineEvent::RunFinished {
-        ticket_key,
-        task_title,
-        status,
-        failed_checks,
-        ..
-    } = ev
-    else {
-        return;
+    let (title, body): (&str, String) = match ev {
+        EngineEvent::RunFinished {
+            ticket_key,
+            task_title,
+            status,
+            failed_checks,
+            ..
+        } => match status.as_str() {
+            "succeeded" if failed_checks.is_empty() => {
+                ("等你验收", format!("{ticket_key} {task_title} 已完成"))
+            }
+            "succeeded" => (
+                "等你验收（检查未通过）",
+                format!(
+                    "{ticket_key} {task_title}：{} 没通过",
+                    failed_checks.join("、")
+                ),
+            ),
+            "failed" => ("运行失败", format!("{ticket_key} {task_title}")),
+            _ => return,
+        },
+        EngineEvent::ReviewFinished {
+            ticket_key,
+            ticket_title,
+            issues,
+            blockers,
+            error,
+            ..
+        } => match error {
+            Some(_) => ("预审没有完成", format!("{ticket_key} {ticket_title}")),
+            None if *issues == 0 => (
+                "预审完成",
+                format!("{ticket_key} {ticket_title}：没有发现问题"),
+            ),
+            None => (
+                "预审完成，等你处理",
+                format!("{ticket_key} {ticket_title}：{issues} 个问题，其中 {blockers} 个阻塞"),
+            ),
+        },
+        EngineEvent::ProposalReady {
+            ticket_key,
+            ticket_title,
+            kind,
+            error,
+            ..
+        } => {
+            let what = if kind == "impact" {
+                "变更影响分析"
+            } else {
+                "拆分建议"
+            };
+            match error {
+                Some(_) => (
+                    "没有生成出来",
+                    format!("{ticket_key} {ticket_title} 的{what}"),
+                ),
+                None => (
+                    "等你确认",
+                    format!("{ticket_key} {ticket_title} 的{what}出来了"),
+                ),
+            }
+        }
+        EngineEvent::ApiDocReady {
+            ticket_key,
+            task_title,
+            unblocked,
+            ..
+        } if *unblocked > 0 => (
+            "接口文档已产出",
+            format!("{ticket_key} {task_title}：{unblocked} 个等文档的子任务可以开始了"),
+        ),
+        _ => return,
     };
     if !settings::get(&lock(db))
         .map(|s| s.notifications)
@@ -437,20 +719,6 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
     {
         return;
     }
-    let (title, body) = match status.as_str() {
-        "succeeded" if failed_checks.is_empty() => {
-            ("等你验收", format!("{ticket_key} {task_title} 已完成"))
-        }
-        "succeeded" => (
-            "等你验收（检查未通过）",
-            format!(
-                "{ticket_key} {task_title}：{} 没通过",
-                failed_checks.join("、")
-            ),
-        ),
-        "failed" => ("运行失败", format!("{ticket_key} {task_title}")),
-        _ => return,
-    };
     let _ = app
         .notification()
         .builder()
@@ -535,6 +803,22 @@ pub fn run() {
             ticket_update,
             ticket_save_prd,
             ticket_transition,
+            review_start,
+            review_skip,
+            issue_preview,
+            issue_resolve,
+            questions_export,
+            criteria_set,
+            ticket_finalize,
+            proposal_regenerate,
+            proposal_discard,
+            split_apply,
+            impact_apply,
+            development_start,
+            change_request,
+            prompt_templates,
+            prompt_preview,
+            prompt_save,
             ticket_draft,
             read_text_file,
             task_create,

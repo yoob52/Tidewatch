@@ -14,3 +14,5 @@ pub mod util;
 pub mod workflow;
 
 pub use error::{Error, Result};
+
+pub use rusqlite;

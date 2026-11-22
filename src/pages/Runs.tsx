@@ -4,7 +4,7 @@ import { api, onEngine, type RunDetail, type RunEvent, type RunRow } from '../li
 import { useData } from '../lib/data';
 import { useStartTask } from '../lib/start';
 import { Icon } from '../lib/Icon';
-import { AgentTag, Empty, Inline, Ripple, RunStatusTag, fmtCost, fmtDur, fmtTok, parseTs, runActive, runSeconds, useNow, useUi } from '../lib/ui';
+import { AgentTag, Empty, Inline, Ripple, RunStatusTag, fmtCost, fmtDur, fmtTok, parseTs, runActive, runSeconds, useNow, useUi, runTitle } from '../lib/ui';
 
 const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v));
 
@@ -122,10 +122,10 @@ function RunItem({ r, on, now }: { r: RunRow; on: boolean; now: number }) {
         <span className="grow" />
         <span className={`mono ${active ? 't-live' : 'dim'}`}>{r.status === 'queued' ? '排队' : fmtDur(runSeconds(r, now))}</span>
       </div>
-      <b className="ell">{r.task_title ?? r.ticket_title ?? '已删除的子任务'}</b>
+      <b className="ell">{runTitle(r)}</b>
       <div className="row sub">
         {active ? <Ripple /> : <span className={`dot st-${r.status === 'succeeded' ? 'done' : r.status}`} />}
-        <span className="grow ell">{r.error ?? r.summary ?? ''}</span>
+        <span className="grow ell">{r.error ?? (r.task_id ? r.summary : null) ?? ''}</span>
         <span className="mono">{fmtTok(r.input_tokens + r.cache_tokens + r.output_tokens)}</span>
       </div>
     </a>
@@ -260,7 +260,7 @@ export function RunsPage({ id }: { id?: string }) {
               )}
               {r.resume_session_id && <span className="dim">续接会话 {r.resume_session_id.slice(0, 8)}</span>}
             </div>
-            <h2>{r.task_title ?? r.ticket_title ?? '已删除的子任务'}</h2>
+            <h2>{runTitle(r)}</h2>
           </div>
           {active || r.status === 'queued' ? (
             <button className={`btn ${active ? 'danger' : ''}`} disabled={r.status === 'stopping'} onClick={() => void stop()}>

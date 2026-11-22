@@ -40,6 +40,9 @@ pub struct Ticket {
     pub default_agent: Option<String>,
     pub default_provider_id: Option<String>,
     pub cancelled_from: Option<String>,
+    /// 变更进行中：发起变更时的定稿版本。再次定稿并处理完影响分析后清空。
+    pub change_from_version_id: Option<String>,
+    pub change_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub projects: Vec<TicketProject>,
@@ -86,7 +89,7 @@ pub struct TimelineEvent {
     pub payload: serde_json::Value,
 }
 
-const COLS: &str = "id, key, title, type, status, priority, labels_json, due_date, source_kind, current_version_id, finalized_version_id, acceptance_criteria_json, bug_info_json, default_agent, default_provider_id, cancelled_from, created_at, updated_at";
+const COLS: &str = "id, key, title, type, status, priority, labels_json, due_date, source_kind, current_version_id, finalized_version_id, acceptance_criteria_json, bug_info_json, default_agent, default_provider_id, cancelled_from, created_at, updated_at, change_from_version_id, change_reason";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Ticket> {
     Ok(Ticket {
@@ -114,6 +117,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Ticket> {
         cancelled_from: r.get(15)?,
         created_at: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
         updated_at: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
+        change_from_version_id: r.get(18)?,
+        change_reason: r.get(19)?,
         projects: vec![],
     })
 }
@@ -208,6 +213,17 @@ fn insert_version(
     origin: &str,
     note: Option<&str>,
 ) -> Result<PrdVersion> {
+    insert_version_by(conn, ticket_id, content, "human", origin, note)
+}
+
+fn insert_version_by(
+    conn: &Connection,
+    ticket_id: &str,
+    content: &str,
+    author: &str,
+    origin: &str,
+    note: Option<&str>,
+) -> Result<PrdVersion> {
     let version: i64 = conn.query_row(
         "SELECT COALESCE(MAX(version), 0) + 1 FROM prd_version WHERE ticket_id = ?1",
         [ticket_id],
@@ -218,7 +234,7 @@ fn insert_version(
         ticket_id: ticket_id.into(),
         version,
         content_md: content.into(),
-        author: "human".into(),
+        author: author.into(),
         origin: Some(origin.into()),
         note: note.map(String::from),
         created_at: crate::util::now(),
@@ -316,6 +332,17 @@ pub fn save_prd(
     content: &str,
     note: Option<&str>,
 ) -> Result<PrdVersion> {
+    save_prd_as(conn, ticket_id, content, "edit", note)
+}
+
+/// 同 [`save_prd`]，并标明这一版的来源：`edit`（手动）、`ai_suggestion`（采纳预审建议）。
+pub fn save_prd_as(
+    conn: &mut Connection,
+    ticket_id: &str,
+    content: &str,
+    origin: &str,
+    note: Option<&str>,
+) -> Result<PrdVersion> {
     let t = get(conn, ticket_id)?;
     let ticket_id = t.id.as_str();
     let editable = matches!(t.status.as_str(), "draft" | "human_review")
@@ -330,13 +357,18 @@ pub fn save_prd(
         return Err(Error::invalid("正文没有变化，不需要保存新版本。"));
     }
     let tx = conn.transaction()?;
-    let v = insert_version(&tx, ticket_id, content, "edit", note)?;
+    let author = if origin == "ai_suggestion" {
+        "ai"
+    } else {
+        "human"
+    };
+    let v = insert_version_by(&tx, ticket_id, content, author, origin, note)?;
     index(&tx, ticket_id, &t.title, content)?;
     add_timeline(
         &tx,
         ticket_id,
         "prd_version",
-        serde_json::json!({ "version": v.version, "note": note }),
+        serde_json::json!({ "version": v.version, "note": note, "origin": origin }),
     )?;
     tx.commit()?;
     Ok(v)
@@ -347,12 +379,16 @@ pub fn current_prd(conn: &Connection, ticket_id: &str) -> Result<Option<PrdVersi
 }
 
 pub fn prd_versions(conn: &Connection, ticket_id: &str) -> Result<Vec<PrdVersion>> {
-    let mut st = conn.prepare(
+    prd_versions_where(conn, "ticket_id = ?1", ticket_id)
+}
+
+fn prd_versions_where(conn: &Connection, cond: &str, arg: &str) -> Result<Vec<PrdVersion>> {
+    let mut st = conn.prepare(&format!(
         "SELECT id, ticket_id, version, content_md, author, origin, note, created_at
-         FROM prd_version WHERE ticket_id = ?1 ORDER BY version",
-    )?;
+         FROM prd_version WHERE {cond} ORDER BY version"
+    ))?;
     let rows = st
-        .query_map([ticket_id], |r| {
+        .query_map([arg], |r| {
             Ok(PrdVersion {
                 id: r.get(0)?,
                 ticket_id: r.get(1)?,
@@ -390,12 +426,27 @@ pub fn transition(conn: &mut Connection, id: &str, to: &str) -> Result<Ticket> {
             return Err(Error::invalid("还有子任务没有合并，工单不能完成。"));
         }
     }
+    if to == "finalized" {
+        check_can_finalize(conn, &t)?;
+    }
+    if to == "human_review" && matches!(t.status.as_str(), "finalized" | "developing") {
+        return Err(Error::invalid(
+            "定稿后要改需求，请用「发起变更」并填写变更原因。",
+        ));
+    }
     let tx = conn.transaction()?;
     let cancelled_from = (to == "cancelled").then(|| t.status.clone());
     tx.execute(
         "UPDATE ticket SET status = ?2, cancelled_from = ?3, updated_at = ?4 WHERE id = ?1",
         rusqlite::params![id, to, cancelled_from, crate::util::now()],
     )?;
+    if to == "finalized" {
+        // 定稿：锁定当前版本
+        tx.execute(
+            "UPDATE ticket SET finalized_version_id = current_version_id WHERE id = ?1",
+            [id],
+        )?;
+    }
     add_timeline(
         &tx,
         id,
@@ -404,6 +455,109 @@ pub fn transition(conn: &mut Connection, id: &str, to: &str) -> Result<Ticket> {
     )?;
     tx.commit()?;
     get(conn, id)
+}
+
+/// 定稿前置条件：没有未处理的阻塞级问题，验收标准不为空。
+pub fn check_can_finalize(conn: &Connection, t: &Ticket) -> Result<()> {
+    let blockers: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM review_issue WHERE ticket_id = ?1 AND severity = 'blocker'
+         AND COALESCE(resolution, 'open') IN ('open', 'pending_confirm')",
+        [&t.id],
+        |r| r.get(0),
+    )?;
+    if blockers > 0 {
+        return Err(Error::invalid(format!(
+            "还有 {blockers} 个阻塞级问题没有处理（采纳、手动修改，或忽略并写明理由），不能定稿。"
+        )));
+    }
+    if t.acceptance_criteria.is_empty() {
+        return Err(Error::invalid("验收标准为空，不能定稿。"));
+    }
+    Ok(())
+}
+
+/// 只改验收标准。定稿后锁定（Bug 工单没有定稿环节，开发中也能改）。
+pub fn set_criteria(conn: &Connection, id: &str, criteria: Vec<String>) -> Result<Ticket> {
+    let t = get(conn, id)?;
+    let editable = matches!(t.status.as_str(), "draft" | "ai_review" | "human_review")
+        || (t.kind == "bug" && matches!(t.status.as_str(), "developing" | "acceptance"));
+    if !editable {
+        return Err(Error::invalid(format!(
+            "工单处于「{}」，验收标准已锁定；要改请发起变更。",
+            workflow::ticket_status_label(&t.status)
+        )));
+    }
+    conn.execute(
+        "UPDATE ticket SET acceptance_criteria_json = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![t.id, to_json(&clean_list(criteria)), crate::util::now()],
+    )?;
+    get(conn, &t.id)
+}
+
+/// 发起变更：定稿后的工单回到人工审核，正文重新可编辑。
+/// 记下此刻的定稿版本，再次定稿时用它和新版本做影响分析。
+pub fn request_change(conn: &mut Connection, id: &str, reason: &str) -> Result<Ticket> {
+    let t = get(conn, id)?;
+    if !matches!(t.status.as_str(), "finalized" | "developing") {
+        return Err(Error::invalid(format!(
+            "工单处于「{}」，不需要发起变更。",
+            workflow::ticket_status_label(&t.status)
+        )));
+    }
+    let reason = super::required(reason, "变更原因")?;
+    let tx = conn.transaction()?;
+    // 连续两次变更之间没有再定稿时，保留最早那个定稿版本作为对比基准
+    tx.execute(
+        "UPDATE ticket SET status = 'human_review',
+           change_from_criteria_json = CASE WHEN change_from_version_id IS NULL
+             THEN acceptance_criteria_json ELSE change_from_criteria_json END,
+           change_from_version_id = COALESCE(change_from_version_id, finalized_version_id),
+           change_reason = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![t.id, reason, crate::util::now()],
+    )?;
+    add_timeline(
+        &tx,
+        &t.id,
+        "status",
+        serde_json::json!({ "from": t.status, "to": "human_review" }),
+    )?;
+    add_timeline(
+        &tx,
+        &t.id,
+        "change_requested",
+        serde_json::json!({ "reason": reason }),
+    )?;
+    tx.commit()?;
+    get(conn, &t.id)
+}
+
+/// 变更的影响已经处理完。
+pub fn clear_change(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE ticket SET change_from_version_id = NULL, change_reason = NULL,
+           change_from_criteria_json = NULL WHERE id = ?1",
+        [id],
+    )?;
+    Ok(())
+}
+
+/// 发起变更那一刻的验收标准（和变更前的定稿版本一起，作为影响分析的对比基准）。
+pub fn change_from_criteria(conn: &Connection, id: &str) -> Result<Vec<String>> {
+    let json: Option<String> = conn.query_row(
+        "SELECT change_from_criteria_json FROM ticket WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    Ok(json
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default())
+}
+
+pub fn prd_version(conn: &Connection, version_id: &str) -> Result<PrdVersion> {
+    prd_versions_where(conn, "id = ?1", version_id)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| not_found("PRD 版本", version_id))
 }
 
 fn task_statuses(conn: &Connection, ticket_id: &str) -> Result<Vec<String>> {

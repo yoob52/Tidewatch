@@ -4,7 +4,7 @@ import { STAGE_NAME } from './ui';
 
 export const FLOW: Partial<Record<TicketStatus, Partial<Record<TicketStatus, string>>>> = {
   draft: { ai_review: '提交预审', developing: 'Bug 快速通道' },
-  ai_review: { human_review: '预审完成' },
+  ai_review: { human_review: '停止预审' },
   human_review: { ai_review: '重新预审', finalized: '定稿' },
   finalized: { developing: '开始开发', human_review: '发起变更' },
   developing: { acceptance: '全部子任务完成', human_review: '发起变更' },
@@ -14,7 +14,7 @@ export const FLOW: Partial<Record<TicketStatus, Partial<Record<TicketStatus, str
 
 const WHY: Partial<Record<TicketStatus, string>> = {
   draft: '草稿需要先提交预审。',
-  ai_review: '请等待预审完成。',
+  ai_review: '请等待预审完成，或停止预审直接进入人工审核。',
   human_review: '需要先定稿。',
   finalized: '定稿后只能开始开发，或发起变更回到审核。',
   developing: '需要全部子任务完成后进入验收。',
