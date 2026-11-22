@@ -545,6 +545,13 @@ export interface Stats {
   agents: AgentStat[];
   days: { day: string; runs: number; cost_usd: number; tokens: number }[];
   providers: [string | null, number, number][];
+  /** 最近 8 周每周完成的工单数，旧的在前；week 是那一周的周一。 */
+  weeks: { week: string; done: number }[];
+  rework_runs: number;
+  auto_fix_runs: number;
+  auto_fix_succeeded: number;
+  code_reviews: number;
+  code_review_findings: number;
 }
 
 export type EngineEvent =

@@ -29,6 +29,16 @@ pub struct DayCost {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct WeekDone {
+    /// 这一周的周一（UTC），`YYYY-MM-DD`。
+    pub week: String,
+    pub done: i64,
+}
+
+/// 统计里展示最近几周的完成数。
+pub const WEEKS: i64 = 8;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Stats {
     pub tickets_total: i64,
     pub tickets_done: i64,
@@ -43,10 +53,62 @@ pub struct Stats {
     pub days: Vec<DayCost>,
     /// provider_id（空 = 官方默认）→ 费用与运行数
     pub providers: Vec<(Option<String>, i64, f64)>,
+    /// 最近 [`WEEKS`] 周每周完成的工单数，旧的在前；没有完成的周也在里面。
+    pub weeks: Vec<WeekDone>,
+    /// 打回返工的运行次数。
+    pub rework_runs: i64,
+    /// 检查没过后自动修复的运行次数，以及其中修好了（检查通过）的次数。
+    pub auto_fix_runs: i64,
+    pub auto_fix_succeeded: i64,
+    /// AI 交叉审查的次数与报出的问题数。
+    pub code_reviews: i64,
+    pub code_review_findings: i64,
 }
 
 pub fn compute(conn: &Connection) -> Result<Stats> {
+    compute_at(conn, chrono::Utc::now().date_naive())
+}
+
+/// `today`：以哪一天为"本周"（测试里固定日期）。
+pub fn compute_at(conn: &Connection, today: chrono::NaiveDate) -> Result<Stats> {
+    use chrono::Datelike;
     let mut s = Stats::default();
+    let monday = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+    let first = monday - chrono::Duration::weeks(WEEKS - 1);
+    // 'weekday 0' 取当天或之后最近的周日，再减 6 天就是所在周的周一
+    let mut st = conn.prepare(
+        "SELECT date(updated_at, 'weekday 0', '-6 days'), COUNT(*) FROM ticket
+         WHERE status = 'done' AND date(updated_at) >= ?1 GROUP BY 1",
+    )?;
+    let done: std::collections::HashMap<String, i64> = st
+        .query_map([first.to_string()], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                r.get(1)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    s.weeks = (0..WEEKS)
+        .map(|i| {
+            let week = (first + chrono::Duration::weeks(i)).to_string();
+            WeekDone {
+                done: done.get(&week).copied().unwrap_or(0),
+                week,
+            }
+        })
+        .collect();
+    (s.rework_runs, s.auto_fix_runs, s.auto_fix_succeeded) = conn.query_row(
+        "SELECT COALESCE(SUM(purpose = 'rework'), 0), COALESCE(SUM(purpose = 'test_fix'), 0),
+                COALESCE(SUM(purpose = 'test_fix' AND status = 'succeeded'), 0)
+         FROM run WHERE status != 'queued'",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    (s.code_reviews, s.code_review_findings) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(json_array_length(findings_json)), 0) FROM code_review WHERE status = 'done'",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
     (s.tickets_total, s.tickets_done) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(status = 'done'), 0) FROM ticket",
         [],
@@ -133,5 +195,43 @@ mod tests {
         );
         assert_eq!(s.agents[0].cache_tokens, 95000);
         assert_eq!(s.days[0].tokens, 5100 + 810 + 95000);
+    }
+
+    #[test]
+    fn weekly_done_counts_cover_the_last_eight_weeks_including_empty_ones() {
+        let conn = crate::db::open_in_memory().unwrap();
+        // 2026-01-14 是周三；这一周的周一是 01-12
+        conn.execute_batch(
+            "INSERT INTO ticket (id, key, title, type, status, created_at, updated_at) VALUES
+               ('a', 'TW-1', 'a', 'bug', 'done', '2026-01-01T00:00:00Z', '2026-01-12T00:00:00Z'),
+               ('b', 'TW-2', 'b', 'bug', 'done', '2026-01-01T00:00:00Z', '2026-01-11T23:59:59Z'),
+               ('c', 'TW-3', 'c', 'bug', 'done', '2026-01-01T00:00:00Z', '2026-01-05T08:00:00Z'),
+               ('d', 'TW-4', 'd', 'bug', 'developing', '2026-01-01T00:00:00Z', '2026-01-13T00:00:00Z'),
+               ('e', 'TW-5', 'e', 'bug', 'done', '2025-01-01T00:00:00Z', '2025-06-01T00:00:00Z');
+             INSERT INTO run (id, agent, status, purpose) VALUES
+               ('r1', 'codex', 'succeeded', 'test_fix'), ('r2', 'codex', 'failed', 'test_fix'),
+               ('r3', 'codex', 'succeeded', 'rework'), ('r4', 'codex', 'queued', 'rework');
+             INSERT INTO code_review (id, task_id, ticket_id, run_id, agent, status, findings_json, created_at, updated_at) VALUES
+               ('c1', 't', 'a', 'r1', 'codex', 'done', '[{},{}]', '', ''),
+               ('c2', 't', 'a', 'r2', 'codex', 'failed', '[]', '', '');",
+        )
+        .unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 1, 14).unwrap();
+        let s = compute_at(&conn, today).unwrap();
+        assert_eq!(s.weeks.len(), WEEKS as usize);
+        assert_eq!(s.weeks[0].week, "2025-11-24");
+        let tail: Vec<(&str, i64)> = s.weeks[5..]
+            .iter()
+            .map(|w| (w.week.as_str(), w.done))
+            .collect();
+        assert_eq!(
+            tail,
+            [("2025-12-29", 0), ("2026-01-05", 2), ("2026-01-12", 1)]
+        );
+        assert_eq!(
+            (s.rework_runs, s.auto_fix_runs, s.auto_fix_succeeded),
+            (1, 2, 1)
+        );
+        assert_eq!((s.code_reviews, s.code_review_findings), (1, 2));
     }
 }

@@ -22,6 +22,7 @@ export function StatsPage() {
   const area = days.length
     ? `M${x(0)} ${y(days[0].tokens / maxTok)} ${days.map((d, i) => `L${x(i)} ${y(d.tokens / maxTok)}`).join(' ')} L${x(days.length - 1)} ${H - 24} L${x(0)} ${H - 24}Z`
     : '';
+  const maxDone = Math.max(1, ...stats.weeks.map((w) => w.done));
   const line = days.map((d, i) => `${i ? 'L' : 'M'}${x(i)} ${y(d.cost_usd / maxCost)}`).join(' ');
 
   return (
@@ -99,6 +100,64 @@ export function StatsPage() {
               <p className="dim">还没有运行记录。</p>
             )}
           </div>
+        </div>
+        <div className="card">
+          <div className="card-h">
+            <h3>每周完成工单</h3>
+            <span className="grow" />
+            <span className="lgd">最近 {stats.weeks.length} 周</span>
+          </div>
+          <div className="card-b">
+            <svg viewBox="0 0 320 150" className="chart" role="img" aria-label="最近几周每周完成的工单数">
+              <line x1="10" x2="310" y1="122" y2="122" className="grid" />
+              {stats.weeks.map((w, i) => {
+                const bw = 300 / stats.weeks.length;
+                const h = (w.done / maxDone) * 96;
+                return (
+                  <g key={w.week}>
+                    <rect x={10 + i * bw + bw * 0.2} y={122 - h} width={bw * 0.6} height={h} className="bar">
+                      <title>
+                        {w.week} 起的一周：完成 {w.done} 张
+                      </title>
+                    </rect>
+                    {w.done > 0 && (
+                      <text x={10 + i * bw + bw / 2} y={116 - h} textAnchor="middle">
+                        {w.done}
+                      </text>
+                    )}
+                    <text x={10 + i * bw + bw / 2} y={138} textAnchor="middle">
+                      {w.week.slice(5).replace('-', '/')}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-h">
+            <h3>返工与自动化</h3>
+          </div>
+          <table className="tbl">
+            <tbody>
+              <tr>
+                <td>打回返工</td>
+                <td className="num">{stats.rework_runs} 次</td>
+              </tr>
+              <tr>
+                <td>检查没过后自动修复</td>
+                <td className="num">
+                  {stats.auto_fix_runs} 次{stats.auto_fix_runs > 0 && `，${stats.auto_fix_succeeded} 次修好`}
+                </td>
+              </tr>
+              <tr>
+                <td>AI 交叉审查</td>
+                <td className="num">
+                  {stats.code_reviews} 次{stats.code_reviews > 0 && `，报出 ${stats.code_review_findings} 个问题`}
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
         <div className="card span2">
           <div className="card-h">
