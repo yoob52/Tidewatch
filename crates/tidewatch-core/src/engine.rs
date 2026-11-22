@@ -218,7 +218,19 @@ struct Inner {
     api: Mutex<Option<ApiEndpoint>>,
     wake: (Mutex<bool>, Condvar),
     shutdown: AtomicBool,
+    /// 为真时不派发新的运行、不开始新的 AI 分析（安装更新期间）。
+    hold: AtomicBool,
     workers: Mutex<Vec<JoinHandle<()>>>,
+}
+
+/// [`Engine::hold`] 的守卫：丢弃时恢复派发。
+pub struct Hold(Arc<Inner>);
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.0.hold.store(false, Ordering::SeqCst);
+        self.0.wake();
+    }
 }
 
 pub struct Engine {
@@ -252,6 +264,7 @@ impl Engine {
             api: Mutex::new(None),
             wake: (Mutex::new(false), Condvar::new()),
             shutdown: AtomicBool::new(false),
+            hold: AtomicBool::new(false),
             workers: Mutex::new(Vec::new()),
         });
         let sched = inner.clone();
@@ -756,6 +769,33 @@ impl Engine {
         Ok((task, ticket, project, settings::get(&conn)?))
     }
 
+    /// 暂停派发：安装更新前调用，免得下载期间又有运行开始、随后被退出的进程留成孤儿。
+    /// 有运行或 AI 分析在进行时拒绝。排队中的运行留在队列里；守卫丢弃后恢复派发。
+    pub fn hold(&self) -> Result<Hold> {
+        let conn = lock(&self.inner.db);
+        let busy: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM run WHERE status IN ('starting', 'running', 'finalizing', 'stopping')",
+            [],
+            |r| r.get(0),
+        )?;
+        if busy > 0 {
+            return Err(Error::invalid(format!(
+                "还有 {busy} 个运行在进行。请等它们结束或先停止，再安装更新。"
+            )));
+        }
+        // 和 dispatch、smart_analyze 一样在这两把锁里改标记，它们就不会在检查之后又开始
+        let cancels = self.inner.cancels.lock().unwrap();
+        if !cancels.is_empty() {
+            return Err(Error::invalid(
+                "还有 Agent 调用（运行或 AI 分析）没有结束。请等它结束或先取消，再安装更新。",
+            ));
+        }
+        if self.inner.hold.swap(true, Ordering::SeqCst) {
+            return Err(Error::invalid("更新已经在进行中。"));
+        }
+        Ok(Hold(self.inner.clone()))
+    }
+
     /// 停掉所有运行并等线程退出。
     pub fn shutdown(&self) {
         self.inner.shutdown.store(true, Ordering::SeqCst);
@@ -1230,6 +1270,9 @@ impl Inner {
         loop {
             let (run, cancel) = {
                 let conn = lock(&self.db);
+                if self.hold.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
                 let max = settings::get(&conn)?.max_concurrency;
                 // 委派出去的运行不占并发名额：调用方正占着名额等它，否则并发上限为 1 时会互相等死
                 let next = if runs::count_running(&conn)? >= max {

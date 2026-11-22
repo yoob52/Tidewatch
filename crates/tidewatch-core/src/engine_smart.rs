@@ -142,6 +142,9 @@ impl Engine {
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut cancels = self.inner.cancels.lock().unwrap();
+            if self.inner.hold.load(Ordering::SeqCst) {
+                return Err(Error::invalid("正在安装更新，现在不能开始 AI 分析。"));
+            }
             if cancels.contains_key(CANCEL_KEY) {
                 return Err(Error::invalid("上一次 AI 分析还没结束。"));
             }

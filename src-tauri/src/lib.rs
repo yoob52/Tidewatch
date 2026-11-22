@@ -1035,22 +1035,17 @@ async fn update_check(app: tauri::AppHandle) -> CmdResult<UpdateStatus> {
 }
 
 /// 下载、校验并安装最新版本，然后重启。只在用户点了「下载并安装」并确认之后调用；
-/// 有运行在进行时不装，免得把 Agent 留成孤儿进程。
+/// 有运行在进行时不装，下载和安装期间也不开始新的运行，免得把 Agent 留成孤儿进程。
 #[tauri::command]
 async fn update_install(app: tauri::AppHandle, state: State<'_>) -> CmdResult<()> {
-    let busy: i64 = lock(state.engine.db())
-        .query_row(
-            "SELECT COUNT(*) FROM run WHERE status IN ('starting', 'running', 'finalizing', 'stopping')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(err)?;
-    if busy > 0 {
-        return Err(format!(
-            "还有 {busy} 个运行在进行。请等它们结束或先停止，再安装更新。"
-        ));
+    if let Some(why) = updater::blocked(&app) {
+        return Err(why);
     }
-    updater::install(&app).await
+    // 下载要几分钟：这期间不派发新的运行，装完进程就退出了
+    let hold = state.engine.hold().map_err(err)?;
+    let res = updater::install(&app).await;
+    drop(hold);
+    res
 }
 
 #[tauri::command]

@@ -475,6 +475,34 @@ fn queue_respects_concurrency_and_ticket_priority() {
     assert!(ra.finished_at <= rc.started_at, "A 结束后才轮到下一个");
 }
 
+/// 安装更新前的暂停：有运行时拒绝；暂停期间排队的运行不开始，放开后照常跑。
+#[test]
+fn hold_refuses_while_running_and_keeps_queued_runs_waiting() {
+    let f = fixture(2, None);
+    let (_, a) = f.bug("A", "x [mock:steps=2] [mock:delay=200]", "low");
+    let (_, b) = f.bug("B", "x", "low");
+    let ra = f.engine.start_task(&a, StartOptions::default()).unwrap();
+    f.wait_run(&ra.id, "A 开始运行", |r| r.status != "queued");
+    let e = f.engine.hold().err().expect("有运行时不能暂停");
+    assert!(e.to_string().contains("1 个运行"), "{e}");
+    f.wait_run(&ra.id, "A 结束", |r| r.status == "succeeded");
+
+    let hold = loop {
+        // 运行刚结束时它的取消标记可能还没摘掉
+        match f.engine.hold() {
+            Ok(h) => break h,
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    assert!(f.engine.hold().is_err(), "不能暂停两次");
+    assert!(f.engine.smart_analyze("登录页打开报错").is_err());
+    let rb = f.engine.start_task(&b, StartOptions::default()).unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(f.run(&rb.id).status, "queued", "暂停期间不派发");
+    drop(hold);
+    f.wait_run(&rb.id, "放开后 B 跑完", |r| r.status == "succeeded");
+}
+
 #[test]
 fn queued_run_can_be_withdrawn_and_command_id_is_idempotent() {
     let f = fixture(1, None);
