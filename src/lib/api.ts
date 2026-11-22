@@ -53,6 +53,45 @@ export interface Settings {
   stop_on_danger: boolean;
   /** 开发阶段也把已被取代的参考图发给 Agent。 */
   send_superseded_images: boolean;
+  /** 本地 HTTP / MCP 接口。 */
+  api_enabled: boolean;
+  api_port: number;
+  /** 监听所有网卡，局域网里的其他人可以带令牌访问。 */
+  api_remote: boolean;
+}
+
+export interface Member {
+  id: string;
+  name: string;
+  role: 'owner' | 'member' | 'viewer';
+  token_hint: string | null;
+  disabled: boolean;
+  created_at: string;
+  last_seen_at: string | null;
+}
+
+export interface ApiStatus {
+  running: boolean;
+  port: number | null;
+  remote: boolean;
+  error: string | null;
+  lan_urls: string[];
+}
+
+/** Agent 经 MCP 提给人的问题。 */
+export interface Question {
+  id: string;
+  ticket_id: string;
+  task_id: string | null;
+  run_id: string | null;
+  body: string;
+  options: string[];
+  status: 'open' | 'answered' | 'dismissed';
+  answer: string | null;
+  answered_by: string | null;
+  consumed_run_id: string | null;
+  created_at: string;
+  answered_at: string | null;
 }
 
 export interface Commands {
@@ -185,6 +224,7 @@ export interface Ticket {
   /** 变更进行中：发起变更时的定稿版本。 */
   change_from_version_id: string | null;
   change_reason: string | null;
+  assignee_id: string | null;
   created_at: string;
   updated_at: string;
   projects: TicketProject[];
@@ -213,6 +253,8 @@ export interface TimelineEvent {
   ts: string;
   type: string;
   payload: Record<string, unknown>;
+  /** 经接口操作的成员名；本机操作为空。 */
+  actor: string | null;
 }
 
 export type TaskStatus =
@@ -542,6 +584,8 @@ export interface TicketDetail {
   impact: Proposal | null;
   artifacts: Artifact[];
   code_reviews: CodeReview[];
+  questions: Question[];
+  assignee: string | null;
 }
 
 export interface RunDetail {
@@ -598,6 +642,7 @@ export type EngineEvent =
     }
   | { type: 'review_finished'; ticket_id: string; ticket_key: string; ticket_title: string; issues: number; blockers: number; error: string | null }
   | { type: 'proposal_ready'; ticket_id: string; ticket_key: string; ticket_title: string; kind: 'split' | 'impact'; error: string | null }
+  | { type: 'question_asked'; question_id: string; ticket_id: string; ticket_key: string; body: string }
   | { type: 'api_doc_ready'; ticket_key: string; task_title: string; path: string; unblocked: number };
 
 export const api = {
@@ -615,6 +660,19 @@ export const api = {
 
   settingsGet: () => invoke<Settings>('settings_get'),
   settingsSave: (settings: Settings) => invoke<Settings>('settings_save', { settings }),
+
+  apiStatus: () => invoke<ApiStatus>('api_status'),
+  memberList: () => invoke<Member[]>('member_list'),
+  /** 令牌只在创建 / 重置时返回这一次。 */
+  memberCreate: (name: string, role: string) => invoke<{ member: Member; token: string }>('member_create', { name, role }),
+  memberUpdate: (m: Member) => invoke<Member>('member_update', { id: m.id, name: m.name, role: m.role, disabled: m.disabled }),
+  memberResetToken: (id: string) => invoke<{ member: Member; token: string }>('member_reset_token', { id }),
+  memberDelete: (id: string) => invoke<void>('member_delete', { id }),
+  ticketAssign: (id: string, memberId: string | null) => invoke<Ticket>('ticket_assign', { id, memberId }),
+  /** 不传工单：所有还没回答的问题。 */
+  questionList: (ticketId?: string) => invoke<Question[]>('question_list', { ticketId: ticketId ?? null }),
+  questionAnswer: (id: string, answer: string) => invoke<Question>('question_answer', { id, answer }),
+  questionDismiss: (id: string) => invoke<Question>('question_dismiss', { id }),
 
   projectList: () => invoke<Project[]>('project_list'),
   projectSave: (id: string | null, input: ProjectInput) => invoke<Project>('project_save', { id, input }),

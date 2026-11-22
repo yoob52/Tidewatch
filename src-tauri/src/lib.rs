@@ -1,9 +1,10 @@
 //! Tauri 壳：把 tidewatch-core 暴露成命令，并把引擎事件转给界面。业务逻辑都在 core 里。
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tidewatch_core::agent::{adapter, mock_process, AgentKind, Detection};
+use tidewatch_core::api::ApiServer;
 use tidewatch_core::backup;
 use tidewatch_core::db::{self, lock};
 use tidewatch_core::engine::{
@@ -14,6 +15,8 @@ use tidewatch_core::git;
 use tidewatch_core::prompt;
 use tidewatch_core::provider;
 use tidewatch_core::secrets;
+use tidewatch_core::store::members::{self, Member};
+use tidewatch_core::store::questions::{self, Question};
 use tidewatch_core::store::{
     attachments, code_reviews, projects, providers, reviews, runs, settings, stats, tasks, tickets,
 };
@@ -25,6 +28,76 @@ pub const ENGINE_EVENT: &str = "tw://engine";
 pub struct AppState {
     pub engine: Arc<Engine>,
     pub data_dir: PathBuf,
+    /// 本地接口：开着时是 Ok，启动失败时留着原因给设置页显示。
+    pub api: Mutex<Option<Result<(ApiServer, bool), String>>>,
+}
+
+#[derive(Serialize)]
+struct ApiStatus {
+    running: bool,
+    port: Option<u16>,
+    remote: bool,
+    error: Option<String>,
+    /// 这台机器在局域网里的地址（开了远程访问时给别人用）。
+    lan_urls: Vec<String>,
+}
+
+/// 按设置开 / 关 / 重启本地接口。
+fn apply_api(state: &AppState) {
+    let st = settings::get(&lock(state.engine.db())).unwrap_or_default();
+    let mut slot = state.api.lock().unwrap();
+    let unchanged = matches!(&*slot, Some(Ok((server, remote)))
+        if st.api_enabled && server.port() == st.api_port && *remote == st.api_remote);
+    if !unchanged {
+        // 先停旧的再起新的：端口可能相同
+        if let Some(Ok((server, _))) = slot.take() {
+            server.stop();
+        }
+        if st.api_enabled {
+            *slot = Some(
+                ApiServer::start(state.engine.clone(), st.api_port, st.api_remote)
+                    .map(|s| (s, st.api_remote))
+                    .map_err(err),
+            );
+        }
+    }
+}
+
+fn api_status_of(state: &AppState) -> ApiStatus {
+    let slot = state.api.lock().unwrap();
+    let (running, port, remote, error) = match &*slot {
+        Some(Ok((server, remote))) => (true, Some(server.port()), *remote, None),
+        Some(Err(e)) => (false, None, false, Some(e.clone())),
+        None => (false, None, false, None),
+    };
+    let lan_urls = match (remote, port) {
+        (true, Some(port)) => lan_addresses()
+            .into_iter()
+            .map(|ip| format!("http://{ip}:{port}"))
+            .collect(),
+        _ => vec![],
+    };
+    ApiStatus {
+        running,
+        port,
+        remote,
+        error,
+        lan_urls,
+    }
+}
+
+/// 本机对外的 IPv4 地址：向一个外部地址"连接"一个 UDP 套接字（不发任何包），看系统选了哪个本地地址。
+fn lan_addresses() -> Vec<String> {
+    let probe = || -> std::io::Result<String> {
+        let s = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        s.connect("10.255.255.255:9")?;
+        Ok(s.local_addr()?.ip().to_string())
+    };
+    probe()
+        .ok()
+        .filter(|ip| ip != "0.0.0.0")
+        .into_iter()
+        .collect()
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -116,7 +189,93 @@ fn settings_save(state: State, settings: settings::Settings) -> CmdResult<settin
         attachments::carry_over(&old, &new)
             .map_err(|e| format!("附件复制到新的工作区目录时出错，目录没有更换：{e}"))?;
     }
-    settings::save(&conn, &settings).map_err(err)
+    let saved = settings::save(&conn, &settings).map_err(err)?;
+    drop(conn);
+    apply_api(&state);
+    Ok(saved)
+}
+
+// ---- 接口与成员 ----
+
+#[derive(Serialize)]
+struct MemberWithToken {
+    member: Member,
+    /// 只在创建 / 重置时返回这一次。
+    token: String,
+}
+
+#[tauri::command]
+fn api_status(state: State) -> ApiStatus {
+    api_status_of(&state)
+}
+
+#[tauri::command]
+fn member_list(state: State) -> CmdResult<Vec<Member>> {
+    members::list(&lock(state.engine.db())).map_err(err)
+}
+
+#[tauri::command]
+fn member_create(state: State, name: String, role: String) -> CmdResult<MemberWithToken> {
+    members::create(&lock(state.engine.db()), &name, &role)
+        .map(|(member, token)| MemberWithToken { member, token })
+        .map_err(err)
+}
+
+#[tauri::command]
+fn member_update(
+    state: State,
+    id: String,
+    name: String,
+    role: String,
+    disabled: bool,
+) -> CmdResult<Member> {
+    members::update(&lock(state.engine.db()), &id, &name, &role, disabled).map_err(err)
+}
+
+#[tauri::command]
+fn member_reset_token(state: State, id: String) -> CmdResult<MemberWithToken> {
+    members::reset_token(&lock(state.engine.db()), &id)
+        .map(|(member, token)| MemberWithToken { member, token })
+        .map_err(err)
+}
+
+#[tauri::command]
+fn member_delete(state: State, id: String) -> CmdResult<()> {
+    members::delete(&lock(state.engine.db()), &id).map_err(err)
+}
+
+#[tauri::command]
+fn ticket_assign(
+    state: State,
+    id: String,
+    member_id: Option<String>,
+) -> CmdResult<tickets::Ticket> {
+    tickets::set_assignee(&lock(state.engine.db()), &id, member_id.as_deref()).map_err(err)
+}
+
+// ---- Agent 的提问 ----
+
+#[tauri::command]
+fn question_list(state: State, ticket_id: Option<String>) -> CmdResult<Vec<Question>> {
+    let conn = lock(state.engine.db());
+    match ticket_id {
+        Some(id) => questions::list_for_ticket(&conn, &id),
+        None => questions::list_open(&conn),
+    }
+    .map_err(err)
+}
+
+#[tauri::command]
+fn question_answer(state: State, id: String, answer: String) -> CmdResult<Question> {
+    state
+        .engine
+        .answer_question(&id, &answer, None)
+        .map_err(err)
+}
+
+#[tauri::command]
+fn question_dismiss(state: State, id: String) -> CmdResult<Question> {
+    state.engine.dismiss_question(&id).map_err(err)
 }
 
 // ---- 项目 ----
@@ -271,6 +430,10 @@ struct TicketDetail {
     artifacts: Vec<tasks::Artifact>,
     /// AI 交叉审查的结果，新的在前。
     code_reviews: Vec<code_reviews::CodeReview>,
+    /// Agent 提的问题，旧的在前。
+    questions: Vec<Question>,
+    /// 负责人的名字。
+    assignee: Option<String>,
 }
 
 #[tauri::command]
@@ -288,6 +451,12 @@ fn ticket_get(state: State, id: String) -> CmdResult<TicketDetail> {
         impact: reviews::latest_proposal(&conn, &ticket.id, "impact").map_err(err)?,
         artifacts: tasks::artifacts_for_ticket(&conn, &ticket.id).map_err(err)?,
         code_reviews: code_reviews::list_for_ticket(&conn, &ticket.id).map_err(err)?,
+        questions: questions::list_for_ticket(&conn, &ticket.id).map_err(err)?,
+        assignee: ticket
+            .assignee_id
+            .as_deref()
+            .and_then(|id| members::get(&conn, id).ok())
+            .map(|m| m.name),
         ticket,
     })
 }
@@ -923,6 +1092,12 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
                 ),
             }
         }
+        EngineEvent::QuestionAsked {
+            ticket_key, body, ..
+        } => (
+            "Agent 有问题要问你",
+            format!("{ticket_key} {}", body.chars().take(80).collect::<String>()),
+        ),
         EngineEvent::ApiDocReady {
             ticket_key,
             task_title,
@@ -1023,10 +1198,13 @@ pub fn run() {
                     let _ = handle.emit(ENGINE_EVENT, &ev);
                 }),
             )?;
-            app.manage(AppState {
+            let state = AppState {
                 engine: Arc::new(engine),
                 data_dir,
-            });
+                api: Mutex::new(None),
+            };
+            apply_api(&state);
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1034,6 +1212,16 @@ pub fn run() {
             detect_agents,
             settings_get,
             settings_save,
+            api_status,
+            member_list,
+            member_create,
+            member_update,
+            member_reset_token,
+            member_delete,
+            ticket_assign,
+            question_list,
+            question_answer,
+            question_dismiss,
             project_list,
             project_save,
             project_delete,

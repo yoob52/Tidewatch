@@ -1,12 +1,12 @@
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type BackupFile, type Detection, type Settings, type SystemInfo, type TemplateInfo, type UpdateInfo } from '../lib/api';
+import { api, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SystemInfo, type TemplateInfo, type UpdateInfo } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { AGENTS, Modal, PERMISSIONS, Seg, Switch, useUi } from '../lib/ui';
 
-const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '本机环境'];
+const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '接口与成员', '本机环境'];
 
 /** 编辑一个 Prompt 模板：左边改，右边看用示例数据填出来的效果。 */
 function TemplateEditor({ tpl, onClose, onSaved }: { tpl: TemplateInfo; onClose: () => void; onSaved: (list: TemplateInfo[]) => void }) {
@@ -137,6 +137,194 @@ function PromptTemplates() {
     </div>
   );
 }
+const ROLE_HINT: Record<Member['role'], string> = {
+  owner: '全部操作，含合并和以 full_auto 开始',
+  member: '建单、评论、开始 / 停止、验收、回答问题',
+  viewer: '只读',
+};
+
+/** 本地 HTTP / MCP 接口的开关，以及能带令牌访问它的成员。 */
+function ApiSection({ settings, save }: { settings: Settings; save: (patch: Partial<Settings>) => Promise<void> }) {
+  const ui = useUi();
+  const [status, setStatus] = useState<ApiStatus | null>(null);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [port, setPort] = useState(String(settings.api_port));
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<Member['role']>('member');
+  const [shown, setShown] = useState<{ name: string; token: string } | null>(null);
+
+  const refresh = () => {
+    api.apiStatus().then(setStatus, () => undefined);
+    api.memberList().then(setMembers, () => undefined);
+  };
+  useEffect(refresh, [settings.api_enabled, settings.api_port, settings.api_remote]);
+  useEffect(() => setPort(String(settings.api_port)), [settings.api_port]);
+
+  const base = status?.running ? `http://127.0.0.1:${status.port}` : null;
+  const savePort = () => {
+    const n = Number(port);
+    if (n === settings.api_port) return;
+    if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+      ui.toast('端口要在 1024 到 65535 之间');
+      setPort(String(settings.api_port));
+      return;
+    }
+    void save({ api_port: n });
+  };
+  const setRemote = async (on: boolean) => {
+    if (
+      on &&
+      !(await ui.confirm(
+        '允许局域网里的其他设备访问？',
+        '打开后接口监听这台机器的所有网卡：同一网络里的人只要有成员令牌，就能读工单、开始运行。接口是明文 HTTP，令牌在网络上不加密，只在你信任的网络里打开。',
+        '打开',
+      ))
+    )
+      return;
+    await save({ api_remote: on });
+  };
+  const create = async () => {
+    const made = await ui.attempt(api.memberCreate(name, role));
+    if (!made) return;
+    setName('');
+    setShown({ name: made.member.name, token: made.token });
+    refresh();
+  };
+  const update = async (m: Member) => {
+    await ui.attempt(api.memberUpdate(m));
+    refresh();
+  };
+  const reset = async (m: Member) => {
+    if (!(await ui.confirm(`重置「${m.name}」的令牌？`, '旧令牌立刻失效，正在用它的脚本和网页要换成新的。', '重置'))) return;
+    const made = await ui.attempt(api.memberResetToken(m.id));
+    if (made) setShown({ name: m.name, token: made.token });
+    refresh();
+  };
+  const remove = async (m: Member) => {
+    if (!(await ui.confirm(`删除成员「${m.name}」？`, '它的令牌立刻失效；指派给它的工单变成未指派。', '删除'))) return;
+    await ui.attempt(api.memberDelete(m.id));
+    refresh();
+  };
+
+  return (
+    <div className="card">
+      <div className="srow">
+        <div>
+          <b>本地接口（HTTP / MCP）</b>
+          <p>
+            打开后，脚本可以经 REST 读写工单；运行中的 Claude Code、Codex、OpenCode 会自动接上观澜的 MCP 服务，可以读当前工单、把只读任务委派给另一个 Agent、把拿不准的问题挂给你。默认关闭。
+          </p>
+          {settings.api_enabled && status?.running && (
+            <p className="mono">
+              {base}/api/v1 · {base}/mcp · 看板页 {base}/
+            </p>
+          )}
+          {settings.api_enabled && status?.error && <p style={{ color: 'var(--cinnabar)' }}>{status.error}</p>}
+        </div>
+        <div className="sctl">
+          <Switch on={settings.api_enabled} onChange={(v) => void save({ api_enabled: v })} label="本地接口" />
+        </div>
+      </div>
+      <div className="srow">
+        <div>
+          <b>端口</b>
+          <p>改端口后，已经在跑的 Agent 仍然连着旧地址，要到下一轮才用新的。</p>
+        </div>
+        <div className="sctl">
+          <input className="input mono" style={{ width: 90 }} value={port} onChange={(e) => setPort(e.target.value)} onBlur={savePort} inputMode="numeric" aria-label="接口端口" />
+        </div>
+      </div>
+      <div className="srow">
+        <div>
+          <b>允许局域网访问</b>
+          <p>关着时只有这台机器能连。打开后同一网络里的人可以带成员令牌访问接口和看板页；明文 HTTP，不要在不信任的网络里打开。</p>
+          {status?.remote && status.lan_urls.length > 0 && <p className="mono">{status.lan_urls.join(' · ')}</p>}
+        </div>
+        <div className="sctl">
+          <Switch on={settings.api_remote} onChange={(v) => void setRemote(v)} label="允许局域网访问" />
+        </div>
+      </div>
+      {members.map((m) => (
+        <div className="srow" key={m.id}>
+          <div>
+            <b>{m.name}</b>
+            <p>
+              {ROLE_HINT[m.role]}
+              {m.token_hint && <span className="mono"> · 令牌 …{m.token_hint}</span>}
+              {m.last_seen_at ? ` · 最近访问 ${m.last_seen_at.slice(0, 16).replace('T', ' ')}` : ' · 还没用过'}
+            </p>
+          </div>
+          <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {m.disabled && <span className="tag amber">已停用</span>}
+            <select className="input" style={{ width: 100 }} value={m.role} onChange={(e) => void update({ ...m, role: e.target.value as Member['role'] })} aria-label={`${m.name} 的角色`}>
+              <option value="owner">owner</option>
+              <option value="member">member</option>
+              <option value="viewer">viewer</option>
+            </select>
+            <button className="btn sm" onClick={() => void update({ ...m, disabled: !m.disabled })}>
+              {m.disabled ? '启用' : '停用'}
+            </button>
+            <button className="btn sm" onClick={() => void reset(m)}>
+              重置令牌
+            </button>
+            <button className="btn sm ghost" onClick={() => void remove(m)} aria-label={`删除 ${m.name}`}>
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className="srow">
+        <div>
+          <b>添加成员</b>
+          <p>每个成员一个令牌，用于 REST、MCP 和看板页。令牌只显示一次，数据库里只存它的摘要。运行中的 Agent 用的是每一轮单独签发的临时令牌，不需要在这里建成员。</p>
+        </div>
+        <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input className="input" style={{ width: 130 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="名字" aria-label="成员名" />
+          <select className="input" style={{ width: 100 }} value={role} onChange={(e) => setRole(e.target.value as Member['role'])} aria-label="角色">
+            <option value="owner">owner</option>
+            <option value="member">member</option>
+            <option value="viewer">viewer</option>
+          </select>
+          <button className="btn sm" disabled={!name.trim()} onClick={() => void create()}>
+            添加
+          </button>
+        </div>
+      </div>
+      {shown && (
+        <Modal
+          title={`「${shown.name}」的令牌`}
+          hint="只显示这一次。关掉之后看不到了，丢了只能重置。"
+          width={620}
+          onClose={() => setShown(null)}
+          footer={
+            <>
+              <span className="grow" />
+              <button
+                className="btn"
+                onClick={() => {
+                  void navigator.clipboard.writeText(shown.token).then(() => ui.toast('已复制'));
+                }}
+              >
+                复制
+              </button>
+              <button className="btn primary" onClick={() => setShown(null)}>
+                我已保存
+              </button>
+            </>
+          }
+        >
+          <pre className="plain boxed mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }} aria-label="令牌">
+            {shown.token}
+          </pre>
+          <p className="dim" style={{ marginTop: 8 }}>
+            用法：请求头带上 <span className="mono">Authorization: Bearer {'<令牌>'}</span>。
+          </p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 const PERMISSION_HINT: Record<string, string> = {
   read_only: '只读，不改文件',
   workspace_write: '可改 worktree 内的文件',
@@ -491,6 +679,9 @@ export function SettingsPage({
         </div>
 
         <h3 id="set-6">{SECTIONS[6]}</h3>
+        <ApiSection settings={settings} save={save} />
+
+        <h3 id="set-7">{SECTIONS[7]}</h3>
         <div className="card">
           <div className="srow">
             <div>

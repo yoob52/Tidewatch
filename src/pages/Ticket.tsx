@@ -17,6 +17,7 @@ import {
 } from '../lib/images';
 import type { IconName } from '../lib/icons';
 import {
+  AGENTS,
   AgentTag,
   Empty,
   KindStamp,
@@ -293,9 +294,67 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
       return ['merge', '系统', `${name}已合并（${String(p.commit ?? '').slice(0, 8)}）${p.note ? `；${p.note}` : ''}`];
     case 'task_cancelled':
       return ['x', '你', `取消${name}`];
+    case 'question_asked':
+      return ['info', 'Agent', `提了一个问题：${p.body ?? ''}`];
+    case 'question_answered':
+      return ['check', '你', `回答了「${p.body ?? ''}」：${p.answer ?? ''}`];
+    case 'delegate_finished':
+      return [p.error ? 'alert' : 'spark', 'Agent', `委派给 ${AGENTS[p.agent as string]?.name ?? p.agent} 的只读检查${p.error ? `没有完成：${p.error}` : '完成'}`];
+    case 'comment':
+      return ['edit', '你', `评论：${p.body ?? ''}`];
+    case 'assigned':
+      return ['info', '你', p.assignee ? `指派给 ${p.assignee}` : '取消了指派'];
     default:
       return ['info', '系统', e.type];
   }
+}
+
+/** Agent 经 MCP 提的、还没回答的问题。回答会写进对应子任务下一轮的 Prompt。 */
+function Questions({ d }: { d: TicketDetail }) {
+  const ui = useUi();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const open = d.questions.filter((q) => q.status === 'open');
+  if (!open.length) return null;
+  // 回答 / 忽略之后，引擎的变更事件会让工单重新加载
+  const answer = (id: string, text: string) => void ui.attempt(api.questionAnswer(id, text), '已回答，下一轮运行会带上');
+  return (
+    <>
+      {open.map((q) => {
+        const task = d.tasks.find((k) => k.id === q.task_id);
+        const draft = drafts[q.id] ?? '';
+        return (
+          <div className="callout cin" key={q.id}>
+            <Icon name="info" size={15} />
+            <div style={{ flex: 1 }}>
+              <b>Agent 有个问题要你回答{task ? `（${task.title}）` : ''}：</b>
+              <div style={{ whiteSpace: 'pre-wrap', margin: '4px 0 8px' }}>{q.body}</div>
+              <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+                {q.options.map((o) => (
+                  <button key={o} className="btn sm" onClick={() => answer(q.id, o)}>
+                    {o}
+                  </button>
+                ))}
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 180 }}
+                  value={draft}
+                  onChange={(e) => setDrafts((x) => ({ ...x, [q.id]: e.target.value }))}
+                  placeholder="写下回答…"
+                  aria-label="回答"
+                />
+                <button className="btn sm primary" disabled={!draft.trim()} onClick={() => answer(q.id, draft)}>
+                  回答
+                </button>
+                <button className="btn sm ghost" onClick={() => void ui.attempt(api.questionDismiss(q.id))}>
+                  忽略
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
 function OverviewTab({ d }: { d: TicketDetail }) {
@@ -314,6 +373,7 @@ function OverviewTab({ d }: { d: TicketDetail }) {
   return (
     <div className="page ov">
       <div className="ov-main">
+        <Questions d={d} />
         {t.status === 'ai_review' && (
           <div className="callout tide">
             <Icon name="spark" size={15} />
@@ -407,7 +467,8 @@ function OverviewTab({ d }: { d: TicketDetail }) {
                   <Icon name={icon} size={12} />
                 </i>
                 <div>
-                  <b>{who}</b> {what}
+                  {/* 经接口操作的显示成员名 */}
+                  <b>{who === '你' && e.actor ? e.actor : who}</b> {what}
                 </div>
                 <time>{fmtAgo(e.ts)}</time>
               </li>
@@ -417,6 +478,12 @@ function OverviewTab({ d }: { d: TicketDetail }) {
       </div>
       <aside className="ov-side">
         <dl className="props">
+          {d.assignee && (
+            <>
+              <dt>负责人</dt>
+              <dd>{d.assignee}</dd>
+            </>
+          )}
           <dt>类型</dt>
           <dd>
             <Stamp type={t.type} /> {TYPES[t.type]?.name}
