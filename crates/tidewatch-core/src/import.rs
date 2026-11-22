@@ -552,8 +552,8 @@ fn pdf(bytes: &[u8]) -> Result<Parsed> {
                     continue;
                 }
                 let room = MAX_IMAGES_TOTAL_BYTES.saturating_sub(used);
-                let filter = pdf_filter(s);
-                let image = if filter == Some(b"DCTDecode") && s.content.starts_with(b"\xff\xd8") {
+                let jpeg = pdf_filters(s).is_some_and(|f| f == [b"DCTDecode"]);
+                let image = if jpeg && s.content.starts_with(b"\xff\xd8") {
                     Some(("jpg", s.content.clone()))
                 } else {
                     pdf_bitmap_png(&doc, s).map(|b| ("png", b))
@@ -593,12 +593,12 @@ fn pdf(bytes: &[u8]) -> Result<Parsed> {
     Ok(out)
 }
 
-/// 流只用了一种编码时返回它的名字；没有编码返回空串；多种编码叠在一起的不处理。
-fn pdf_filter(s: &pdf_extract::Stream) -> Option<&[u8]> {
+/// 流用到的编码，按解码的先后顺序；写法不合规的返回 `None`。
+fn pdf_filters(s: &pdf_extract::Stream) -> Option<Vec<&[u8]>> {
     match s.dict.get(b"Filter") {
-        Err(_) => Some(b""),
-        Ok(pdf_extract::Object::Name(n)) => Some(n),
-        Ok(pdf_extract::Object::Array(a)) if a.len() == 1 => a[0].as_name().ok(),
+        Err(_) => Some(vec![]),
+        Ok(pdf_extract::Object::Name(n)) => Some(vec![n]),
+        Ok(pdf_extract::Object::Array(a)) => a.iter().map(|f| f.as_name().ok()).collect(),
         Ok(_) => None,
     }
 }
@@ -606,13 +606,73 @@ fn pdf_filter(s: &pdf_extract::Stream) -> Option<&[u8]> {
 /// 解压后的像素数据上限。
 const MAX_PDF_BITMAP_BYTES: u64 = 128 * 1024 * 1024;
 
-/// 流的内容：没压缩的原样返回，Flate 的解压（有上限），其它编码不处理。
+/// 流的内容：依次解开文本编码（ASCII85 / 十六进制）和 Flate，结果不超过 `limit`；别的编码不处理。
 fn pdf_stream_bytes(s: &pdf_extract::Stream, limit: u64) -> Option<Vec<u8>> {
-    match pdf_filter(s)? {
-        b"" => (s.content.len() as u64 <= limit).then(|| s.content.clone()),
-        b"FlateDecode" => read_capped(flate2::read::ZlibDecoder::new(&s.content[..]), limit),
-        _ => None,
+    let mut data = std::borrow::Cow::Borrowed(&s.content[..]);
+    for f in pdf_filters(s)? {
+        data = std::borrow::Cow::Owned(match f {
+            b"ASCII85Decode" | b"A85" => ascii85(&data)?,
+            b"ASCIIHexDecode" | b"AHx" => ascii_hex(&data)?,
+            b"FlateDecode" | b"Fl" => {
+                read_capped(flate2::read::ZlibDecoder::new(&data[..]), limit)?
+            }
+            _ => return None,
+        });
     }
+    (data.len() as u64 <= limit).then(|| data.into_owned())
+}
+
+fn ascii85(src: &[u8]) -> Option<Vec<u8>> {
+    fn flush(group: &mut Vec<u8>, out: &mut Vec<u8>) -> Option<()> {
+        let n = group.len();
+        if n == 0 {
+            return Some(());
+        }
+        if n == 1 {
+            return None;
+        }
+        group.resize(5, 84); // 不足 5 位的末尾按 'u' 补齐
+        let v = group
+            .iter()
+            .try_fold(0u32, |v, d| v.checked_mul(85)?.checked_add(*d as u32))?;
+        out.extend_from_slice(&v.to_be_bytes()[..n - 1]);
+        group.clear();
+        Some(())
+    }
+    let mut out = Vec::with_capacity(src.len() / 5 * 4);
+    let mut group: Vec<u8> = Vec::with_capacity(5);
+    for &c in src {
+        match c {
+            b'~' => break,
+            b'z' if group.is_empty() => out.extend_from_slice(&[0; 4]),
+            b'!'..=b'u' => {
+                group.push(c - b'!');
+                if group.len() == 5 {
+                    flush(&mut group, &mut out)?;
+                }
+            }
+            c if c.is_ascii_whitespace() || c == 0 => {}
+            _ => return None,
+        }
+    }
+    flush(&mut group, &mut out)?;
+    Some(out)
+}
+
+fn ascii_hex(src: &[u8]) -> Option<Vec<u8>> {
+    let mut digits = vec![];
+    for &c in src {
+        match c {
+            b'>' => break,
+            c if c.is_ascii_hexdigit() => digits.push((c as char).to_digit(16)? as u8),
+            c if c.is_ascii_whitespace() || c == 0 => {}
+            _ => return None,
+        }
+    }
+    if digits.len() % 2 == 1 {
+        digits.push(0);
+    }
+    Some(digits.chunks(2).map(|d| d[0] << 4 | d[1]).collect())
 }
 
 /// 颜色空间的分量数；调色板的话再给出 RGB 调色板。认不出的返回 `None`。
@@ -658,9 +718,55 @@ fn pdf_color_space(
     }
 }
 
-/// 把 PDF 里一张无损位图转成 PNG。只处理常见的几种（灰度 / RGB / 调色板，没压缩或 Flate），
-/// 其它的（CMYK、JPEG 2000、传真编码、模板蒙版……）返回 `None`。
-fn pdf_bitmap_png(doc: &pdf_extract::Document, s: &pdf_extract::Stream) -> Option<Vec<u8>> {
+/// 一张位图解出来的样本：`data` 每行 `ceil(width * comps * bits / 8)` 字节。
+struct PdfSamples {
+    width: usize,
+    height: usize,
+    comps: usize,
+    bits: usize,
+    palette: Option<Vec<u8>>,
+    data: Vec<u8>,
+}
+
+/// `/Decode`：样本值怎么映射到颜色。默认不变；整体反相的照做；别的映射不处理。
+fn pdf_decode_inverts(
+    doc: &pdf_extract::Document,
+    s: &pdf_extract::Stream,
+    indexed: bool,
+    bits: usize,
+) -> Option<bool> {
+    use pdf_extract::Object;
+    let Ok(decode) = s.dict.get_deref(b"Decode", doc) else {
+        return Some(false);
+    };
+    let nums: Vec<f64> = decode
+        .as_array()
+        .ok()?
+        .iter()
+        .map(|n| match n {
+            Object::Integer(i) => Some(*i as f64),
+            Object::Real(r) => Some(*r as f64),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let max = if indexed {
+        ((1u32 << bits) - 1) as f64
+    } else {
+        1.0
+    };
+    let all = |lo: f64, hi: f64| nums.chunks(2).all(|p| p == [lo, hi]);
+    if nums.is_empty() || all(0.0, max) {
+        Some(false)
+    } else if !indexed && all(1.0, 0.0) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// 读出 PDF 里一张无损位图的样本。只处理常见的几种（灰度 / RGB / 调色板；没压缩或 Flate，
+/// 外面可以再套一层文本编码），其它的（CMYK、JPEG 2000、传真编码……）返回 `None`。
+fn pdf_samples(doc: &pdf_extract::Document, s: &pdf_extract::Stream) -> Option<PdfSamples> {
     let int = |key: &[u8]| -> Option<i64> { s.dict.get_deref(key, doc).ok()?.as_i64().ok() };
     let (width, height) = (int(b"Width")?, int(b"Height")?);
     if !(1..=30_000).contains(&width) || !(1..=30_000).contains(&height) {
@@ -669,24 +775,24 @@ fn pdf_bitmap_png(doc: &pdf_extract::Document, s: &pdf_extract::Stream) -> Optio
     let (width, height) = (width as usize, height as usize);
     let bits = int(b"BitsPerComponent")? as usize;
     let (comps, palette) = pdf_color_space(doc, s.dict.get(b"ColorSpace").ok()?)?;
-    let depth = match (comps, bits) {
-        (1, 1) => png::BitDepth::One,
-        (1, 2) => png::BitDepth::Two,
-        (1, 4) => png::BitDepth::Four,
-        (_, 8) => png::BitDepth::Eight,
-        _ => return None,
-    };
+    if !matches!((comps, bits), (1, 1 | 2 | 4) | (_, 8)) {
+        return None;
+    }
+    let inverts = pdf_decode_inverts(doc, s, palette.is_some(), bits)?;
     let row = (width * comps * bits).div_ceil(8);
     let size = (row * height) as u64;
     if size > MAX_PDF_BITMAP_BYTES {
         return None;
     }
-    // Flate 可以带 PNG 预测器：每行前面多一个字节，说明这一行是怎么编码的
-    let parms = s.dict.get_deref(b"DecodeParms", doc).ok();
-    let parms = match parms {
-        Some(pdf_extract::Object::Array(a)) if a.len() == 1 => {
-            doc.dereference(&a[0]).ok().map(|p| p.1)
-        }
+    // Flate 可以带 PNG 预测器：每行前面多一个字节，说明这一行是怎么编码的。
+    // 参数和编码一一对应，取 Flate 那一项
+    let parms = match s.dict.get_deref(b"DecodeParms", doc).ok() {
+        Some(pdf_extract::Object::Array(a)) => pdf_filters(s)?
+            .iter()
+            .position(|f| matches!(*f, b"FlateDecode" | b"Fl"))
+            .and_then(|i| a.get(i))
+            .and_then(|p| doc.dereference(p).ok())
+            .map(|p| p.1),
         other => other,
     }
     .and_then(|p| p.as_dict().ok());
@@ -705,17 +811,69 @@ fn pdf_bitmap_png(doc: &pdf_extract::Document, s: &pdf_extract::Stream) -> Optio
         return None;
     }
     data.truncate(row * height);
-    let mut out = vec![];
-    let mut enc = png::Encoder::new(&mut out, width as u32, height as u32);
-    enc.set_depth(depth);
-    enc.set_color(match (comps, &palette) {
-        (_, Some(_)) => png::ColorType::Indexed,
-        (1, None) => png::ColorType::Grayscale,
-        _ => png::ColorType::Rgb,
-    });
-    if let Some(p) = palette {
-        enc.set_palette(p);
+    if inverts {
+        data.iter_mut().for_each(|b| *b = !*b);
     }
+    Some(PdfSamples {
+        width,
+        height,
+        comps,
+        bits,
+        palette,
+        data,
+    })
+}
+
+/// 把 PDF 里一张无损位图转成 PNG；带透明度蒙版（`SMask`）的连同透明度一起。转不了的返回 `None`。
+fn pdf_bitmap_png(doc: &pdf_extract::Document, s: &pdf_extract::Stream) -> Option<Vec<u8>> {
+    let img = pdf_samples(doc, s)?;
+    // 抠色 / 模板蒙版不处理：丢掉它图就不对了
+    if s.dict.has(b"Mask") {
+        return None;
+    }
+    let mut out = vec![];
+    let mut enc = png::Encoder::new(&mut out, img.width as u32, img.height as u32);
+    let data = if let Ok(mask) = s.dict.get_deref(b"SMask", doc) {
+        // 透明度是另一张同样大小的灰度图：合成 RGBA / 灰度 + 透明度
+        let mask = pdf_samples(doc, mask.as_stream().ok()?)?;
+        let same = (mask.width, mask.height) == (img.width, img.height);
+        if !same || mask.comps != 1 || mask.bits != 8 || mask.palette.is_some() || img.bits != 8 {
+            return None;
+        }
+        let px: Vec<&[u8]> = match &img.palette {
+            Some(p) => img
+                .data
+                .iter()
+                .map(|i| p.get(*i as usize * 3..*i as usize * 3 + 3))
+                .collect::<Option<_>>()?,
+            None => img.data.chunks(img.comps).collect(),
+        };
+        enc.set_color(if px.first()?.len() == 1 {
+            png::ColorType::GrayscaleAlpha
+        } else {
+            png::ColorType::Rgba
+        });
+        px.iter()
+            .zip(&mask.data)
+            .flat_map(|(p, a)| p.iter().copied().chain([*a]))
+            .collect()
+    } else {
+        enc.set_depth(match img.bits {
+            1 => png::BitDepth::One,
+            2 => png::BitDepth::Two,
+            4 => png::BitDepth::Four,
+            _ => png::BitDepth::Eight,
+        });
+        enc.set_color(match (img.comps, &img.palette) {
+            (_, Some(_)) => png::ColorType::Indexed,
+            (1, None) => png::ColorType::Grayscale,
+            _ => png::ColorType::Rgb,
+        });
+        if let Some(p) = img.palette {
+            enc.set_palette(p);
+        }
+        img.data
+    };
     let mut w = enc.write_header().ok()?;
     w.write_image_data(&data).ok()?;
     w.finish().ok()?;
@@ -1015,6 +1173,79 @@ mod pdf_tests {
             pixels(&pdf_bitmap_png(&doc, &s).unwrap()),
             (2, 2, vec![9, 8, 7, 1, 2, 3, 1, 2, 3, 9, 8, 7])
         );
+
+        // 外面套了一层文本编码（ReportLab 生成的 PDF 默认这样）
+        let mut pairs = base(name("DeviceRGB"));
+        pairs.push((
+            "Filter",
+            Object::Array(vec![name("ASCII85Decode"), name("FlateDecode")]),
+        ));
+        let a85 = |data: &[u8]| {
+            let mut out = String::new();
+            for chunk in data.chunks(4) {
+                let mut b = [0u8; 4];
+                b[..chunk.len()].copy_from_slice(chunk);
+                let mut v = u32::from_be_bytes(b);
+                let mut d = [0u8; 5];
+                for i in (0..5).rev() {
+                    d[i] = (v % 85) as u8 + b'!';
+                    v /= 85;
+                }
+                out.push_str(std::str::from_utf8(&d[..chunk.len() + 1]).unwrap());
+            }
+            out.push_str("~>");
+            out.into_bytes()
+        };
+        let s = image(pairs, a85(&zlib(&rgb)));
+        assert_eq!(
+            pixels(&pdf_bitmap_png(&doc, &s).unwrap()),
+            (2, 2, rgb.to_vec())
+        );
+        assert_eq!(
+            ascii85(b"87cURD]i,\"Ebo80~>").as_deref(),
+            Some(&b"Hello World!"[..])
+        );
+        assert_eq!(ascii85(b"z!!~>").as_deref(), Some(&[0, 0, 0, 0, 0][..]));
+        assert_eq!(
+            ascii_hex(b"48 65 6C6c 6F7>").as_deref(),
+            Some(&b"Hellop"[..])
+        );
+
+        // 带透明度蒙版：透明度进 PNG，不再只剩底色
+        let mut d = pdf_extract::Document::with_version("1.5");
+        let mut pairs = base(name("DeviceGray"));
+        pairs.push(("Filter", name("FlateDecode")));
+        let mask = d.add_object(image(pairs, zlib(&[0, 85, 170, 255])));
+        let mut pairs = base(name("DeviceRGB"));
+        pairs.push(("SMask", Object::Reference(mask)));
+        let s = image(pairs, vec![0; 12]);
+        assert_eq!(
+            pixels(&pdf_bitmap_png(&d, &s).unwrap()),
+            (
+                2,
+                2,
+                vec![0, 0, 0, 0, 0, 0, 0, 85, 0, 0, 0, 170, 0, 0, 0, 255]
+            )
+        );
+        // 蒙版大小对不上就不硬转
+        let mut pairs = base(name("DeviceGray"));
+        pairs[0].1 = Object::Integer(1);
+        let odd = d.add_object(image(pairs, vec![0, 0]));
+        let mut pairs = base(name("DeviceRGB"));
+        pairs.push(("SMask", Object::Reference(odd)));
+        assert!(pdf_bitmap_png(&d, &image(pairs, vec![0; 12])).is_none());
+
+        // `/Decode [1 0]`：反相的灰度图照反相导入；别的映射不硬转
+        let decode = |lo: Object, hi: Object| {
+            let mut pairs = base(name("DeviceGray"));
+            pairs.push(("Decode", Object::Array(vec![lo, hi])));
+            pdf_bitmap_png(&doc, &image(pairs, vec![0, 255, 10, 200]))
+        };
+        let inverted = decode(Object::Integer(1), Object::Integer(0)).unwrap();
+        assert_eq!(pixels(&inverted), (2, 2, vec![255, 0, 245, 55]));
+        assert!(decode(Object::Real(0.2), Object::Integer(1)).is_none());
+        let plain = decode(Object::Integer(0), Object::Integer(1)).unwrap();
+        assert_eq!(pixels(&plain), (2, 2, vec![0, 255, 10, 200]));
 
         // 不认识的不硬转：CMYK、别的编码、数据不够、声明的尺寸大得离谱
         let s = image(base(name("DeviceCMYK")), vec![0; 16]);
