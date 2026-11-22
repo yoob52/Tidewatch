@@ -707,7 +707,7 @@ pub fn smart_draft(md: &str, projects: &[super::projects::Project]) -> Draft {
             })
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|a| std::cmp::Reverse(a.0));
     if let Some(best) = scored.first().map(|x| x.0) {
         for (n, p, why) in scored.iter().filter(|x| x.0 == best || x.0 == usize::MAX) {
             let _ = n;
@@ -862,7 +862,7 @@ fn bug_sections(md: &str) -> Option<serde_json::Value> {
             out.insert(field.into(), body.into());
         }
     }
-    (!out.is_empty()).then(|| serde_json::Value::Object(out))
+    (!out.is_empty()).then_some(serde_json::Value::Object(out))
 }
 
 pub fn draft_from_markdown(md: &str) -> Draft {
