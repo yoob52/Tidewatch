@@ -8,11 +8,13 @@ use tidewatch_core::store::{attachments, tickets};
 use tidewatch_core::sync::{self, SourceConfig, SourceInput};
 
 type Reply = (u16, &'static str, Vec<u8>);
+/// 方法、路径和查询、请求体、Authorization 头。
+type Logged = (String, String, String, Option<String>);
 
 /// 假接口：`route(方法, 路径和查询, 请求体)` 给出响应；收到的请求都记下来。
 struct Fake {
     url: String,
-    log: Arc<Mutex<Vec<(String, String, String, Option<String>)>>>,
+    log: Arc<Mutex<Vec<Logged>>>,
     server: Arc<tiny_http::Server>,
 }
 
@@ -179,7 +181,7 @@ fn github_issues_become_tickets_and_changes_wait_for_the_user() {
     // Issue 正文改了：只记成待定，PRD 不动
     issues.lock().unwrap()[0]["body"] = json!("打开订单页直接白屏。\n\n补充：只在没有订单时出现。");
     let r = sync::run(&db, &secrets, dir.path(), &source.id).unwrap();
-    assert_eq!(r.changed, [bug.key.clone()]);
+    assert_eq!(r.changed, std::slice::from_ref(&bug.key));
     let ts = sync::ticket_source(&lock(&db), &bug.id).unwrap().unwrap();
     assert!(ts.pending_md.as_deref().unwrap().contains("补充"));
     assert_eq!(tickets::prd_versions(&lock(&db), &bug.id).unwrap().len(), 1);
@@ -208,7 +210,7 @@ fn github_issues_become_tickets_and_changes_wait_for_the_user() {
         sync::run(&db, &secrets, dir.path(), &source.id)
             .unwrap()
             .changed,
-        [feature.key.clone()]
+        std::slice::from_ref(&feature.key)
     );
     sync::dismiss_pending(&lock(&db), &feature.id).unwrap();
     assert!(sync::run(&db, &secrets, dir.path(), &source.id)
@@ -232,7 +234,7 @@ fn github_issues_become_tickets_and_changes_wait_for_the_user() {
         .execute("UPDATE ticket SET status = 'done' WHERE id = ?1", [&bug.id])
         .unwrap();
     let r = sync::run(&db, &secrets, dir.path(), &source.id).unwrap();
-    assert_eq!(r.written_back, [bug.key.clone()]);
+    assert_eq!(r.written_back, std::slice::from_ref(&bug.key));
     let posts = fake.requests("POST");
     assert_eq!(posts.len(), 1);
     assert!(posts[0].1.contains(&bug.key), "{}", posts[0].1);
@@ -419,7 +421,7 @@ fn feishu_doc_is_imported_by_url_and_new_revisions_wait_for_the_user() {
     );
     *revision.lock().unwrap() = 13;
     let r = sync::run(&db, &secrets, dir.path(), &source.id).unwrap();
-    assert_eq!(r.changed, [t.key.clone()]);
+    assert_eq!(r.changed, std::slice::from_ref(&t.key));
     assert!(sync::run(&db, &secrets, dir.path(), &source.id)
         .unwrap()
         .changed
