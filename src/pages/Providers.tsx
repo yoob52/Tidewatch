@@ -209,7 +209,7 @@ export function ProvidersPage({ id }: { id?: string }) {
                     </button>
                   ) : (
                     // 没有桥接办法的（Gemini CLI 只说 Gemini 协议）不给按钮
-                    <span key={c.agent} className="tag">
+                    <span key={c.agent} className="tag line">
                       {c.agent_name} 不能用这个协议
                     </span>
                   ),
