@@ -39,11 +39,11 @@ pub fn blocked(app: &AppHandle) -> Option<String> {
     if pubkey.trim().is_empty() {
         return Some("这个版本没有内置更新签名的公钥，不能在应用内安装。".into());
     }
-    if cfg!(windows) || (cfg!(target_os = "linux") && app.env().appimage.is_some()) {
-        None
-    } else {
-        Some("当前的安装方式不支持应用内更新。".into())
-    }
+    #[cfg(target_os = "linux")]
+    let supported = app.env().appimage.is_some();
+    #[cfg(not(target_os = "linux"))]
+    let supported = cfg!(windows);
+    (!supported).then(|| "当前的安装方式不支持应用内更新。".into())
 }
 
 fn readable(e: Error) -> String {
