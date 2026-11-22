@@ -1,10 +1,11 @@
 // 新建工单：左边放原文，右边是预填的属性
 import { open } from '@tauri-apps/plugin-dialog';
-import { useState } from 'react';
-import { api, type Priority, type TicketStatus, type TicketType } from '../lib/api';
+import { useRef, useState } from 'react';
+import { api, type Priority, type TicketDraft, type TicketStatus, type TicketType } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
-import { Field, PRIO, Prio, STAGE_NAME, Seg, Stamp, TYPES, go, useUi } from '../lib/ui';
+import { imageFiles, imageMd, insertAt, parseImages, selectionOf, uploadImage } from '../lib/images';
+import { Field, Md, PRIO, Prio, STAGE_NAME, Seg, Stamp, TYPES, go, useUi } from '../lib/ui';
 
 type Mode = 'paste' | 'file' | 'form';
 
@@ -23,7 +24,13 @@ export function NewTicketPage() {
   const [labels, setLabels] = useState('');
   const [due, setDue] = useState('');
   const [recognized, setRecognized] = useState(false);
+  const [bugInfo, setBugInfo] = useState<TicketDraft['bug_info']>(null);
+  const [reasons, setReasons] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const area = useRef<HTMLTextAreaElement | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
 
   const recognize = async (text: string) => {
     if (!text.trim()) return;
@@ -31,21 +38,52 @@ export function NewTicketPage() {
     if (!d) return;
     setTitle(d.title);
     setType(d.type);
-    // 正文里提到了哪个项目的名字，就预选它
-    const hit = projects.filter((p) => text.toLowerCase().includes(p.name.toLowerCase())).map((p) => p.id);
-    setPicked(hit.length ? hit : projects.length === 1 ? [projects[0].id] : []);
+    setPriority(d.priority);
+    setLabels(d.labels.join(' '));
+    setPicked(d.project_ids);
+    setBugInfo(d.bug_info);
+    setReasons(d.reasons);
     setRecognized(true);
   };
 
   const pickFile = async () => {
-    const path = await open({ multiple: false, filters: [{ name: 'Markdown / 文本', extensions: ['md', 'markdown', 'txt'] }] });
+    const path = await open({
+      multiple: false,
+      filters: [{ name: '需求文档', extensions: ['md', 'markdown', 'txt', 'docx', 'pdf'] }],
+    });
     if (typeof path !== 'string') return;
-    const text = await ui.attempt(api.readTextFile(path));
-    if (text === undefined) return;
-    setRaw(text);
-    setFileName(path.split(/[\\/]/).pop() ?? path);
-    await recognize(text);
+    setImporting(true);
+    const doc = await ui.attempt(api.importDocument(path));
+    setImporting(false);
+    if (!doc) return;
+    setRaw(doc.markdown);
+    setFileName(doc.file_name);
+    setWarnings(doc.warnings);
+    await recognize(doc.markdown);
   };
+
+  // 粘贴 / 拖进来的截图：存成用户图（默认权威），在光标处插入引用
+  const addImages = async (files: File[], el: HTMLTextAreaElement | null) => {
+    const sel = selectionOf(el);
+    const added: string[] = [];
+    for (const f of files) {
+      const id = await ui.attempt(uploadImage(null, f));
+      if (!id) break;
+      added.push(imageMd('需求方截图', id, 'authoritative'));
+    }
+    setRaw((cur) => insertAt(cur, sel, added));
+  };
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = imageFiles(e.clipboardData);
+    if (!files.length) return;
+    e.preventDefault();
+    void addImages(files, e.currentTarget);
+  };
+  const pickImage = async (files: FileList | null) => {
+    if (files?.length) await addImages(Array.from(files), area.current);
+    if (fileInput.current) fileInput.current.value = '';
+  };
+  const imageCount = parseImages(raw).length;
 
   const showProps = mode === 'form' || recognized;
 
@@ -77,6 +115,7 @@ export function NewTicketPage() {
           subdir: null,
         })),
         acceptance_criteria: [],
+        bug_info: type === 'bug' ? bugInfo : null,
         source_kind: mode === 'file' ? 'file' : 'manual',
         default_agent: null,
         default_provider_id: null,
@@ -142,10 +181,12 @@ export function NewTicketPage() {
           {mode === 'paste' && (
             <>
               <textarea
+                ref={area}
                 className="textarea paste"
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
-                placeholder={'把聊天记录、PRD 或 Bug 描述整段粘贴到这里…'}
+                onPaste={onPaste}
+                placeholder={'把聊天记录、PRD 或 Bug 描述整段粘贴到这里…截图也可以直接粘贴。'}
                 aria-label="需求原文"
               />
               <div className="row" style={{ marginTop: 10 }}>
@@ -153,7 +194,13 @@ export function NewTicketPage() {
                   <Icon name="spark" size={13} />
                   识别标题和类型
                 </button>
-                <span className="dim">支持 Markdown；识别按关键词在本机完成，不调用模型</span>
+                <button className="btn sm" onClick={() => fileInput.current?.click()}>
+                  <Icon name="upload" size={13} />
+                  添加图片
+                </button>
+                <span className="dim">
+                  支持 Markdown；你贴的截图默认是权威图{imageCount ? ` · 已有 ${imageCount} 张图片` : ''}
+                </span>
               </div>
             </>
           )}
@@ -161,10 +208,10 @@ export function NewTicketPage() {
             <>
               <div className="drop">
                 <Icon name="upload" size={26} />
-                <b>选择一个 Markdown 或文本文件</b>
-                <span>.md · .markdown · .txt，2 MB 以内</span>
-                <button className="btn sm" onClick={() => void pickFile()}>
-                  选择文件
+                <b>选择一个需求文档</b>
+                <span>.md · .txt · .docx · .pdf，转为 Markdown 并保留图片附件</span>
+                <button className="btn sm" disabled={importing} onClick={() => void pickFile()}>
+                  {importing ? '正在转换…' : '选择文件'}
                 </button>
               </div>
               {fileName && (
@@ -172,12 +219,27 @@ export function NewTicketPage() {
                   <Icon name="file" size={15} />
                   <span className="grow">
                     <b>{fileName}</b>
-                    <span className="dim"> · {raw.length} 字</span>
+                    <span className="dim">
+                      {' '}
+                      · {raw.length} 字{imageCount ? ` · ${imageCount} 张图片（仅参考）` : ''}
+                    </span>
                   </span>
                   <span className="tag moss">
                     <Icon name="check" size={11} />
-                    已读入
+                    已转换
                   </span>
+                </div>
+              )}
+              {warnings.length > 0 && (
+                <ul className="warnlist">
+                  {warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              )}
+              {fileName && raw.trim() && (
+                <div className="prose import-preview">
+                  <Md src={raw} />
                 </div>
               )}
             </>
@@ -189,10 +251,12 @@ export function NewTicketPage() {
               </Field>
               <Field label="需求正文" hint="Markdown">
                 <textarea
+                  ref={area}
                   className="textarea"
                   rows={13}
                   value={raw}
                   onChange={(e) => setRaw(e.target.value)}
+                  onPaste={onPaste}
                   placeholder={'## 背景与目标\n\n## 功能需求\n\n## 验收标准'}
                 />
               </Field>
@@ -200,12 +264,30 @@ export function NewTicketPage() {
           )}
         </div>
       </div>
+      <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={(e) => void pickImage(e.target.files)} />
       <aside className="new-r">
         <div className="sec-title">
           <Icon name="spark" size={15} />
           {mode === 'form' ? '工单属性' : '识别结果'}
-          {mode !== 'form' && recognized && <small>已根据原文预填，可修改</small>}
+          {mode !== 'form' && recognized && <small>已根据原文预填，确认或修改后再创建</small>}
         </div>
+        {mode !== 'form' && recognized && reasons.length > 0 && (
+          <details className="rec-why">
+            <summary>识别依据（{reasons.length} 项，本机规则，没有调用 AI）</summary>
+            <ul>
+              {reasons.map((r) => (
+                <li key={r}>{r}</li>
+              ))}
+            </ul>
+            {type === 'bug' && bugInfo && (
+              <ul>
+                {bugInfo.steps && <li>复现步骤：{bugInfo.steps}</li>}
+                {bugInfo.expected && <li>期望：{bugInfo.expected}</li>}
+                {bugInfo.actual && <li>实际：{bugInfo.actual}</li>}
+              </ul>
+            )}
+          </details>
+        )}
         <div className="rec">
           {showProps ? (
             <>

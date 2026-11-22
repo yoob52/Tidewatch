@@ -4,14 +4,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tidewatch_core::agent::{adapter, mock_process, AgentKind, Detection};
+use tidewatch_core::backup;
 use tidewatch_core::db::{self, lock};
 use tidewatch_core::engine::{
-    Engine, EngineConfig, EngineEvent, Finalized, RejectInput, RunPlan, StartOptions, TaskDiff,
+    CodeReviewOptions, Engine, EngineConfig, EngineEvent, Finalized, PrInput, RejectInput, RunPlan,
+    StartOptions, TaskDiff,
 };
 use tidewatch_core::git;
 use tidewatch_core::prompt;
+use tidewatch_core::provider;
 use tidewatch_core::secrets;
-use tidewatch_core::store::{projects, providers, reviews, runs, settings, stats, tasks, tickets};
+use tidewatch_core::store::{
+    attachments, code_reviews, projects, providers, reviews, runs, settings, stats, tasks, tickets,
+};
+use tidewatch_core::update;
 
 /// 推给界面的事件名。
 pub const ENGINE_EVENT: &str = "tw://engine";
@@ -99,7 +105,17 @@ fn settings_get(state: State) -> CmdResult<settings::Settings> {
 
 #[tauri::command]
 fn settings_save(state: State, settings: settings::Settings) -> CmdResult<settings::Settings> {
-    settings::save(&lock(state.engine.db()), &settings).map_err(err)
+    let conn = lock(state.engine.db());
+    // 换工作区目录时把附件带过去；带不过去就不换，否则已有的图会全部找不到
+    let old = settings::get(&conn)
+        .map_err(err)?
+        .workspace(&state.data_dir);
+    let new = settings.workspace(&state.data_dir);
+    if old != new {
+        attachments::carry_over(&old, &new)
+            .map_err(|e| format!("附件复制到新的工作区目录时出错，目录没有更换：{e}"))?;
+    }
+    settings::save(&conn, &settings).map_err(err)
 }
 
 // ---- 项目 ----
@@ -163,6 +179,25 @@ fn provider_save(
         }
         None => Ok(p),
     }
+}
+
+/// Claude Code / Codex 各自能不能直接用这个协议的 Provider；不能时给出 LiteLLM 桥接的配置示例。
+/// 只看表单里的协议、地址和模型，不读密钥。
+#[tauri::command]
+fn provider_compat(
+    name: String,
+    protocol: String,
+    base_url: Option<String>,
+    default_model: Option<String>,
+) -> CmdResult<Vec<provider::Compat>> {
+    Ok(provider::compatibility(&provider::ProviderConfig {
+        name,
+        protocol: provider::Protocol::parse(&protocol).map_err(err)?,
+        base_url,
+        default_model,
+        small_model: None,
+        extra_env: vec![],
+    }))
 }
 
 #[tauri::command]
@@ -233,6 +268,8 @@ struct TicketDetail {
     split: Option<reviews::Proposal>,
     impact: Option<reviews::Proposal>,
     artifacts: Vec<tasks::Artifact>,
+    /// AI 交叉审查的结果，新的在前。
+    code_reviews: Vec<code_reviews::CodeReview>,
 }
 
 #[tauri::command]
@@ -249,13 +286,94 @@ fn ticket_get(state: State, id: String) -> CmdResult<TicketDetail> {
         split: reviews::latest_proposal(&conn, &ticket.id, "split").map_err(err)?,
         impact: reviews::latest_proposal(&conn, &ticket.id, "impact").map_err(err)?,
         artifacts: tasks::artifacts_for_ticket(&conn, &ticket.id).map_err(err)?,
+        code_reviews: code_reviews::list_for_ticket(&conn, &ticket.id).map_err(err)?,
         ticket,
     })
 }
 
 #[tauri::command]
 fn ticket_create(state: State, input: tickets::TicketInput) -> CmdResult<tickets::Ticket> {
-    tickets::create(&mut lock(state.engine.db()), input).map_err(err)
+    let mut conn = lock(state.engine.db());
+    let t = tickets::create(&mut conn, input).map_err(err)?;
+    // 导入 / 粘贴时先放在收件箱里的图，挪到这张工单的目录
+    let ws = workspace(&state, &conn);
+    let _ = attachments::relocate(&conn, &ws, &t.id, &t.key);
+    Ok(t)
+}
+
+fn workspace(state: &State, conn: &tidewatch_core::rusqlite::Connection) -> PathBuf {
+    settings::get(conn)
+        .unwrap_or_default()
+        .workspace(&state.data_dir)
+}
+
+// ---- 图片附件 ----
+
+/// 存一张图（粘贴 / 上传）。`ticket_id` 为空表示工单还没建，建单时认领。
+#[tauri::command]
+fn attachment_add(
+    state: State,
+    ticket_id: Option<String>,
+    file_name: String,
+    data_base64: String,
+    origin: String,
+) -> CmdResult<attachments::Attachment> {
+    let bytes = attachments::decode_base64(&data_base64).map_err(err)?;
+    let conn = lock(state.engine.db());
+    let ticket = ticket_id
+        .map(|id| tickets::get(&conn, &id))
+        .transpose()
+        .map_err(err)?;
+    attachments::add(
+        &conn,
+        &workspace(&state, &conn),
+        ticket.as_ref().map(|t| (t.id.as_str(), t.key.as_str())),
+        &file_name,
+        &bytes,
+        &origin,
+    )
+    .map_err(err)
+}
+
+#[tauri::command]
+fn attachment_list(state: State, ticket_id: String) -> CmdResult<Vec<attachments::Attachment>> {
+    attachments::list_for_ticket(&lock(state.engine.db()), &ticket_id).map_err(err)
+}
+
+/// 图片内容（data URL），界面渲染用。
+#[tauri::command]
+fn attachment_data(state: State, id: String) -> CmdResult<String> {
+    let conn = lock(state.engine.db());
+    let a = attachments::get(&conn, &id).map_err(err)?;
+    attachments::data_url(&workspace(&state, &conn), &a).map_err(err)
+}
+
+#[tauri::command]
+fn attachment_describe(
+    state: State,
+    id: String,
+    description: String,
+) -> CmdResult<attachments::Attachment> {
+    attachments::set_description(&lock(state.engine.db()), &id, &description).map_err(err)
+}
+
+/// 导入用户在文件对话框里选中的 md / txt / docx / pdf：返回 Markdown，图片存成附件。
+#[tauri::command]
+fn import_document(state: State, path: String) -> CmdResult<tidewatch_core::import::Imported> {
+    let p = std::path::Path::new(&path);
+    let meta = std::fs::metadata(p).map_err(err)?;
+    if meta.len() > tidewatch_core::import::MAX_FILE_BYTES as u64 {
+        return Err("文件超过 50 MB，没有导入。".into());
+    }
+    let bytes = std::fs::read(p).map_err(err)?;
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("导入的文件")
+        .to_string();
+    let conn = lock(state.engine.db());
+    tidewatch_core::import::import(&conn, &workspace(&state, &conn), &name, &bytes, p.parent())
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -273,8 +391,21 @@ fn ticket_save_prd(
     id: String,
     content: String,
     note: Option<String>,
+    origin: Option<String>,
 ) -> CmdResult<tickets::PrdVersion> {
-    tickets::save_prd(&mut lock(state.engine.db()), &id, &content, note.as_deref()).map_err(err)
+    // 界面只能存两种来源：手动编辑、图片变更（贴图、替换、改效力、移除）
+    let origin = match origin.as_deref() {
+        Some("image") => "image",
+        _ => "edit",
+    };
+    tickets::save_prd_as(
+        &mut lock(state.engine.db()),
+        &id,
+        &content,
+        origin,
+        note.as_deref(),
+    )
+    .map_err(err)
 }
 
 /// 手动流转。提交预审和定稿各有自己的命令（要起 AI 运行、做校验），这里转过去，
@@ -481,10 +612,12 @@ fn prompt_save(
     ))
 }
 
-/// 从粘贴的 Markdown 预填标题和类型。
+/// 智能创建：从粘贴 / 导入的 Markdown 预填标题、类型、建议的项目、优先级、标签和 Bug 三要素。
+/// 只用本机规则，不联网。
 #[tauri::command]
-fn ticket_draft(markdown: String) -> tickets::Draft {
-    tickets::draft_from_markdown(&markdown)
+fn ticket_draft(state: State, markdown: String) -> CmdResult<tickets::Draft> {
+    let all = projects::list(&lock(state.engine.db())).map_err(err)?;
+    Ok(tickets::smart_draft(&markdown, &all))
 }
 
 /// 读取用户在文件对话框里选中的 Markdown / 文本文件。
@@ -538,6 +671,76 @@ fn task_accept(state: State, id: String) -> CmdResult<tasks::Task> {
 #[tauri::command]
 fn task_reject(state: State, id: String, input: RejectInput) -> CmdResult<tasks::Task> {
     state.engine.reject_task_with(&id, input).map_err(err)
+}
+
+/// AI 交叉审查：让另一个 Agent 只读审查这个子任务的 Diff。
+#[tauri::command]
+fn code_review_start(
+    state: State,
+    task_id: String,
+    agent: Option<String>,
+    provider_id: Option<String>,
+) -> CmdResult<runs::Run> {
+    state
+        .engine
+        .start_code_review(&task_id, CodeReviewOptions { agent, provider_id })
+        .map_err(err)
+}
+
+/// 联网看有没有新版本。只在用户点了「检查更新」或打开了启动时检查的开关时调用。
+#[tauri::command]
+async fn update_check() -> CmdResult<update::UpdateInfo> {
+    tauri::async_runtime::spawn_blocking(|| {
+        update::check(env!("CARGO_PKG_VERSION"), update::RELEASES_URL).map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+fn backup_list(state: State) -> Vec<backup::BackupFile> {
+    backup::list(&state.data_dir)
+}
+
+/// 立刻备份一份数据库。
+#[tauri::command]
+async fn backup_now(state: State<'_>) -> CmdResult<Vec<backup::BackupFile>> {
+    let dir = state.data_dir.clone();
+    blocking(state, move |e| {
+        backup::now(&lock(e.db()), &dir)?;
+        Ok(backup::list(&dir))
+    })
+    .await
+}
+
+/// 把全部工单导出成 Markdown 归档（带附件和一份数据库快照），放到用户选的目录下。
+#[tauri::command]
+async fn export_tickets(state: State<'_>, dest: String) -> CmdResult<backup::Exported> {
+    let data_dir = state.data_dir.clone();
+    blocking(state, move |e| {
+        let conn = lock(e.db());
+        let ws = settings::get(&conn)?.workspace(&data_dir);
+        backup::export(&conn, &ws, std::path::Path::new(&dest))
+    })
+    .await
+}
+
+/// 把子任务的分支推到远程。只有用户点了才会调用。
+#[tauri::command]
+async fn task_push(state: State<'_>, id: String) -> CmdResult<tasks::Task> {
+    blocking(state, move |e| e.push_task(&id)).await
+}
+
+/// 开 PR 对话框里预填的标题和正文。
+#[tauri::command]
+fn task_pr_draft(state: State, id: String) -> CmdResult<PrInput> {
+    state.engine.pr_draft(&id).map_err(err)
+}
+
+/// 推送分支并用 `gh pr create` 开 PR。
+#[tauri::command]
+async fn task_pr_create(state: State<'_>, id: String, input: PrInput) -> CmdResult<tasks::Task> {
+    blocking(state, move |e| e.create_pr(&id, input)).await
 }
 
 #[tauri::command]
@@ -679,6 +882,23 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
                 format!("{ticket_key} {ticket_title}：{issues} 个问题，其中 {blockers} 个阻塞"),
             ),
         },
+        EngineEvent::CodeReviewFinished {
+            ticket_key,
+            task_title,
+            findings,
+            blockers,
+            error,
+            ..
+        } => match error {
+            Some(_) => ("交叉审查没有完成", format!("{ticket_key} {task_title}")),
+            None if *findings == 0 => {
+                ("交叉审查没有发现问题", format!("{ticket_key} {task_title}"))
+            }
+            None => (
+                "交叉审查完成",
+                format!("{ticket_key} {task_title}：{findings} 个问题，其中 {blockers} 个阻塞"),
+            ),
+        },
         EngineEvent::ProposalReady {
             ticket_key,
             ticket_title,
@@ -710,6 +930,19 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
         } if *unblocked > 0 => (
             "接口文档已产出",
             format!("{ticket_key} {task_title}：{unblocked} 个等文档的子任务可以开始了"),
+        ),
+        EngineEvent::Guard {
+            ticket_key,
+            kind,
+            message,
+            ..
+        } => (
+            match kind.as_str() {
+                "stuck" => "Agent 可能卡住了",
+                "budget" => "超出预算，已停止",
+                _ => "危险命令",
+            },
+            format!("{ticket_key} {message}"),
         ),
         _ => return,
     };
@@ -765,6 +998,16 @@ pub fn run() {
             };
             std::fs::create_dir_all(data_dir.join("logs"))?;
             let db = db::shared(db::open(&data_dir.join("tidewatch.db"))?);
+            // 每天备份一次数据库：启动时一次，之后每小时看一眼有没有跨天。失败不影响使用
+            {
+                let (db, dir) = (db.clone(), data_dir.clone());
+                std::thread::spawn(move || loop {
+                    if let Err(e) = backup::daily(&lock(&db), &dir) {
+                        eprintln!("数据库自动备份失败：{e}");
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                });
+            }
             let handle = app.handle().clone();
             let events_db = db.clone();
             let engine = Engine::start(
@@ -797,6 +1040,7 @@ pub fn run() {
             provider_list,
             provider_save,
             provider_delete,
+            provider_compat,
             ticket_list,
             ticket_get,
             ticket_create,
@@ -821,12 +1065,25 @@ pub fn run() {
             prompt_save,
             ticket_draft,
             read_text_file,
+            attachment_add,
+            attachment_list,
+            attachment_data,
+            attachment_describe,
+            import_document,
             task_create,
             task_update,
             task_plan,
             task_start,
             task_accept,
             task_reject,
+            code_review_start,
+            update_check,
+            backup_list,
+            backup_now,
+            export_tickets,
+            task_push,
+            task_pr_draft,
+            task_pr_create,
             task_merge,
             task_cancel,
             task_diff,

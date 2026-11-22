@@ -29,6 +29,12 @@ export interface Settings {
   default_provider_id: string | null;
   default_permission: string;
   auto_test: boolean;
+  /** 自动检查没过时最多让 Agent 自己修几次；0 不自动修。 */
+  auto_fix_attempts: number;
+  /** 子任务进入待验收时自动发起 AI 交叉审查。 */
+  auto_cross_review: boolean;
+  /** 启动时联网检查新版本；默认关。 */
+  check_updates: boolean;
   merge_mode: 'merge' | 'squash';
   delete_branch_after_merge: boolean;
   notifications: boolean;
@@ -37,6 +43,16 @@ export interface Settings {
   auto_develop: boolean;
   /** 依赖满足（比如接口文档出来）后，等它的子任务自动入队。 */
   auto_start_unblocked: boolean;
+  /** 单次 Run 的花费上限（美元）；0 不限。 */
+  budget_usd_per_run: number;
+  /** 单次 Run 的 Token 上限（输入 + 输出）；0 不限。 */
+  budget_tokens_per_run: number;
+  /** Agent 连续多少分钟没输出算卡住；0 不检测。 */
+  stuck_minutes: number;
+  stuck_action: 'notify' | 'stop';
+  stop_on_danger: boolean;
+  /** 开发阶段也把已被取代的参考图发给 Agent。 */
+  send_superseded_images: boolean;
 }
 
 export interface Commands {
@@ -83,6 +99,29 @@ export interface ProviderInput {
   extra_env: [string, string][];
   pricing: Pricing | null;
   proxy: string | null;
+  /** 模型只能处理文字：图片改发文字描述。 */
+  text_only: boolean;
+}
+
+export interface Attachment {
+  id: string;
+  ticket_id: string | null;
+  file_name: string;
+  mime: string;
+  description: string | null;
+  /** prd：随原始 PRD 导入；user：需求方之后贴的。 */
+  origin: 'prd' | 'user';
+  sha256: string;
+  width: number | null;
+  height: number | null;
+  created_at: string;
+}
+
+export interface Imported {
+  file_name: string;
+  markdown: string;
+  attachments: Attachment[];
+  warnings: string[];
 }
 
 export interface Provider extends ProviderInput {
@@ -212,6 +251,10 @@ export interface Task extends TaskInput {
   worktree_path: string | null;
   base_commit: string | null;
   merged_commit: string | null;
+  /** 用户手动推送到远程时分支的提交。 */
+  pushed_commit: string | null;
+  /** 用户手动开的 PR。 */
+  pr_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -413,6 +456,80 @@ export interface TaskDiff {
   truncated: boolean;
 }
 
+export interface TicketDraft {
+  title: string;
+  type: TicketType;
+  content_md: string;
+  priority: Priority;
+  labels: string[];
+  project_ids: string[];
+  bug_info: { steps?: string; expected?: string; actual?: string } | null;
+  reasons: string[];
+}
+
+export interface UpdateInfo {
+  current: string;
+  /** 还没有任何发布时为 null。 */
+  latest: string | null;
+  newer: boolean;
+  url: string | null;
+  notes: string | null;
+}
+
+export interface ProviderCompat {
+  agent: string;
+  agent_name: string;
+  compatible: boolean;
+  /** 不兼容时的 LiteLLM 配置说明（Markdown）。 */
+  bridge_guide: string | null;
+}
+
+export interface BackupFile {
+  name: string;
+  path: string;
+  bytes: number;
+}
+
+export interface Exported {
+  dir: string;
+  tickets: number;
+  attachments: number;
+  /** 数据库里有记录、但文件已经不在的附件。 */
+  missing: string[];
+}
+
+export interface PrInput {
+  title: string;
+  body: string;
+  draft: boolean;
+}
+
+export interface CodeFinding {
+  severity: 'blocker' | 'major' | 'minor';
+  file: string | null;
+  line: number | null;
+  title: string;
+  detail: string;
+  suggestion: string;
+}
+
+/** AI 交叉审查：另一个 Agent 只读看完子任务的 Diff 后给的问题列表，只供参考。 */
+export interface CodeReview {
+  id: string;
+  task_id: string;
+  ticket_id: string;
+  run_id: string;
+  head_commit: string | null;
+  agent: string;
+  model: string | null;
+  status: 'running' | 'done' | 'failed';
+  summary: string | null;
+  findings: CodeFinding[];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TicketDetail {
   ticket: Ticket;
   versions: PrdVersion[];
@@ -424,6 +541,7 @@ export interface TicketDetail {
   split: Proposal | null;
   impact: Proposal | null;
   artifacts: Artifact[];
+  code_reviews: CodeReview[];
 }
 
 export interface RunDetail {
@@ -457,6 +575,13 @@ export interface Stats {
   agents: AgentStat[];
   days: { day: string; runs: number; cost_usd: number; tokens: number }[];
   providers: [string | null, number, number][];
+  /** 最近 8 周每周完成的工单数，旧的在前；week 是那一周的周一。 */
+  weeks: { week: string; done: number }[];
+  rework_runs: number;
+  auto_fix_runs: number;
+  auto_fix_succeeded: number;
+  code_reviews: number;
+  code_review_findings: number;
 }
 
 export type EngineEvent =
@@ -477,6 +602,15 @@ export type EngineEvent =
 
 export const api = {
   systemInfo: () => invoke<SystemInfo>('system_info'),
+  /** 这个协议的 Provider 哪个 Agent 能直接用；不能的给出 LiteLLM 桥接说明。 */
+  providerCompat: (name: string, protocol: string, baseUrl: string | null, defaultModel: string | null) =>
+    invoke<ProviderCompat[]>('provider_compat', { name, protocol, baseUrl, defaultModel }),
+  /** 联网读 GitHub 上最新发布的版本号。 */
+  updateCheck: () => invoke<UpdateInfo>('update_check'),
+  backupList: () => invoke<BackupFile[]>('backup_list'),
+  backupNow: () => invoke<BackupFile[]>('backup_now'),
+  /** 导出到 dest 下新建的一个目录。 */
+  exportTickets: (dest: string) => invoke<Exported>('export_tickets', { dest }),
   detectAgents: () => invoke<Detection[]>('detect_agents'),
 
   settingsGet: () => invoke<Settings>('settings_get'),
@@ -497,12 +631,22 @@ export const api = {
   ticketGet: (id: string) => invoke<TicketDetail>('ticket_get', { id }),
   ticketCreate: (input: TicketInput) => invoke<Ticket>('ticket_create', { input }),
   ticketUpdate: (id: string, input: TicketInput) => invoke<Ticket>('ticket_update', { id, input }),
-  ticketSavePrd: (id: string, content: string, note?: string) =>
-    invoke<PrdVersion>('ticket_save_prd', { id, content, note: note ?? null }),
+  /** origin：image 表示这一版只动了图片（贴图、替换、改效力、移除）。 */
+  ticketSavePrd: (id: string, content: string, note?: string, origin?: 'edit' | 'image') =>
+    invoke<PrdVersion>('ticket_save_prd', { id, content, note: note ?? null, origin: origin ?? null }),
   ticketTransition: (id: string, to: TicketStatus) => invoke<Ticket>('ticket_transition', { id, to }),
-  ticketDraft: (markdown: string) =>
-    invoke<{ title: string; type: TicketType; content_md: string }>('ticket_draft', { markdown }),
+  /** 智能创建：本机规则识别出的预填内容，reasons 说明每一项的依据。 */
+  ticketDraft: (markdown: string) => invoke<TicketDraft>('ticket_draft', { markdown }),
   readTextFile: (path: string) => invoke<string>('read_text_file', { path }),
+  importDocument: (path: string) => invoke<Imported>('import_document', { path }),
+
+  /** ticketId 为空：工单还没建，建单时认领。 */
+  attachmentAdd: (ticketId: string | null, fileName: string, dataBase64: string, origin: 'prd' | 'user' = 'user') =>
+    invoke<Attachment>('attachment_add', { ticketId, fileName, dataBase64, origin }),
+  attachmentList: (ticketId: string) => invoke<Attachment[]>('attachment_list', { ticketId }),
+  attachmentData: (id: string) => invoke<string>('attachment_data', { id }),
+  attachmentDescribe: (id: string, description: string) =>
+    invoke<Attachment>('attachment_describe', { id, description }),
 
   reviewStart: (id: string) => invoke<Run>('review_start', { id }),
   reviewSkip: (id: string) => invoke<Ticket>('review_skip', { id }),
@@ -538,6 +682,14 @@ export const api = {
   taskMerge: (id: string) => invoke<Task>('task_merge', { id }),
   taskCancel: (id: string) => invoke<Task>('task_cancel', { id }),
   taskDiff: (id: string) => invoke<TaskDiff>('task_diff', { id }),
+  /** 把子任务的分支推到远程。只在用户点了之后调用。 */
+  taskPush: (id: string) => invoke<Task>('task_push', { id }),
+  taskPrDraft: (id: string) => invoke<PrInput>('task_pr_draft', { id }),
+  /** 分支没推过（或推过后又有新提交）会先推送，再用 gh pr create 开 PR。 */
+  taskPrCreate: (id: string, input: PrInput) => invoke<Task>('task_pr_create', { id, input }),
+  /** 不指定 agent 时换一个和写代码的不同的 Agent。 */
+  codeReviewStart: (taskId: string, agent?: string | null, providerId?: string | null) =>
+    invoke<Run>('code_review_start', { taskId, agent: agent ?? null, providerId: providerId ?? null }),
 
   runList: (limit?: number) => invoke<RunRow[]>('run_list', { limit: limit ?? null }),
   runGet: (id: string, after?: number) => invoke<RunDetail>('run_get', { id, after: after ?? null }),

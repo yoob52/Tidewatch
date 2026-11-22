@@ -35,6 +35,8 @@ pub struct Provider {
     pub extra_env: Vec<(String, String)>,
     pub pricing: Option<Pricing>,
     pub proxy: Option<String>,
+    /// 模型只能处理文字：PRD 里的图片改发文字描述。
+    pub text_only: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -70,9 +72,10 @@ pub struct ProviderInput {
     pub extra_env: Vec<(String, String)>,
     pub pricing: Option<Pricing>,
     pub proxy: Option<String>,
+    pub text_only: bool,
 }
 
-const COLS: &str = "id, name, protocol, base_url, secret_ref, models_json, default_model, small_model, extra_env_json, pricing_json, proxy, created_at, updated_at";
+const COLS: &str = "id, name, protocol, base_url, secret_ref, models_json, default_model, small_model, extra_env_json, pricing_json, proxy, created_at, updated_at, text_only";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Provider> {
     Ok(Provider {
@@ -93,6 +96,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Provider> {
         proxy: r.get(10)?,
         created_at: r.get::<_, Option<String>>(11)?.unwrap_or_default(),
         updated_at: r.get::<_, Option<String>>(12)?.unwrap_or_default(),
+        text_only: r.get::<_, Option<bool>>(13)?.unwrap_or(false),
     })
 }
 
@@ -134,6 +138,7 @@ fn check(input: ProviderInput) -> Result<ProviderInput> {
         extra_env,
         pricing: input.pricing,
         proxy: clean(input.proxy),
+        text_only: input.text_only,
     })
 }
 
@@ -141,7 +146,7 @@ pub fn create(conn: &Connection, input: ProviderInput) -> Result<Provider> {
     let i = check(input)?;
     let id = crate::util::new_id();
     conn.execute(
-        &format!("INSERT INTO provider ({COLS}) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)"),
+        &format!("INSERT INTO provider ({COLS}) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12)"),
         rusqlite::params![
             id,
             i.name,
@@ -153,7 +158,8 @@ pub fn create(conn: &Connection, input: ProviderInput) -> Result<Provider> {
             to_json(&i.extra_env),
             i.pricing.as_ref().map(to_json),
             i.proxy,
-            crate::util::now()
+            crate::util::now(),
+            i.text_only
         ],
     )?;
     get(conn, &id)
@@ -164,7 +170,7 @@ pub fn update(conn: &Connection, id: &str, input: ProviderInput) -> Result<Provi
     let i = check(input)?;
     conn.execute(
         "UPDATE provider SET name = ?2, protocol = ?3, base_url = ?4, models_json = ?5, default_model = ?6,
-         small_model = ?7, extra_env_json = ?8, pricing_json = ?9, proxy = ?10, updated_at = ?11 WHERE id = ?1",
+         small_model = ?7, extra_env_json = ?8, pricing_json = ?9, proxy = ?10, updated_at = ?11, text_only = ?12 WHERE id = ?1",
         rusqlite::params![
             id,
             i.name,
@@ -176,7 +182,8 @@ pub fn update(conn: &Connection, id: &str, input: ProviderInput) -> Result<Provi
             to_json(&i.extra_env),
             i.pricing.as_ref().map(to_json),
             i.proxy,
-            crate::util::now()
+            crate::util::now(),
+            i.text_only
         ],
     )?;
     get(conn, id)

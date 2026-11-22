@@ -95,6 +95,20 @@ fn claude_real_resume_stream() {
     assert!(*ok && summary.contains("sub(a, b)"));
     let usage = usage.as_ref().unwrap();
     assert!(usage.output_tokens == 2577 && usage.cost_usd.is_some_and(|c| c > 0.0));
+
+    // 运行中途就有用量（每条消息报一次，不重复计），预算护栏靠它才能在结束前拦住
+    let mut running = tidewatch_core::agent::Usage::default();
+    let mut reports = 0;
+    for e in &ev {
+        if let AgentEvent::Usage { usage } = e {
+            running.add(usage);
+            reports += 1;
+        }
+    }
+    assert_eq!(reports, 4);
+    assert_eq!(running.input_tokens, usage.input_tokens);
+    assert_eq!(running.cached_tokens, usage.cached_tokens);
+    assert!(running.cost_usd.is_none());
 }
 
 /// 真实录制：上游接口 502，CLI 自动重试——要变成一条看得见的错误事件。

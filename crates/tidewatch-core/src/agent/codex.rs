@@ -25,6 +25,10 @@ impl AgentAdapter for CodexAdapter {
             args.push("resume".into());
         }
         args.extend(["--json".into(), "--skip-git-repo-check".into()]);
+        // `-i` 可以接多个值，所以每张图单独写一次，并且放在其它选项之前，免得把末尾的 `-` 吃掉
+        for f in &spec.images {
+            args.extend(["-i".into(), f.display().to_string()]);
+        }
         if let Some(m) = &spec.model {
             args.extend(["-m".into(), m.clone()]);
         }

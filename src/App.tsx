@@ -3,7 +3,7 @@ import { Icon } from './lib/Icon';
 import type { IconName } from './lib/icons';
 import { api, type Detection } from './lib/api';
 import { DataProvider, useData } from './lib/data';
-import { UiProvider, fmtCost, runActive } from './lib/ui';
+import { UiProvider, fmtCost, runActive, useUi } from './lib/ui';
 import { BoardPage } from './pages/Board';
 import { TicketsPage } from './pages/Tickets';
 import { NewTicketPage } from './pages/NewTicket';
@@ -57,6 +57,17 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
   useEffect(() => {
     api.detectAgents().then(setAgents, () => setAgents([]));
   }, []);
+  // 开了「启动时检查更新」才联网；失败不打扰
+  const ui = useUi();
+  const checkUpdates = settings.check_updates;
+  useEffect(() => {
+    if (!checkUpdates) return;
+    api.updateCheck().then(
+      (u) => u.newer && ui.toast(`观澜有新版本 ${u.latest}（当前 ${u.current}），到 设置 › 本机环境 查看。`),
+      () => undefined,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkUpdates]);
 
   const running = runs.filter((r) => runActive(r.status)).length;
   const queued = runs.filter((r) => r.status === 'queued').length;

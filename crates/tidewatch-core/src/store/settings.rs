@@ -14,6 +14,12 @@ pub struct Settings {
     pub default_permission: String,
     /// Run 结束后自动跑项目的 lint / typecheck / test / build 命令。
     pub auto_test: bool,
+    /// 自动检查没过时，最多让 Agent 自己修几次；0 表示不自动修。
+    pub auto_fix_attempts: u32,
+    /// 子任务进入待验收时，自动让另一个 Agent 审查 Diff。
+    pub auto_cross_review: bool,
+    /// 启动时联网看一眼有没有新版本（只读 GitHub 上的版本号）。默认关：观澜默认不联网。
+    pub check_updates: bool,
     /// `merge`（--no-ff）或 `squash`。
     pub merge_mode: String,
     pub delete_branch_after_merge: bool,
@@ -24,6 +30,32 @@ pub struct Settings {
     pub auto_develop: bool,
     /// 依赖满足（对方完成，或接口文档已产出）的子任务自动入队。
     pub auto_start_unblocked: bool,
+    /// 单次 Run 的花费上限（美元）；0 表示不限。超过即停止。
+    pub budget_usd_per_run: f64,
+    /// 单次 Run 的 Token 上限（输入 + 输出）；0 表示不限。
+    pub budget_tokens_per_run: u64,
+    /// Agent 连续这么多分钟没有任何输出算卡住；0 表示不检测。
+    pub stuck_minutes: u32,
+    /// 卡住时：`notify` 只提醒，`stop` 直接停止这一轮。
+    pub stuck_action: String,
+    /// 发现危险命令时停止这一轮（只能在 Agent 报出命令后停，拦不住已经开始执行的那一条）。
+    pub stop_on_danger: bool,
+    /// 开发阶段也把已被取代的参考图发给 Agent（默认不发，减少误导）。
+    pub send_superseded_images: bool,
+}
+
+impl Settings {
+    /// 工作区根目录：worktree、附件、临时文件都在这下面。
+    pub fn workspace(&self, data_dir: &std::path::Path) -> std::path::PathBuf {
+        match self
+            .workspace_dir
+            .as_deref()
+            .filter(|d| !d.trim().is_empty())
+        {
+            Some(d) => std::path::PathBuf::from(d),
+            None => data_dir.join("workspace"),
+        }
+    }
 }
 
 impl Default for Settings {
@@ -35,12 +67,21 @@ impl Default for Settings {
             default_provider_id: None,
             default_permission: "workspace_write".into(),
             auto_test: true,
+            auto_fix_attempts: 2,
+            auto_cross_review: false,
+            check_updates: false,
             merge_mode: "merge".into(),
             delete_branch_after_merge: true,
             notifications: true,
             run_timeout_minutes: 60,
             auto_develop: false,
             auto_start_unblocked: true,
+            budget_usd_per_run: 0.0,
+            budget_tokens_per_run: 0,
+            stuck_minutes: 10,
+            stuck_action: "notify".into(),
+            stop_on_danger: false,
+            send_superseded_images: false,
         }
     }
 }
@@ -77,6 +118,12 @@ pub fn save(conn: &Connection, s: &Settings) -> Result<Settings> {
     }
     if !matches!(s.merge_mode.as_str(), "merge" | "squash") {
         return Err(Error::invalid("合并方式只能是 merge 或 squash。"));
+    }
+    if !matches!(s.stuck_action.as_str(), "notify" | "stop") {
+        return Err(Error::invalid("卡住时的处理只能是 notify 或 stop。"));
+    }
+    if !(s.budget_usd_per_run >= 0.0 && s.budget_usd_per_run.is_finite()) {
+        return Err(Error::invalid("花费上限不能是负数。"));
     }
     conn.execute(
         "INSERT INTO setting (key, value_json) VALUES (?1, ?2)

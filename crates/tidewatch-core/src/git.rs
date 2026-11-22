@@ -258,6 +258,90 @@ pub fn merge(repo: &Path, branch: &str, squash: bool, message: &str) -> Result<S
 }
 
 /// 检查点：把某个提交记到 `refs/tidewatch/checkpoints/...`，分支被改写后仍可找回。
+/// 仓库配置的远程名；优先 origin。
+pub fn default_remote(repo: &Path) -> Result<Option<String>> {
+    let all = git(repo, &["remote"])?;
+    let mut names = all.lines().map(str::trim).filter(|l| !l.is_empty());
+    Ok(if all.lines().any(|l| l.trim() == "origin") {
+        Some("origin".into())
+    } else {
+        names.next().map(String::from)
+    })
+}
+
+/// 把分支推到远程并设为上游。不强推：远程分支有本地没有的提交时会失败。
+pub fn push_branch(repo: &Path, remote: &str, branch: &str) -> Result<()> {
+    git(
+        repo,
+        &[
+            "push",
+            "--set-upstream",
+            remote,
+            &format!("refs/heads/{branch}:refs/heads/{branch}"),
+        ],
+    )
+    .map(|_| ())
+}
+
+/// `gh` 的位置：环境变量 `TIDEWATCH_GH_BIN` 优先，否则在 PATH 里找。
+pub fn gh_binary() -> Option<PathBuf> {
+    std::env::var_os("TIDEWATCH_GH_BIN")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| which::which("gh").ok())
+}
+
+/// 用 GitHub CLI 开 PR，返回 PR 的地址。
+pub fn gh_pr_create(
+    repo: &Path,
+    head: &str,
+    base: &str,
+    title: &str,
+    body: &str,
+    draft: bool,
+) -> Result<String> {
+    let gh = gh_binary().ok_or_else(|| {
+        Error::invalid("没有找到 GitHub CLI（gh）。安装并运行 gh auth login 之后再开 PR。")
+    })?;
+    let mut c = Command::new(gh);
+    c.current_dir(repo)
+        .args([
+            "pr", "create", "--head", head, "--base", base, "--title", title, "--body", body,
+        ])
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("NO_COLOR", "1");
+    if draft {
+        c.arg("--draft");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000);
+    }
+    let out = c
+        .output()
+        .map_err(|e| Error::Git(format!("无法启动 gh：{e}")))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // 已经有 PR 时 gh 报错并在 stderr 里给出地址：当作成功
+    let url = |text: &str| {
+        text.split_whitespace()
+            .rev()
+            .find(|w| w.starts_with("https://") && w.contains("/pull/"))
+            .map(String::from)
+    };
+    if out.status.success() {
+        return url(&stdout)
+            .ok_or_else(|| Error::Git(format!("gh 没有返回 PR 地址：{}", stdout.trim())));
+    }
+    if stderr.contains("already exists") {
+        if let Some(u) = url(&stderr) {
+            return Ok(u);
+        }
+    }
+    Err(Error::Git(format!("gh pr create：{}", stderr.trim())))
+}
+
 pub fn save_checkpoint(repo: &Path, name: &str, rev: &str) -> Result<String> {
     let r = format!("refs/tidewatch/checkpoints/{name}");
     git(repo, &["update-ref", &r, rev])?;

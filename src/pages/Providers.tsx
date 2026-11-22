@@ -1,9 +1,9 @@
 // Provider：协议、Base URL、密钥（只进系统凭据管理器）、模型与价格
 import { useEffect, useState } from 'react';
-import { api, type Provider, type ProviderInput } from '../lib/api';
+import { api, type Provider, type ProviderCompat, type ProviderInput } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
-import { Empty, Field, go, useUi } from '../lib/ui';
+import { Empty, Field, Md, Modal, Switch, go, useUi } from '../lib/ui';
 
 const PROTOCOLS: [ProviderInput['protocol'], string, string][] = [
   ['native', '本机登录态', '不注入任何变量，用 Agent 自己登录的账号'],
@@ -29,6 +29,7 @@ const blank: ProviderInput = {
   extra_env: [],
   pricing: null,
   proxy: null,
+  text_only: false,
 };
 
 const toInput = (p: Provider): ProviderInput => ({
@@ -41,6 +42,7 @@ const toInput = (p: Provider): ProviderInput => ({
   extra_env: p.extra_env,
   pricing: p.pricing,
   proxy: p.proxy,
+  text_only: p.text_only,
 });
 
 const num = (v: string) => (Number.isFinite(Number(v)) && v.trim() !== '' ? Number(v) : 0);
@@ -54,6 +56,19 @@ export function ProvidersPage({ id }: { id?: string }) {
   const [secret, setSecret] = useState('');
   const [env, setEnv] = useState('');
   const [dirty, setDirty] = useState(false);
+  const [compat, setCompat] = useState<ProviderCompat[]>([]);
+  const [guide, setGuide] = useState<ProviderCompat | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api.providerCompat(f.name || '这个 Provider', f.protocol, f.base_url, f.default_model).then(
+      (c) => live && setCompat(c),
+      () => live && setCompat([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [f.name, f.protocol, f.base_url, f.default_model]);
 
   useEffect(() => {
     const next = current ? toInput(current) : blank;
@@ -179,6 +194,23 @@ export function ProvidersPage({ id }: { id?: string }) {
               ))}
             </div>
           </Field>
+          {compat.length > 0 && (
+            <Field label="适用的 Agent" hint={compat.some((c) => !c.compatible) ? '协议不匹配的 Agent 要经 LiteLLM 之类的代理桥接' : undefined}>
+              <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                {compat.map((c) =>
+                  c.compatible ? (
+                    <span key={c.agent} className="tag moss">
+                      {c.agent_name} 可直接使用
+                    </span>
+                  ) : (
+                    <button key={c.agent} className="btn sm" onClick={() => setGuide(c)}>
+                      {c.agent_name} 不能直接用 · 看桥接配置
+                    </button>
+                  ),
+                )}
+              </div>
+            </Field>
+          )}
           {f.protocol !== 'native' && (
             <>
               <Field label="Base URL">
@@ -247,6 +279,9 @@ export function ProvidersPage({ id }: { id?: string }) {
               <input className="input mono" value={f.proxy ?? ''} onChange={(e) => set({ proxy: e.target.value || null })} placeholder="http://127.0.0.1:7890" />
             </Field>
           </div>
+          <Field label="图片" hint="模型看不了图时打开：PRD 里的图片改发文字描述">
+            <Switch on={f.text_only} onChange={(v) => set({ text_only: v })} label="只能处理文字" />
+          </Field>
           <Field label="额外环境变量" hint="每行一条 NAME=value；不要在这里放密钥">
             <textarea
               className="textarea mono"
@@ -264,6 +299,20 @@ export function ProvidersPage({ id }: { id?: string }) {
           </div>
         </div>
       </section>
+      {guide?.bridge_guide && (
+        <Modal
+          title={`经 LiteLLM 让 ${guide.agent_name} 使用这个 Provider`}
+          hint="示例里不含密钥：LiteLLM 从环境变量读上游密钥。"
+          onClose={() => setGuide(null)}
+          footer={
+            <button className="btn" onClick={() => setGuide(null)}>
+              关闭
+            </button>
+          }
+        >
+          <Md src={guide.bridge_guide} />
+        </Modal>
+      )}
     </div>
   );
 }

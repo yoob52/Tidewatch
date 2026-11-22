@@ -131,6 +131,36 @@ fn impact_json(prompt: &str) -> Value {
     json!({ "summary": "变更影响后端接口，前端不受影响。", "tasks": tasks, "new_tasks": [] })
 }
 
+/// 演示用的交叉审查：固定提一个问题；`[mock:findings=0]` 一个都不提。
+fn code_review_json(prompt: &str, cwd: &std::path::Path) -> Value {
+    // 审查要在子任务的 worktree 里进行：看不到演示改动就说明目录不对
+    if !cwd.join("TIDEWATCH_DEMO.md").exists() {
+        return json!({
+            "summary": "当前目录里没有这个子任务的改动。",
+            "findings": [{"severity":"blocker","file":"","line":null,
+                "title":"找不到要审查的改动",
+                "detail":"当前目录里没有 TIDEWATCH_DEMO.md，审查没有在子任务的 worktree 里进行。",
+                "suggestion":""}],
+        });
+    }
+    let n = marker(prompt, "findings").unwrap_or(1) as usize;
+    let all = [
+        json!({"severity":"major","file":"TIDEWATCH_DEMO.md","line":3,
+            "title":"演示改动没有对应的测试",
+            "detail":"这次只改了说明文件，没有任何测试覆盖验收标准。",
+            "suggestion":"补一个覆盖主流程的测试。"}),
+        json!({"severity":"minor","file":"TIDEWATCH_DEMO.md","line":1,
+            "title":"标题没有写明是哪张工单",
+            "detail":"多张工单都会改这个文件，标题分不清来源。",
+            "suggestion":"标题里带上工单号。"}),
+    ];
+    let findings: Vec<Value> = all.into_iter().take(n).collect();
+    json!({
+        "summary": if findings.is_empty() { "改动符合需求，没有发现问题。" } else { "改动基本符合需求，有需要注意的地方。" },
+        "findings": findings,
+    })
+}
+
 /// 提示词要求先写的接口文档路径（`docs/api/XXX.md`）。
 fn api_doc_path(prompt: &str) -> Option<&str> {
     let start = prompt.find("`docs/api/")? + 1;
@@ -175,6 +205,17 @@ pub fn run(mut args: MockArgs) -> i32 {
         json!({"type":"text","text":format!("{verb}：{first_line}")}),
     );
 
+    // 演示护栏：报一条危险命令（只是报出来，不执行）
+    if prompt.contains("[mock:danger]") {
+        assistant(
+            &session,
+            json!({"type":"tool_use","id":"toolu_danger","name":"Bash","input":{"command":"rm -rf ./build"}}),
+        );
+        emit(
+            json!({"type":"user","session_id":session,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_danger","content":"（演示：没有真的执行）"}]}}),
+        );
+        pause();
+    }
     let read_only = args.permission == "read_only";
     if !read_only && args.resume.is_none() {
         if let Some(rel) = api_doc_path(&prompt) {
@@ -235,6 +276,7 @@ pub fn run(mut args: MockArgs) -> i32 {
         Some("review") => Some(review_json(&prompt)),
         Some("split") => Some(split_json(&prompt)),
         Some("impact") => Some(impact_json(&prompt)),
+        Some("code_review") => Some(code_review_json(&prompt, &cwd)),
         _ => None,
     };
     let summary = if let Some(v) = structured {

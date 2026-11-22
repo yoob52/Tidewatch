@@ -55,6 +55,16 @@ pub enum EngineEvent {
         blockers: usize,
         error: Option<String>,
     },
+    /// AI 交叉审查结束（用于系统通知）。
+    CodeReviewFinished {
+        ticket_id: String,
+        task_id: String,
+        ticket_key: String,
+        task_title: String,
+        findings: usize,
+        blockers: usize,
+        error: Option<String>,
+    },
     /// 拆分建议 / 变更影响分析出来了，等人确认。
     ProposalReady {
         ticket_id: String,
@@ -63,6 +73,16 @@ pub enum EngineEvent {
         /// split | impact
         kind: String,
         error: Option<String>,
+    },
+    /// 护栏提醒：Agent 长时间没输出、超出预算、执行了危险命令。
+    Guard {
+        run_id: String,
+        ticket_key: String,
+        /// stuck | budget | danger
+        kind: String,
+        message: String,
+        /// 这一轮是否因此被停掉。
+        stopped: bool,
     },
     /// 后端子任务产出了接口文档，等它的子任务解锁。
     ApiDocReady {
@@ -93,6 +113,9 @@ pub struct StartOptions {
     pub prompt_override: Option<String>,
     /// 幂等键：同一个键重复提交只入队一次。
     pub command_id: Option<String>,
+    /// 引擎自己发起的"检查失败自动修复"：第几次。界面传不进来。
+    #[serde(skip)]
+    pub auto_fix: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,6 +125,35 @@ pub struct TaskDiff {
     pub patch: String,
     /// 补丁太大被截断。
     pub truncated: bool,
+}
+
+/// 开 PR 时的标题和正文。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrInput {
+    pub title: String,
+    pub body: String,
+    pub draft: bool,
+}
+
+/// 子任务能不能推：要有分支和改动、不在运行中，项目要配了远程。返回（仓库目录，分支，远程名）。
+fn pushable(task: &Task, project: &Project) -> Result<(PathBuf, String, String)> {
+    if !matches!(task.status.as_str(), "review" | "accepted") {
+        return Err(Error::invalid(format!(
+            "子任务处于「{}」，待验收或已通过时才能推送。",
+            workflow::task_status_label(&task.status)
+        )));
+    }
+    let repo = PathBuf::from(&project.local_path);
+    let branch = task
+        .branch
+        .clone()
+        .filter(|b| git::branch_exists(&repo, b))
+        .ok_or_else(|| Error::invalid("子任务还没有分支。"))?;
+    let remote = git::default_remote(&repo)?.ok_or_else(|| {
+        Error::invalid("项目的仓库没有配置远程（git remote），没有地方可以推送。")
+    })?;
+    Ok((repo, branch, remote))
 }
 
 /// 一轮运行的执行方案：谁来跑、用什么模型、发什么 Prompt。
@@ -384,6 +436,11 @@ impl Engine {
                 workflow::task_status_label(&task.status)
             )));
         }
+        if crate::store::code_reviews::running_for_task(&lock(&self.inner.db), task_id)? {
+            return Err(Error::invalid(
+                "交叉审查还在这个子任务的 worktree 里进行，等它结束或停掉后再合并。",
+            ));
+        }
         let branch = task
             .branch
             .clone()
@@ -553,6 +610,118 @@ impl Engine {
         })
     }
 
+    /// 把子任务的分支推到远程。只在用户点了之后做，观澜自己从不推送。
+    pub fn push_task(&self, task_id: &str) -> Result<Task> {
+        let (task, _, project, _) = self.load(task_id)?;
+        let (repo, branch, remote) = pushable(&task, &project)?;
+        let head = git::rev_parse(&repo, &format!("refs/heads/{branch}"))?;
+        git::push_branch(&repo, &remote, &branch)?;
+        {
+            let conn = lock(&self.inner.db);
+            tasks::set_pushed(&conn, task_id, &head)?;
+            add_timeline(
+                &conn,
+                &task.ticket_id,
+                "task_pushed",
+                json!({ "task_id": task_id, "remote": remote, "branch": branch, "commit": head }),
+            )?;
+        }
+        self.inner
+            .changed(Some(task.ticket_id.clone()), Some(task_id.into()), None);
+        tasks::get(&lock(&self.inner.db), task_id)
+    }
+
+    /// 用 `gh pr create` 给子任务的分支开 PR；分支还没推（或推过之后又有新提交）就先推。
+    pub fn create_pr(&self, task_id: &str, input: PrInput) -> Result<Task> {
+        let (task, ticket, project, _) = self.load(task_id)?;
+        let (repo, branch, _) = pushable(&task, &project)?;
+        if git::gh_binary().is_none() {
+            return Err(Error::invalid(
+                "没有找到 GitHub CLI（gh）。安装并运行 gh auth login 之后再开 PR。",
+            ));
+        }
+        let head = git::rev_parse(&repo, &format!("refs/heads/{branch}"))?;
+        let task = if task.pushed_commit.as_deref() == Some(head.as_str()) {
+            task
+        } else {
+            self.push_task(task_id)?
+        };
+        let title = Some(input.title.trim())
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| format!("{} {}", ticket.key, task.title));
+        let url = git::gh_pr_create(
+            &repo,
+            &branch,
+            &project.default_branch,
+            &title,
+            input.body.trim(),
+            input.draft,
+        )?;
+        {
+            let conn = lock(&self.inner.db);
+            tasks::set_pr_url(&conn, task_id, &url)?;
+            add_timeline(
+                &conn,
+                &task.ticket_id,
+                "pr_created",
+                json!({ "task_id": task_id, "url": url }),
+            )?;
+        }
+        self.inner
+            .changed(Some(task.ticket_id.clone()), Some(task_id.into()), None);
+        tasks::get(&lock(&self.inner.db), task_id)
+    }
+
+    /// 开 PR 对话框里预填的标题和正文。
+    pub fn pr_draft(&self, task_id: &str) -> Result<PrInput> {
+        let (task, ticket, _, _) = self.load(task_id)?;
+        let conn = lock(&self.inner.db);
+        let last = runs::list_for_task(&conn, task_id)?.pop();
+        let criteria = if task.acceptance_criteria.is_empty() {
+            &ticket.acceptance_criteria
+        } else {
+            &task.acceptance_criteria
+        };
+        let mut body = format!("## {} {}\n\n", ticket.key, ticket.title);
+        if let Some(s) = last
+            .as_ref()
+            .and_then(|r| r.summary.as_deref())
+            .filter(|s| !s.trim().is_empty())
+        {
+            body.push_str(&format!("### 改动说明\n{}\n\n", s.trim()));
+        }
+        if !criteria.is_empty() {
+            body.push_str("### 验收标准\n");
+            for c in criteria {
+                body.push_str(&format!("- [x] {c}\n"));
+            }
+            body.push('\n');
+        }
+        if let Some(r) = &last {
+            let reports = runs::test_reports(&conn, &r.id)?;
+            if !reports.is_empty() {
+                body.push_str("### 自动检查\n");
+                for t in reports {
+                    body.push_str(&format!(
+                        "- `{}`：{}\n",
+                        t.command,
+                        if t.exit_code == Some(0) {
+                            "通过"
+                        } else {
+                            "没有通过"
+                        }
+                    ));
+                }
+            }
+        }
+        Ok(PrInput {
+            title: format!("{} {}", ticket.key, task.title),
+            body,
+            draft: false,
+        })
+    }
+
     fn load(&self, task_id: &str) -> Result<(Task, Ticket, Project, Settings)> {
         let conn = lock(&self.inner.db);
         let task = tasks::get(&conn, task_id)?;
@@ -675,6 +844,9 @@ fn plan_run(
     };
     let prompt = match (&opts.prompt_override, &resume, instruction) {
         (Some(p), _, _) if !p.trim().is_empty() => p.clone(),
+        (_, Some(_), Some(i)) if opts.auto_fix.is_some() => {
+            crate::prompt::test_fix_prompt(&ov, &project, ticket, opts.auto_fix.unwrap_or(1), i)
+        }
         (_, Some(_), Some(i)) => crate::prompt::rework_prompt(&ov, &project, ticket, i),
         (_, Some(_), None) => {
             "请从上次停下的地方继续，把任务完成；最后用简短中文总结做了什么。".to_string()
@@ -695,6 +867,19 @@ fn plan_run(
             p
         }
     };
+    // 续接的会话只见过它开始时的正文。Bug 工单在开发 / 验收中还能改正文（比如换了截图），
+    // 这之后改过的话把现行版本附上，否则 Agent 会照着旧的做
+    let custom = opts
+        .prompt_override
+        .as_deref()
+        .is_some_and(|p| !p.trim().is_empty());
+    let prompt = match (&resume, prd_changed_since_last_run(conn, task)?) {
+        (Some(_), Some(prd)) if !custom => format!(
+            "{prompt}\n\n## 工单正文已更新\n上一轮之后工单正文有改动，下面是现行版本（v{}），以它为准：\n\n{}\n",
+            prd.version, prd.content_md
+        ),
+        _ => prompt,
+    };
     Ok(RunPlan {
         agent: kind.as_str().into(),
         provider_id,
@@ -704,6 +889,22 @@ fn plan_run(
         prompt,
         handoff,
     })
+}
+
+/// 这个子任务上一轮开始之后，工单正文有没有出新版本；有就返回现行版本。
+fn prd_changed_since_last_run(
+    conn: &rusqlite::Connection,
+    task: &Task,
+) -> Result<Option<tickets::PrdVersion>> {
+    let last: Option<String> = conn.query_row(
+        "SELECT MAX(started_at) FROM run WHERE task_id = ?1",
+        [&task.id],
+        |r| r.get(0),
+    )?;
+    let Some(last) = last else {
+        return Ok(None);
+    };
+    Ok(tickets::current_prd(conn, &task.ticket_id)?.filter(|v| v.created_at > last))
 }
 
 /// 上一轮运行的摘要，给接手的新会话看。
@@ -829,12 +1030,14 @@ fn slug(name: &str, id: &str) -> String {
 
 #[path = "engine_ticket.rs"]
 mod ticket_flow;
-pub use ticket_flow::Finalized;
+pub use ticket_flow::{CodeReviewOptions, Finalized};
 
 struct Finished {
     status: &'static str,
     error: Option<String>,
     failed_checks: Vec<String>,
+    /// 没过的检查的说明（命令、退出码、输出末尾），自动修复时交给 Agent。
+    failures_md: String,
 }
 
 impl Inner {
@@ -889,7 +1092,9 @@ impl Inner {
                 runs::NewRun {
                     task_id: Some(&task.id),
                     ticket_id: &ticket.id,
-                    purpose: if plan.resume.is_some()
+                    purpose: if opts.auto_fix.is_some() {
+                        "test_fix"
+                    } else if plan.resume.is_some()
                         || opts.instruction.is_some()
                         || task.status == "changes_requested"
                     {
@@ -1058,12 +1263,35 @@ impl Inner {
                 },
                 error: Some(e.to_string()),
                 failed_checks: vec![],
+                failures_md: String::new(),
             },
+        };
+        // 检查没过：还有自动修复的次数就不交给人，让 Agent 接着修
+        let auto_fix = if fin.status == "succeeded"
+            && !fin.failed_checks.is_empty()
+            && !cancel.load(Ordering::SeqCst)
+        {
+            let conn = lock(&self.db);
+            let limit = settings::get(&conn)
+                .map(|s| s.auto_fix_attempts)
+                .unwrap_or(0);
+            let done = runs::list_for_task(&conn, &task_id)
+                .map(|all| {
+                    all.iter()
+                        .rev()
+                        .take_while(|r| r.purpose == "test_fix")
+                        .count() as u32
+                })
+                .unwrap_or(u32::MAX);
+            (done < limit).then_some(done + 1)
+        } else {
+            None
         };
         if let Some(e) = &fin.error {
             self.log(&run.id, "error", json!({ "message": e }));
         }
         let task_status = match fin.status {
+            "succeeded" if auto_fix.is_some() => "changes_requested",
             "succeeded" => "review",
             "stopped" => "stopped",
             _ => "failed",
@@ -1120,9 +1348,72 @@ impl Inner {
             run.task_id.clone(),
             Some(run.id.clone()),
         );
+        let mut fixing = false;
+        if let Some(attempt) = auto_fix {
+            let started = self.enqueue_task(
+                &task_id,
+                StartOptions {
+                    instruction: Some(fin.failures_md.clone()),
+                    auto_fix: Some(attempt),
+                    ..Default::default()
+                },
+            );
+            match started {
+                Ok(next) => {
+                    fixing = true;
+                    if let Some(t) = &run.ticket_id {
+                        let _ = add_timeline(
+                            &lock(&self.db),
+                            t,
+                            "auto_fix",
+                            json!({ "task_id": task_id, "run_id": next.id, "attempt": attempt, "failed_checks": fin.failed_checks }),
+                        );
+                    }
+                    self.log(
+                        &run.id,
+                        "auto_fix",
+                        json!({ "attempt": attempt, "run_id": next.id, "failed_checks": fin.failed_checks }),
+                    )
+                }
+                Err(e) => {
+                    // 起不来就照常交给人验收
+                    self.log(
+                        &run.id,
+                        "error",
+                        json!({ "message": format!("没能发起自动修复：{e}") }),
+                    );
+                    let conn = lock(&self.db);
+                    let _ = tasks::set_status(&conn, &task_id, "review");
+                    if let Some(t) = &run.ticket_id {
+                        unblocked = tasks::refresh_blocked(&conn, t).unwrap_or_default();
+                    }
+                    drop(conn);
+                    self.changed(
+                        run.ticket_id.clone(),
+                        run.task_id.clone(),
+                        Some(run.id.clone()),
+                    );
+                }
+            }
+        }
+        if (task_status == "review" || (auto_fix.is_some() && !fixing))
+            && settings::get(&lock(&self.db)).is_ok_and(|s| s.auto_cross_review)
+        {
+            if let Err(e) = self.start_code_review(&task_id, &Default::default()) {
+                self.log(
+                    &run.id,
+                    "error",
+                    json!({ "message": format!("没能发起交叉审查：{e}") }),
+                );
+            }
+        }
         self.auto_start(&unblocked);
         if let Some(ticket_id) = &run.ticket_id {
             self.start_deferred(ticket_id);
+        }
+        // 已经交回 Agent 自动修复：还没到要人看的时候，不发"等你验收"的通知
+        if fixing {
+            return;
         }
         self.emit(EngineEvent::RunFinished {
             run_id: run.id.clone(),
@@ -1239,6 +1530,7 @@ impl Inner {
         )?;
 
         let mut failed_checks = vec![];
+        let mut failures_md = String::new();
         if agent_ok && st.auto_test {
             for (name, command) in project.commands.checks() {
                 if cancel.load(Ordering::SeqCst) {
@@ -1263,6 +1555,15 @@ impl Inner {
                 let ok = res.exit_code == Some(0);
                 if !ok && !res.cancelled {
                     failed_checks.push(name.to_string());
+                    failures_md.push_str(&format!(
+                        "### {name}：`{command}`（{}）\n```\n{}\n```\n\n",
+                        match (res.timed_out, res.exit_code) {
+                            (true, _) => "超时".to_string(),
+                            (_, Some(c)) => format!("退出码 {c}"),
+                            _ => "没有正常退出".to_string(),
+                        },
+                        res.tail.trim()
+                    ));
                 }
                 self.log(
                     &run.id,
@@ -1281,6 +1582,16 @@ impl Inner {
                     "超过单次运行时限（{} 分钟），已停止。",
                     st.run_timeout_minutes
                 )),
+            )
+        } else if outcome.aborted {
+            (
+                "failed",
+                Some(
+                    outcome
+                        .abort_reason
+                        .clone()
+                        .unwrap_or_else(|| "被护栏停止。".into()),
+                ),
             )
         } else if !agent_ok {
             let detail = [outcome.summary.trim(), outcome.stderr_tail.trim()]
@@ -1301,6 +1612,7 @@ impl Inner {
             status,
             error,
             failed_checks,
+            failures_md,
         })
     }
 
@@ -1414,8 +1726,37 @@ impl Inner {
         let logs = self.cfg.data_dir.join("logs");
         std::fs::create_dir_all(&logs)?;
         let raw_log = logs.join(format!("{}.jsonl", run.id));
+        // PRD 里的图片：复制到 worktree 之外，Prompt 里换成路径并加图片清单
+        let images = {
+            let conn = lock(&self.db);
+            let workspace = st.workspace(&self.cfg.data_dir);
+            crate::store::attachments::prepare_prompt(
+                &conn,
+                &workspace,
+                &run.prompt,
+                &crate::store::attachments::PrepareOptions {
+                    dir: &workspace.join("tmp").join(&run.id).join("images"),
+                    text_only: provider.as_ref().is_some_and(|p| p.text_only),
+                    skip_superseded: run.task_id.is_some() && !st.send_superseded_images,
+                    review: run.purpose == "review",
+                },
+            )?
+        };
+        if images.prompt != run.prompt {
+            // 记下 Agent 实际看到的 Prompt 和图片，便于复盘
+            runs::set_fields(&lock(&self.db), &run.id, &[("prompt", &images.prompt)])?;
+            self.log(
+                &run.id,
+                "images",
+                json!({
+                    "files": images.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
+                    "missing": images.missing,
+                }),
+            );
+        }
         let mut spec = RunSpec {
-            prompt: run.prompt.clone(),
+            prompt: images.prompt,
+            images: images.files,
             cwd: worktree.to_path_buf(),
             model: run.model.clone(),
             permission: PermissionMode::parse(
@@ -1472,6 +1813,37 @@ impl Inner {
                 .unwrap_or_default(),
             timeout: (st.run_timeout_minutes > 0)
                 .then(|| Duration::from_secs(st.run_timeout_minutes as u64 * 60)),
+            abort: Arc::new(AtomicBool::new(false)),
+        };
+        let abort = opts.abort.clone();
+        // 护栏：预算、卡住、危险命令。停下时的原因留给收尾写进 Run
+        let pricing = provider.as_ref().and_then(|p| p.pricing.clone());
+        let mut spent = crate::agent::Usage::default();
+        let mut aborted: Option<String> = None;
+        let mut stuck_reported = false;
+        let ticket_key = run
+            .ticket_id
+            .as_deref()
+            .and_then(|id| tickets::get(&lock(&self.db), id).ok())
+            .map(|t| t.key)
+            .unwrap_or_default();
+        let guard = |kind: &str, message: String, stop: bool, aborted: &mut Option<String>| {
+            self.log(
+                &run.id,
+                "guard",
+                json!({ "kind": kind, "message": message, "stopped": stop }),
+            );
+            self.emit(EngineEvent::Guard {
+                run_id: run.id.clone(),
+                ticket_key: ticket_key.clone(),
+                kind: kind.into(),
+                message: message.clone(),
+                stopped: stop,
+            });
+            if stop && aborted.is_none() {
+                *aborted = Some(message);
+                abort.store(true, Ordering::SeqCst);
+            }
         };
         let outcome = run_agent(adapter(kind).as_ref(), &spec, &opts, &mut |ev| match ev {
             RunnerEvent::Spawned { pid, command } => {
@@ -1494,8 +1866,70 @@ impl Inner {
                     Some(run.id.clone()),
                 );
             }
+            RunnerEvent::Idle(idle) => {
+                let limit = Duration::from_secs(st.stuck_minutes as u64 * 60);
+                if st.stuck_minutes > 0 && idle >= limit && !stuck_reported {
+                    stuck_reported = true;
+                    let stop = st.stuck_action == "stop";
+                    guard(
+                        "stuck",
+                        format!(
+                            "Agent 已经 {} 分钟没有任何输出，可能卡住了{}。",
+                            st.stuck_minutes,
+                            if stop { "，已停止这一轮" } else { "" }
+                        ),
+                        stop,
+                        &mut aborted,
+                    );
+                }
+            }
             RunnerEvent::Agent(ev) => {
                 on_event();
+                stuck_reported = false;
+                match &ev {
+                    AgentEvent::Usage { usage } => spent.add(usage),
+                    AgentEvent::Finished { usage: Some(u), .. } => spent = u.clone(),
+                    _ => {}
+                }
+                if aborted.is_none() {
+                    let tokens = spent.input_tokens + spent.output_tokens;
+                    let cost = spent
+                        .cost_usd
+                        .filter(|c| *c > 0.0)
+                        .or_else(|| pricing.as_ref().map(|p| p.estimate(&spent)));
+                    if st.budget_tokens_per_run > 0 && tokens > st.budget_tokens_per_run {
+                        guard(
+                            "budget",
+                            format!(
+                                "这一轮已用 {tokens} Token，超过上限 {}，已停止。",
+                                st.budget_tokens_per_run
+                            ),
+                            true,
+                            &mut aborted,
+                        );
+                    } else if let Some(c) =
+                        cost.filter(|c| st.budget_usd_per_run > 0.0 && *c > st.budget_usd_per_run)
+                    {
+                        guard(
+                            "budget",
+                            format!(
+                                "这一轮已花费约 ${c:.2}，超过上限 ${:.2}，已停止。",
+                                st.budget_usd_per_run
+                            ),
+                            true,
+                            &mut aborted,
+                        );
+                    }
+                }
+                let command = match &ev {
+                    AgentEvent::ToolCall { name, input, .. } => {
+                        crate::guard::command_of(name, input)
+                    }
+                    // 只在命令开始时报一次
+                    AgentEvent::Command { command, done, .. } if !*done => Some(command.clone()),
+                    _ => None,
+                };
+                let danger = command.as_deref().and_then(crate::guard::danger);
                 if let AgentEvent::SessionStarted { session_id, .. } = &ev {
                     // 立刻记下会话 id：即使观澜中途退出，下一轮也能续接
                     let _ = runs::set_fields(
@@ -1504,16 +1938,34 @@ impl Inner {
                         &[("agent_session_id", session_id)],
                     );
                 }
-                let payload = serde_json::to_value(&ev).unwrap_or_default();
+                let mut payload = serde_json::to_value(&ev).unwrap_or_default();
+                if let (Some(reason), Some(obj)) = (danger, payload.as_object_mut()) {
+                    obj.insert("danger".into(), json!(reason));
+                }
                 let kind = payload
                     .get("type")
                     .and_then(|t| t.as_str())
                     .unwrap_or("raw")
                     .to_string();
                 self.log(&run.id, &kind, payload);
+                if let Some(reason) = danger {
+                    let stop = st.stop_on_danger;
+                    guard(
+                        "danger",
+                        format!(
+                            "危险命令：{reason}{}\n{}",
+                            if stop { "，已停止这一轮" } else { "" },
+                            command.unwrap_or_default()
+                        ),
+                        stop,
+                        &mut aborted,
+                    );
+                }
             }
             RunnerEvent::Stderr(line) => self.log(&run.id, "stderr", json!({ "text": line })),
         });
+        // 这一轮用的图片副本不再需要；原图在 attachments/ 里
+        let _ = std::fs::remove_dir_all(st.workspace(&self.cfg.data_dir).join("tmp").join(&run.id));
         let outcome = match outcome {
             Ok(o) => o,
             Err(e) => {
@@ -1523,6 +1975,10 @@ impl Inner {
         };
 
         // 3. 收尾：Agent 进程结束 ≠ Run 结束
+        let mut outcome = outcome;
+        if outcome.aborted {
+            outcome.abort_reason = aborted;
+        }
         let agent_ok = outcome.succeeded();
         let cost = match (
             outcome.usage.cost_usd,
@@ -1604,11 +2060,8 @@ impl Inner {
         }
         let name = workspace_name(&ticket.key, task, siblings);
         let branch = task.branch.clone().unwrap_or_else(|| format!("tw/{name}"));
-        let workspace = match &st.workspace_dir {
-            Some(d) => PathBuf::from(d),
-            None => self.cfg.data_dir.join("workspace"),
-        };
-        let path = workspace
+        let path = st
+            .workspace(&self.cfg.data_dir)
             .join("worktrees")
             .join(slug(&project.name, &project.id))
             .join(&name);

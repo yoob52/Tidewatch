@@ -1,9 +1,20 @@
 // 工单详情：概览 / PRD / 子任务 / 验收 / 运行记录
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { api, type TicketDetail, type TicketStatus, type TimelineEvent } from '../lib/api';
 import { useData } from '../lib/data';
 import { FLOW } from '../lib/flow';
 import { Icon } from '../lib/Icon';
+import {
+  imageFiles,
+  imageMd,
+  insertAt,
+  selectionOf,
+  removeImage,
+  replaceImage,
+  setAuthority,
+  uploadImage,
+  type ImageActions,
+} from '../lib/images';
 import type { IconName } from '../lib/icons';
 import {
   AgentTag,
@@ -248,6 +259,16 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
       return p.error
         ? ['alert', 'AI', `预审没有完成：${p.error}`]
         : ['spark', 'AI', `预审完成，发现 ${p.issues} 个问题${p.blockers ? `，其中 ${p.blockers} 个阻塞` : ''}`];
+    case 'code_review_finished':
+      return p.error
+        ? ['alert', 'AI', `${name}的交叉审查没有完成：${p.error}`]
+        : ['spark', 'AI', `${name}的交叉审查完成，${p.findings ? `发现 ${p.findings} 个问题${p.blockers ? `，其中 ${p.blockers} 个阻塞` : ''}` : '没有发现问题'}`];
+    case 'task_pushed':
+      return ['branch', '你', `把${name}的分支 ${p.branch} 推到了 ${p.remote}（${String(p.commit ?? '').slice(0, 8)}）`];
+    case 'pr_created':
+      return ['merge', '你', `给${name}开了 PR：${p.url}`];
+    case 'auto_fix':
+      return ['undo', '系统', `${name}的自动检查没过，交回 Agent 自动修复（第 ${p.attempt} 次）`];
     case 'issue_resolved': {
       const how = { accepted: '采纳了', manual: '手动处理了', ignored: '忽略了', pending_confirm: '把', open: '重新打开了' }[p.resolution as string] ?? '处理了';
       return ['check', '你', `${how}问题 ${p.code}${p.resolution === 'pending_confirm' ? ' 标为待确认' : ''}${p.note ? `：${p.note}` : ''}`];
@@ -459,6 +480,67 @@ function PrdTab({ d, reload }: TabProps) {
   const editable =
     ['draft', 'human_review'].includes(t.status) || (t.type === 'bug' && ['developing', 'acceptance'].includes(t.status));
 
+  const area = useRef<HTMLTextAreaElement | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  /** 选好文件后要做的事：插入到编辑框，或替换某张图。 */
+  const pending = useRef<{ replace?: string }>({});
+
+  // 只动图片的修改直接存成一个新版本（来源记为 image）
+  const saveImages = async (next: string, note: string) => {
+    if (next === cur.content_md) return;
+    if (await ui.attempt(api.ticketSavePrd(t.id, next, note, 'image'), `${note}，已保存为新版本`)) {
+      setShown(null);
+      await reload();
+    }
+  };
+  const onFiles = async (files: File[]) => {
+    const target = pending.current;
+    pending.current = {};
+    if (!files.length) return;
+    if (target.replace) {
+      const id = await ui.attempt(uploadImage(t.id, files[0]));
+      if (id) await saveImages(replaceImage(cur.content_md, target.replace, id, '需求方截图'), '替换了一张图片');
+      return;
+    }
+    const sel = selectionOf(area.current);
+    const added: string[] = [];
+    for (const f of files) {
+      const id = await ui.attempt(uploadImage(t.id, f));
+      if (!id) break;
+      added.push(imageMd('需求方截图', id, 'authoritative'));
+    }
+    setDraft((d) => insertAt(d ?? cur.content_md, sel, added));
+  };
+  const imageActions = useMemo<ImageActions>(
+    () => ({
+      setAuthority: (id, authority) =>
+        void saveImages(setAuthority(cur.content_md, id, authority), authority === 'authoritative' ? '把一张图设为权威' : '把一张图改为仅参考'),
+      replace: (id) => {
+        pending.current = { replace: id };
+        fileInput.current?.click();
+      },
+      remove: async (id) => {
+        if (await ui.confirm('从 PRD 里移除这张图？', '只是当前版本不再引用它；图片文件和旧版本都保留。', '移除'))
+          await saveImages(removeImage(cur.content_md, id), '移除了一张图片');
+      },
+      describe: async (id) => {
+        const a = (await ui.attempt(api.attachmentList(t.id)))?.find((x) => x.id === id);
+        if (!a) return;
+        const text = await ui.prompt(
+          '图片的文字描述',
+          '模型看不了图时（Provider 标为"只能处理文字"），发给 Agent 的是这段描述。',
+          '这张图画了什么：有哪些区域、字段、按钮和文案',
+          '保存',
+          false,
+          a.description ?? '',
+        );
+        if (text !== null) await ui.attempt(api.attachmentDescribe(id, text), '已保存描述');
+      },
+    }),
+    [cur?.id, cur?.content_md, t.id],
+  );
+  const canEditImages = idx === 0 && editable && draft === null;
+
   if (!cur)
     return (
       <div className="page">
@@ -500,6 +582,16 @@ function PrdTab({ d, reload }: TabProps) {
           <span className="grow" />
           {draft !== null ? (
             <>
+              <button
+                className="btn sm"
+                onClick={() => {
+                  pending.current = {};
+                  fileInput.current?.click();
+                }}
+              >
+                <Icon name="upload" size={13} />
+                添加图片
+              </button>
               <button className="btn sm" onClick={() => setDraft(null)}>
                 放弃修改
               </button>
@@ -526,17 +618,41 @@ function PrdTab({ d, reload }: TabProps) {
         </div>
         {draft !== null ? (
           <textarea
+            ref={area}
             className="textarea mono"
             style={{ minHeight: 420, border: 0, borderRadius: 0 }}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onPaste={(e) => {
+              const files = imageFiles(e.clipboardData);
+              if (!files.length) return;
+              e.preventDefault();
+              pending.current = {};
+              void onFiles(files);
+            }}
             aria-label="PRD 正文"
           />
         ) : (
           <div className={`prose ${diffing ? 'diffing' : ''}`}>
-            {cur.content_md.trim() ? <Md src={cur.content_md} prev={diffing && prev ? prev.content_md : null} /> : <p className="dim">正文是空的。</p>}
+            {cur.content_md.trim() ? (
+              <Md src={cur.content_md} prev={diffing && prev ? prev.content_md : null} images={canEditImages ? imageActions : undefined} />
+            ) : (
+              <p className="dim">正文是空的。</p>
+            )}
           </div>
         )}
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = '';
+            void onFiles(files);
+          }}
+        />
       </article>
       <aside>
         <div className="sec-title">

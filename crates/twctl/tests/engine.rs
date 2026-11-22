@@ -524,6 +524,13 @@ fn failures_and_failed_checks_are_reported() {
         "Agent 失败就不跑检查"
     );
 
+    // 关掉自动修复：检查没过直接交给人
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_fix_attempts = 0;
+        settings::save(&conn, &st).unwrap();
+    }
     let (ticket2, ok) = f.bug("测试不过", "x [mock:steps=1] [mock:delay=50]", "medium");
     let r = f.engine.start_task(&ok, StartOptions::default()).unwrap();
     let r = f.wait_done(&r.id);
@@ -596,6 +603,32 @@ fn rejection_sends_the_note_back_to_the_same_session() {
     // 不另给指令时，打回意见本身就是返工指令
     let plan = f.engine.plan(&task, &StartOptions::default()).unwrap();
     assert!(plan.prompt.contains("边界值没处理") && plan.resume.is_some());
+    assert!(
+        !plan.prompt.contains("工单正文已更新"),
+        "正文没改过就不重复发"
+    );
+
+    // Bug 在开发中改了正文（比如换了截图）：续接的会话要拿到现行版本
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    {
+        let mut conn = f.engine.db().lock().unwrap();
+        tidewatch_core::store::tickets::save_prd(
+            &mut conn,
+            &ticket,
+            "x [mock:steps=1] [mock:delay=50]\n\n金额为 0 时也要显示",
+            None,
+        )
+        .unwrap();
+    }
+    let plan = f.engine.plan(&task, &StartOptions::default()).unwrap();
+    assert!(plan.resume.is_some());
+    assert!(
+        plan.prompt.contains("边界值没处理")
+            && plan.prompt.contains("工单正文已更新")
+            && plan.prompt.contains("金额为 0 时也要显示"),
+        "{}",
+        plan.prompt
+    );
 
     let opts = StartOptions {
         instruction: Some("边界值没处理 [mock:steps=1] [mock:delay=50]".into()),
@@ -1599,4 +1632,342 @@ fn dependents_that_already_ran_wait_for_a_rejected_prerequisite() {
         .unwrap();
     f.wait_done(&rework.id);
     assert_eq!(f.wait_done(&r3.id).status, "succeeded");
+}
+
+#[test]
+fn guards_flag_dangerous_commands_and_stop_runs_over_budget() {
+    let f = fixture(2, None);
+    // 默认只标出来，不停
+    let (_, task) = f.bug(
+        "危险命令",
+        "x [mock:danger] [mock:steps=1] [mock:delay=30]",
+        "medium",
+    );
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "succeeded", "{:?}", r.error);
+    let events = runs::events(&lock(f.db()), &r.id, 0).unwrap();
+    let flagged = events
+        .iter()
+        .find(|e| e.kind == "tool_call" && e.payload.get("danger").is_some())
+        .expect("工具调用带上危险原因");
+    assert!(flagged.payload["danger"]
+        .as_str()
+        .unwrap()
+        .contains("rm -r"));
+    assert!(events
+        .iter()
+        .any(|e| e.kind == "guard" && e.payload["kind"] == "danger"));
+    f.wait_for("危险命令提醒", || {
+        f.events.lock().unwrap().iter().any(|e| matches!(e,
+            EngineEvent::Guard { run_id, kind, stopped, .. } if *run_id == r.id && kind == "danger" && !stopped))
+    });
+
+    // 打开"发现即停止"
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.stop_on_danger = true;
+        settings::save(&conn, &st).unwrap();
+    }
+    let (_, task) = f.bug(
+        "危险命令 2",
+        "x [mock:danger] [mock:steps=3] [mock:delay=200]",
+        "medium",
+    );
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "failed");
+    assert!(
+        r.error.as_deref().unwrap_or("").contains("危险命令"),
+        "{:?}",
+        r.error
+    );
+    assert_eq!(f.task(&task).status, "failed");
+
+    // Token 上限
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.stop_on_danger = false;
+        st.budget_tokens_per_run = 1;
+        settings::save(&conn, &st).unwrap();
+    }
+    let (_, task) = f.bug("超预算", "x [mock:steps=2] [mock:delay=30]", "medium");
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "failed");
+    assert!(
+        r.error.as_deref().unwrap_or("").contains("超过上限"),
+        "{:?}",
+        r.error
+    );
+}
+
+#[test]
+fn prd_images_are_handed_to_the_agent_with_their_authority() {
+    use tidewatch_core::store::attachments;
+    const PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R', 0,
+        0, 0, 2, 0, 0, 0, 3, 8, 2, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let f = fixture(1, None);
+    let workspace = {
+        let conn = lock(f.db());
+        settings::get(&conn)
+            .unwrap()
+            .workspace(&f.repo.parent().unwrap().join("data"))
+    };
+    // 还没有工单时贴的图，建单时认领
+    let (shot, old) = {
+        let conn = lock(f.db());
+        let shot = attachments::add(&conn, &workspace, None, "截图.png", PNG, "user").unwrap();
+        let mut other = PNG.to_vec();
+        other.push(1);
+        let old = attachments::add(&conn, &workspace, None, "原图.png", &other, "prd").unwrap();
+        (shot.id, old.id)
+    };
+    let body = format!(
+        "结算页显示优惠明细 [mock:steps=1] [mock:delay=30]\n\n![需求方截图](attachment:{shot} \"authoritative\")\n\n![原 PRD 图](attachment:{old} \"reference; superseded-by={shot}\")\n"
+    );
+    let (_, task) = f.bug("带图的 Bug", &body, "medium");
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "succeeded", "{:?}", r.error);
+
+    // Agent 拿到的是文件路径和图片清单；开发阶段不发已被取代的图
+    let prompt = f.run(&r.id).prompt;
+    assert!(prompt.contains("## 图片清单"), "{prompt}");
+    assert!(prompt.contains("权威"), "{prompt}");
+    assert!(!prompt.contains(&format!("attachment:{shot}")), "{prompt}");
+    let events = runs::events(&lock(f.db()), &r.id, 0).unwrap();
+    let images = events
+        .iter()
+        .find(|e| e.kind == "images")
+        .expect("images 事件");
+    let files = images.payload["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "{files:?}");
+    // 这一轮结束后副本被清掉，原图还在
+    assert!(!workspace.join("tmp").join(&r.id).exists());
+    let conn = lock(f.db());
+    let a = attachments::get(&conn, &shot).unwrap();
+    assert!(a.ticket_id.is_some());
+    assert_eq!(attachments::read(&workspace, &a).unwrap(), PNG);
+}
+
+#[test]
+fn failed_checks_are_sent_back_to_the_agent_until_they_pass_or_attempts_run_out() {
+    // 修复 Prompt 的第一行带 "auto-fix"，演示 Agent 会把它写进文件：第一次自动修复后检查就过了
+    let f = fixture(1, Some("git grep -q auto-fix -- TIDEWATCH_DEMO.md"));
+    let (ticket, task) = f.bug(
+        "检查先失败后通过",
+        "x [mock:steps=1] [mock:delay=30]",
+        "medium",
+    );
+    let first = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_for("自动修复后进入待验收", || {
+        f.task(&task).status == "review"
+    });
+    let all = runs::list_for_task(&lock(f.db()), &task).unwrap();
+    assert_eq!(
+        all.iter().map(|r| r.purpose.as_str()).collect::<Vec<_>>(),
+        ["dev", "test_fix"]
+    );
+    assert_eq!(all[0].id, first.id);
+    assert!(all[1].prompt.contains("没通过的检查"), "{}", all[1].prompt);
+    assert!(
+        all[1].prompt.contains("git grep -q auto-fix"),
+        "{}",
+        all[1].prompt
+    );
+    assert_eq!(
+        all[1].resume_session_id, all[0].agent_session_id,
+        "续接原会话"
+    );
+    assert!(runs::events(&lock(f.db()), &first.id, 0)
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "auto_fix" && e.payload["attempt"] == 1));
+    assert_eq!(
+        runs::test_reports(&lock(f.db()), &all[1].id).unwrap()[0].exit_code,
+        Some(0)
+    );
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+
+    // 怎么修都不过：修满次数后交给人
+    let f = fixture(1, Some("git no-such-subcommand"));
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_fix_attempts = 1;
+        settings::save(&conn, &st).unwrap();
+    }
+    let (ticket, task) = f.bug("检查一直失败", "x [mock:steps=1] [mock:delay=30]", "medium");
+    f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_for("修满次数后进入待验收", || {
+        f.task(&task).status == "review"
+    });
+    let all = runs::list_for_task(&lock(f.db()), &task).unwrap();
+    assert_eq!(
+        all.iter().map(|r| r.purpose.as_str()).collect::<Vec<_>>(),
+        ["dev", "test_fix"]
+    );
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+    f.wait_for("最后一轮带上没过的检查", || {
+        f.events.lock().unwrap().iter().any(|e| matches!(e,
+            EngineEvent::RunFinished { run_id, failed_checks, .. } if *run_id == all[1].id && !failed_checks.is_empty()))
+    });
+}
+
+#[test]
+fn cross_review_reads_the_diff_and_leaves_findings_without_touching_the_task() {
+    let f = fixture(1, None);
+    let (ticket, task) = f.bug("交叉审查", "x [mock:steps=1] [mock:delay=30]", "medium");
+    // 还没有改动：不能审查
+    assert!(f
+        .engine
+        .start_code_review(&task, Default::default())
+        .is_err());
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_done(&r.id);
+    assert_eq!(f.task(&task).status, "review");
+
+    let review = f
+        .engine
+        .start_code_review(&task, Default::default())
+        .unwrap();
+    assert_eq!(
+        (
+            review.purpose.as_str(),
+            review.permission.as_deref().unwrap_or_default(),
+            &review.task_id
+        ),
+        ("code_review", "read_only", &None)
+    );
+    assert!(review.prompt.contains("git diff"), "{}", review.prompt);
+    // 同一个子任务不能同时审两次；审查中也不能合并
+    assert!(f
+        .engine
+        .start_code_review(&task, Default::default())
+        .is_err());
+    let done = f.wait_done(&review.id);
+    assert_eq!(done.status, "succeeded", "{:?}", done.error);
+    let all = f.engine.code_reviews(&task).unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].status, "done");
+    assert_eq!(all[0].findings.len(), 1);
+    // 演示 Agent 只有在子任务的 worktree 里才看得到改动
+    assert_eq!(all[0].findings[0].title, "演示改动没有对应的测试");
+    assert_eq!(all[0].findings[0].severity, "major");
+    assert!(all[0].head_commit.is_some());
+    // 结果只供参考：子任务还在待验收，运行列表里也不算它的开发运行
+    assert_eq!(f.task(&task).status, "review");
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+    assert_eq!(runs::list_for_task(&lock(f.db()), &task).unwrap().len(), 1);
+    f.wait_for("交叉审查的通知", || {
+        f.events.lock().unwrap().iter().any(|e| matches!(e,
+            EngineEvent::CodeReviewFinished { task_id, findings: 1, error: None, .. } if *task_id == task))
+    });
+
+    // 打开"自动交叉审查"：子任务一进入待验收就自己审
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_cross_review = true;
+        settings::save(&conn, &st).unwrap();
+    }
+    let (_, task2) = f.bug(
+        "自动审查",
+        "y [mock:steps=1] [mock:delay=30] [mock:findings=0]",
+        "medium",
+    );
+    let r = f
+        .engine
+        .start_task(&task2, StartOptions::default())
+        .unwrap();
+    f.wait_done(&r.id);
+    f.wait_for("自动发起的审查结束", || {
+        f.engine
+            .code_reviews(&task2)
+            .unwrap()
+            .first()
+            .is_some_and(|c| c.status == "done" && c.findings.is_empty())
+    });
+}
+
+#[test]
+fn pushing_and_opening_a_pr_only_happen_when_the_user_asks() {
+    let f = fixture(1, None);
+    let (_, task) = f.bug("推送", "x [mock:steps=1] [mock:delay=30]", "medium");
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_done(&r.id);
+    let t = f.task(&task);
+    let repo = f.repo.clone();
+    let branch = t.branch.clone().unwrap();
+
+    // 没有远程：说清楚为什么推不了
+    let e = f.engine.push_task(&task).unwrap_err().to_string();
+    assert!(e.contains("远程"), "{e}");
+
+    let remote = repo.parent().unwrap().join("remote.git");
+    git::git(
+        repo.parent().unwrap(),
+        &["init", "--bare", "-q", &remote.display().to_string()],
+    )
+    .unwrap();
+    git::git(
+        &repo,
+        &["remote", "add", "origin", &remote.display().to_string()],
+    )
+    .unwrap();
+    // 跑完一轮之后观澜自己没有推过
+    assert!(git::git(&remote, &["branch", "--list"]).unwrap().is_empty());
+
+    let pushed = f.engine.push_task(&task).unwrap();
+    let head = git::rev_parse(&repo, &format!("refs/heads/{branch}")).unwrap();
+    assert_eq!(pushed.pushed_commit.as_deref(), Some(head.as_str()));
+    assert_eq!(
+        git::rev_parse(&remote, &format!("refs/heads/{branch}")).unwrap(),
+        head
+    );
+
+    let draft = f.engine.pr_draft(&task).unwrap();
+    assert!(draft.title.ends_with("推送"), "{}", draft.title);
+    assert!(draft.body.contains("改动说明"), "{}", draft.body);
+
+    // 用一个假的 gh 看观澜传了什么
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let gh = repo.parent().unwrap().join("fake-gh");
+        let log = repo.parent().unwrap().join("gh-args.txt");
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho 'https://github.com/acme/demo/pull/42'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("TIDEWATCH_GH_BIN", &gh);
+        let with_pr = f.engine.create_pr(&task, draft).unwrap();
+        std::env::remove_var("TIDEWATCH_GH_BIN");
+        assert_eq!(
+            with_pr.pr_url.as_deref(),
+            Some("https://github.com/acme/demo/pull/42")
+        );
+        let args = std::fs::read_to_string(&log).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        assert_eq!(
+            &args[..6],
+            ["pr", "create", "--head", branch.as_str(), "--base", "main"]
+        );
+        assert!(!args.contains(&"--draft"));
+    }
+
+    // 合并之后分支已经清理，不能再推
+    f.engine.accept_task(&task).unwrap();
+    f.engine.merge_task(&task).unwrap();
+    assert!(f.engine.push_task(&task).is_err());
 }

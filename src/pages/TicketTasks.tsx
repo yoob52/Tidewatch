@@ -2,6 +2,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   api,
+  type CodeFinding,
   type InlineComment,
   type Proposal,
   type RunDetail,
@@ -880,13 +881,14 @@ export function AcceptTab({ d, reload }: TabProps) {
   };
   const removeComment = (c: InlineComment) => setDrafts((x) => ({ ...x, [task.id]: (x[task.id] ?? []).filter((y) => y !== c) }));
 
-  const reject = async () => {
+  const reject = async (initial?: string) => {
     const note = await ui.prompt(
       '打回子任务',
       comments.length ? `会带上 ${comments.length} 条行内评论。意见交给 Agent，优先续接原会话返工。` : '意见会交给 Agent，优先续接原会话返工。也可以先在 Diff 的行号旁加行内评论。',
       comments.length ? '总体意见（可选）' : '写明需要修改的地方',
       '打回并开始返工',
       comments.length === 0,
+      initial,
     );
     if (note === null) return;
     const rejected = await ui.attempt(api.taskReject(task.id, { note, comments }));
@@ -894,6 +896,43 @@ export function AcceptTab({ d, reload }: TabProps) {
     setDrafts((x) => ({ ...x, [task.id]: [] }));
     await start(rejected);
     await refresh();
+  };
+
+  // AI 交叉审查：最新的一次；之后又跑过开发就算过期
+  const cr = d.code_reviews.find((c) => c.task_id === task.id);
+  const crStale = !!cr && cr.status === 'done' && !!last?.end_commit && !!cr.head_commit && cr.head_commit !== last.end_commit;
+  const crossReview = async () => {
+    if (await ui.attempt(api.codeReviewStart(task.id), '已发起交叉审查，结果出来后显示在这里')) await refresh();
+  };
+  const findingsNote = (list: CodeFinding[]) =>
+    list
+      .map((f, i) => {
+        const at = f.file ? `（${f.file}${f.line ? `:${f.line}` : ''}）` : '';
+        return `${i + 1}. ${f.title}${at}${f.detail && f.detail !== f.title ? `\n   ${f.detail}` : ''}${f.suggestion ? `\n   建议：${f.suggestion}` : ''}`;
+      })
+      .join('\n');
+
+  const push = async () => {
+    if (!(await ui.confirm('推送分支到远程', `把分支 ${task.branch} 推到项目仓库的远程。观澜不会自己推送，只有你点了才推；不会强推。`, '推送'))) return;
+    if (await ui.attempt(api.taskPush(task.id), '已推送到远程')) await refresh();
+  };
+  const openPr = async () => {
+    const draft = await ui.attempt(api.taskPrDraft(task.id));
+    if (!draft) return;
+    const title = await ui.prompt(
+      '开 Pull Request',
+      `用 GitHub CLI（gh pr create）给分支 ${task.branch} 开 PR；分支还没推到远程的话会先推送。正文按工单、Agent 总结和检查结果自动生成，开好后可以在 GitHub 上改。`,
+      'PR 标题',
+      '推送并开 PR',
+      true,
+      draft.title,
+    );
+    if (!title) return;
+    const done = await ui.attempt(api.taskPrCreate(task.id, { ...draft, title }));
+    if (done) {
+      ui.toast(`PR 已创建：${done.pr_url}`);
+      await refresh();
+    }
   };
 
   const merge = async () => {
@@ -1086,6 +1125,108 @@ export function AcceptTab({ d, reload }: TabProps) {
               <p className="dim">这次运行没有执行检查命令（项目没有配置，或在设置里关掉了）。</p>
             )}
           </div>
+          <div className="sec-title" style={{ marginTop: 18 }}>
+            AI 交叉审查
+            {cr && cr.status !== 'running' && <small>{AGENTS[cr.agent]?.name ?? cr.agent}{cr.model ? ` · ${cr.model}` : ''}</small>}
+          </div>
+          <div className="xrev">
+            {!cr ? (
+              <p className="dim">让另一个 Agent 只读地看一遍这份 Diff，列出它发现的问题。只供参考，不影响验收。</p>
+            ) : cr.status === 'running' ? (
+              <p className="dim">
+                <Icon name="spark" size={12} /> {AGENTS[cr.agent]?.name ?? cr.agent} 正在审查…{' '}
+                <a className="lnk" href={`#/runs/${cr.run_id}`}>
+                  看实时日志
+                </a>
+              </p>
+            ) : cr.status === 'failed' ? (
+              <p style={{ color: 'var(--cinnabar)' }}>
+                审查没有完成：{cr.error}{' '}
+                <a className="lnk" href={`#/runs/${cr.run_id}`}>
+                  看日志
+                </a>
+              </p>
+            ) : (
+              <>
+                {crStale && <p className="tag amber">审查之后又有新的改动，结果可能已经过期</p>}
+                {cr.summary && <p className="sum">{cr.summary}</p>}
+                {cr.findings.length === 0 ? (
+                  <p className="tag moss">
+                    <Icon name="check" size={11} />
+                    没有发现问题
+                  </p>
+                ) : (
+                  <ul className="xrev-list">
+                    {cr.findings.map((f, i) => (
+                      <li key={i} className={`s-${f.severity}`}>
+                        <div>
+                          <span className={`tag ${f.severity === 'blocker' ? 'cin' : f.severity === 'major' ? 'amber' : 'line'}`}>
+                            {{ blocker: '阻塞', major: '重要', minor: '次要' }[f.severity]}
+                          </span>{' '}
+                          <b>{f.title}</b>
+                        </div>
+                        {f.file && (
+                          <a className="lnk mono" title="在 Diff 里打开这个文件" onClick={() => setFile(f.file)}>
+                            {f.file}
+                            {f.line ? `:${f.line}` : ''}
+                          </a>
+                        )}
+                        {f.detail && f.detail !== f.title && <p>{f.detail}</p>}
+                        {f.suggestion && <p className="dim">建议：{f.suggestion}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+            {cr?.status !== 'running' && ['review', 'accepted'].includes(task.status) && (
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                <button className="btn sm" onClick={() => void crossReview()}>
+                  <Icon name="spark" size={13} />
+                  {cr ? '重新审查' : '让另一个 Agent 审查'}
+                </button>
+                {cr?.status === 'done' && cr.findings.length > 0 && (
+                  <button className="btn sm" onClick={() => void reject(findingsNote(cr.findings))}>
+                    <Icon name="undo" size={13} />
+                    带着这些问题打回
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {['review', 'accepted'].includes(task.status) && (
+            <>
+              <div className="sec-title" style={{ marginTop: 18 }}>
+                远程
+              </div>
+              <div className="xrev">
+                <p className="dim">
+                  {task.pr_url ? (
+                    <>
+                      PR：<span className="mono">{task.pr_url}</span>
+                    </>
+                  ) : task.pushed_commit ? (
+                    <>
+                      分支已推送（<span className="mono">{task.pushed_commit.slice(0, 8)}</span>）
+                      {last?.end_commit && last.end_commit !== task.pushed_commit ? '，之后又有新提交' : ''}
+                    </>
+                  ) : (
+                    '分支只在本机。观澜不会自己推送。'
+                  )}
+                </p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn sm" onClick={() => void push()}>
+                    <Icon name="branch" size={13} />
+                    推送分支
+                  </button>
+                  <button className="btn sm" onClick={() => void openPr()}>
+                    <Icon name="merge" size={13} />
+                    {task.pr_url ? '重新开 PR' : '开 PR'}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
           <div className="sec-title" style={{ marginTop: 18 }}>
             Agent 总结
           </div>

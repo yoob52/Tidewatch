@@ -32,6 +32,17 @@ impl AgentAdapter for ClaudeAdapter {
         if let Some(id) = &spec.resume_session {
             args.extend(["--resume".into(), id.clone()]);
         }
+        // 图片按 Prompt 里的路径读取；它们在 worktree 之外，要把所在目录放行
+        let mut dirs: Vec<String> = spec
+            .images
+            .iter()
+            .filter_map(|f| f.parent())
+            .map(|d| d.display().to_string())
+            .collect();
+        dirs.dedup();
+        for d in dirs {
+            args.extend(["--add-dir".into(), d]);
+        }
         args.extend(spec.extra_args.iter().cloned());
         Ok(CommandSpec {
             program: self.resolve_binary(spec)?,
@@ -50,6 +61,8 @@ impl AgentAdapter for ClaudeAdapter {
 #[derive(Default)]
 pub struct ClaudeParser {
     session_seen: bool,
+    /// 已经报过用量的那条消息：同一条消息的每个内容块各占一行，用量是重复的。
+    usage_reported: Option<String>,
 }
 
 fn usage_of(v: &Value) -> Option<Usage> {
@@ -113,6 +126,16 @@ impl EventParser for ClaudeParser {
                 _ => {}
             },
             "assistant" => {
+                // 每条消息自带这一次请求的用量：边跑边报，预算护栏才能在运行中途生效。
+                // 输出 Token 在这里只是开头的一小部分，准确的总数以最后的 result 为准。
+                let msg = v.get("message").unwrap_or(&Value::Null);
+                let id = msg.get("id").and_then(|i| i.as_str());
+                if id.is_some() && id != self.usage_reported.as_deref() {
+                    self.usage_reported = id.map(String::from);
+                    if let Some(usage) = usage_of(msg) {
+                        out.push(AgentEvent::Usage { usage });
+                    }
+                }
                 let blocks = v
                     .pointer("/message/content")
                     .and_then(|c| c.as_array())

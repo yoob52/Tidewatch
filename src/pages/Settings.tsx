@@ -1,12 +1,12 @@
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type Detection, type Settings, type SystemInfo, type TemplateInfo } from '../lib/api';
+import { api, type BackupFile, type Detection, type Settings, type SystemInfo, type TemplateInfo, type UpdateInfo } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { AGENTS, Modal, PERMISSIONS, Seg, Switch, useUi } from '../lib/ui';
 
-const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '本机环境'];
+const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '本机环境'];
 
 /** 编辑一个 Prompt 模板：左边改，右边看用示例数据填出来的效果。 */
 function TemplateEditor({ tpl, onClose, onSaved }: { tpl: TemplateInfo; onClose: () => void; onSaved: (list: TemplateInfo[]) => void }) {
@@ -157,8 +157,11 @@ export function SettingsPage({
   const [info, setInfo] = useState<SystemInfo | null>(null);
   const [workspace, setWorkspace] = useState(settings.workspace_dir ?? '');
 
+  const [backups, setBackups] = useState<BackupFile[]>([]);
+
   useEffect(() => {
     api.systemInfo().then(setInfo, () => undefined);
+    api.backupList().then(setBackups, () => undefined);
   }, []);
   useEffect(() => setWorkspace(settings.workspace_dir ?? ''), [settings.workspace_dir]);
 
@@ -169,6 +172,26 @@ export function SettingsPage({
   const pickWorkspace = async () => {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir === 'string') await save({ workspace_dir: dir });
+  };
+
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const checkUpdate = async () => {
+    const u = await ui.attempt(api.updateCheck());
+    if (u) setUpdate(u);
+  };
+  const backupNow = async () => {
+    const list = await ui.attempt(api.backupNow(), '已备份数据库');
+    if (list) setBackups(list);
+  };
+  const exportAll = async () => {
+    const dir = await open({ directory: true, multiple: false, title: '选择导出到哪个目录' });
+    if (typeof dir !== 'string') return;
+    const done = await ui.attempt(api.exportTickets(dir));
+    if (!done) return;
+    ui.toast(
+      `已导出 ${done.tickets} 个工单、${done.attachments} 个附件到 ${done.dir}` +
+        (done.missing.length ? `；${done.missing.length} 个附件的文件已经不在，没有导出` : ''),
+    );
   };
 
   const stepper = (value: number, min: number, max: number, step: number, apply: (n: number) => void) => (
@@ -228,6 +251,51 @@ export function SettingsPage({
               <p>超过这个时长，观澜会停止 Agent 并把运行记为失败。单位：分钟。</p>
             </div>
             <div className="sctl">{stepper(settings.run_timeout_minutes, 10, 480, 10, (n) => void save({ run_timeout_minutes: n }))}</div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>单次运行花费上限</b>
+              <p>这一轮的花费（Agent 上报，或按 Provider 单价估算）超过它就停止并记为失败。单位：美元，0 表示不限。Claude Code 运行中途按 Provider 单价估算（没填单价就只能在结束时判定）；Codex 只在一轮结束时上报用量，超限只能事后记为失败。</p>
+            </div>
+            <div className="sctl">{stepper(settings.budget_usd_per_run, 0, 100, 1, (n) => void save({ budget_usd_per_run: n }))}</div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>单次运行 Token 上限</b>
+              <p>输入加输出 Token 超过它就停止。单位：万 Token，0 表示不限。Claude Code 每次请求后累计一次；Codex 只在一轮结束时上报。</p>
+            </div>
+            <div className="sctl">{stepper(Math.round(settings.budget_tokens_per_run / 10000), 0, 5000, 50, (n) => void save({ budget_tokens_per_run: n * 10000 }))}</div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>卡住检测</b>
+              <p>Agent 连续这么多分钟没有任何输出就提醒你，或直接停止这一轮。单位：分钟，0 表示不检测。</p>
+            </div>
+            <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {stepper(settings.stuck_minutes, 0, 120, 5, (n) => void save({ stuck_minutes: n }))}
+              <select className="input" style={{ width: 110 }} value={settings.stuck_action} onChange={(e) => void save({ stuck_action: e.target.value as 'notify' | 'stop' })} aria-label="卡住时">
+                <option value="notify">只提醒</option>
+                <option value="stop">停止运行</option>
+              </select>
+            </div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>发现危险命令就停止</b>
+              <p>rm -r、git push、git reset --hard、sudo 等命令在运行日志里总会标红并提醒；打开后还会停掉这一轮。只能在 Agent 报出命令之后停，已经开始执行的那一条拦不住。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.stop_on_danger} onChange={(v) => void save({ stop_on_danger: v })} label="发现危险命令就停止" />
+            </div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>开发时也发送已被取代的图</b>
+              <p>PRD 里被你替换掉的原图默认只在预审时发给 Agent；开发阶段不发，免得它照着旧图做。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.send_superseded_images} onChange={(v) => void save({ send_superseded_images: v })} label="开发时也发送已被取代的图" />
+            </div>
           </div>
         </div>
 
@@ -315,6 +383,22 @@ export function SettingsPage({
           </div>
           <div className="srow">
             <div>
+              <b>检查失败自动修复</b>
+              <p>自动检查没过时，把失败的命令和输出交回给同一个 Agent 接着修，最多修这么多次；还不过再交给你验收。0 表示不自动修。</p>
+            </div>
+            <div className="sctl">{stepper(settings.auto_fix_attempts, 0, 5, 1, (n) => void save({ auto_fix_attempts: n }))}</div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>自动 AI 交叉审查</b>
+              <p>子任务进入待验收时，自动让另一个 Agent 只读审查 Diff，问题列表显示在验收页供你参考。会多花一轮费用；关掉时可以在验收页手动发起。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.auto_cross_review} onChange={(v) => void save({ auto_cross_review: v })} label="自动 AI 交叉审查" />
+            </div>
+          </div>
+          <div className="srow">
+            <div>
               <b>合并方式</b>
               <p>merge 保留子任务分支上的每个提交；squash 压成一个提交。观澜不会自动推送到远程。</p>
             </div>
@@ -376,8 +460,64 @@ export function SettingsPage({
         <div className="card">
           <div className="srow">
             <div>
+              <b>数据库备份</b>
+              <p>每天自动备份一次，保留最近 7 份。密钥存在系统凭据管理器里，不在数据库中，备份不含密钥。</p>
+              {backups.length ? (
+                <p className="mono">
+                  最近一份：{backups[0].name}（{(backups[0].bytes / 1024).toFixed(0)} KB），共 {backups.length} 份
+                </p>
+              ) : (
+                <p>还没有备份。</p>
+              )}
+              {backups[0] && <p className="mono">{backups[0].path.slice(0, -backups[0].name.length)}</p>}
+            </div>
+            <div className="sctl">
+              <button className="btn sm" onClick={() => void backupNow()}>
+                立即备份
+              </button>
+            </div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>导出工单</b>
+              <p>把全部工单导出成 Markdown 归档：每个工单一个文件夹（工单、各版本 PRD、附件），另带一份数据库快照。</p>
+            </div>
+            <div className="sctl">
+              <button className="btn sm" onClick={() => void exportAll()}>
+                导出…
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <h3 id="set-6">{SECTIONS[6]}</h3>
+        <div className="card">
+          <div className="srow">
+            <div>
               <b>观澜</b>
               <p>{info ? `${info.version} · ${info.os}` : '读取中…'}</p>
+              {update &&
+                (update.newer ? (
+                  <p>
+                    有新版本 {update.latest}，到发布页下载：<span className="mono">{update.url}</span>
+                  </p>
+                ) : (
+                  <p>{update.latest ? `已经是最新版本（最新发布 ${update.latest}）。` : '还没有发布过正式版本。'}</p>
+                ))}
+            </div>
+            <div className="sctl">
+              <button className="btn sm" onClick={() => void checkUpdate()}>
+                检查更新
+              </button>
+            </div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>启动时检查更新</b>
+              <p>打开后，每次启动联网读一次 GitHub 上的最新版本号，不发送任何本机数据，也不会自动下载或安装。默认关闭。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.check_updates} onChange={(v) => void save({ check_updates: v })} label="启动时检查更新" />
             </div>
           </div>
           <div className="srow">
