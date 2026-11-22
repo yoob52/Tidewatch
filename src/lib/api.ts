@@ -454,6 +454,14 @@ export interface TaskDiff {
   truncated: boolean;
 }
 
+export interface ProviderCompat {
+  agent: string;
+  agent_name: string;
+  compatible: boolean;
+  /** 不兼容时的 LiteLLM 配置说明（Markdown）。 */
+  bridge_guide: string | null;
+}
+
 export interface BackupFile {
   name: string;
   path: string;
@@ -572,6 +580,9 @@ export type EngineEvent =
 
 export const api = {
   systemInfo: () => invoke<SystemInfo>('system_info'),
+  /** 这个协议的 Provider 哪个 Agent 能直接用；不能的给出 LiteLLM 桥接说明。 */
+  providerCompat: (name: string, protocol: string, baseUrl: string | null, defaultModel: string | null) =>
+    invoke<ProviderCompat[]>('provider_compat', { name, protocol, baseUrl, defaultModel }),
   backupList: () => invoke<BackupFile[]>('backup_list'),
   backupNow: () => invoke<BackupFile[]>('backup_now'),
   /** 导出到 dest 下新建的一个目录。 */

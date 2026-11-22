@@ -56,6 +56,97 @@ pub struct ProviderConfig {
     pub extra_env: Vec<(String, String)>,
 }
 
+/// 某个 Agent 能不能直接用一个 Provider；不能时怎么经 LiteLLM 桥接。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Compat {
+    pub agent: String,
+    pub agent_name: String,
+    pub compatible: bool,
+    /// 不兼容时的 LiteLLM 配置说明（Markdown）。
+    pub bridge_guide: Option<String>,
+}
+
+/// LiteLLM 代理读上游密钥用的环境变量名。配置示例里只写这个名字，不写密钥。
+pub const LITELLM_KEY_ENV: &str = "UPSTREAM_API_KEY";
+const LITELLM_PORT: u16 = 4000;
+
+/// 协议不匹配时的桥接说明：本机起一个 LiteLLM 代理，把上游协议转成 Agent 认的协议，
+/// 再在观澜里加一个指向代理的 Provider。
+pub fn bridge_guide(kind: AgentKind, provider: &ProviderConfig) -> Option<String> {
+    if provider.protocol.supports(kind) {
+        return None;
+    }
+    // LiteLLM 用模型名前缀选上游协议
+    let prefix = match provider.protocol {
+        Protocol::Anthropic => "anthropic",
+        Protocol::OpenaiResponses | Protocol::OpenaiChat => "openai",
+        Protocol::Native => return None,
+    };
+    let model = provider
+        .default_model
+        .as_deref()
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or("<上游模型名>");
+    let base = provider
+        .base_url
+        .as_deref()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or("<上游 Base URL>");
+    let (target, url) = match kind {
+        AgentKind::ClaudeCode => ("Anthropic 兼容", format!("http://127.0.0.1:{LITELLM_PORT}")),
+        _ => (
+            "OpenAI Responses",
+            format!("http://127.0.0.1:{LITELLM_PORT}/v1"),
+        ),
+    };
+    Some(format!(
+        r#"{agent} 不能直接用 {proto} 协议的「{name}」。可以在本机起一个 LiteLLM 代理做协议转换：
+
+1. 新建 `litellm.yaml`（密钥不写进文件，从环境变量读）：
+
+```yaml
+model_list:
+  - model_name: {model}
+    litellm_params:
+      model: {prefix}/{model}
+      api_base: {base}
+      api_key: os.environ/{key_env}
+```
+
+2. 安装并启动代理（先把上游密钥放进环境变量 `{key_env}`）：
+
+```
+pip install 'litellm[proxy]'
+litellm --config litellm.yaml --port {port}
+```
+
+3. 在观澜里再添加一个 Provider，{agent} 用它：
+   - 协议：{target}
+   - Base URL：`{url}`
+   - 默认模型：`{model}`
+   - API Key：LiteLLM 的 master key；没设置就随便填一个非空的值
+"#,
+        agent = kind.display_name(),
+        proto = provider.protocol.as_str(),
+        name = provider.name,
+        key_env = LITELLM_KEY_ENV,
+        port = LITELLM_PORT,
+    ))
+}
+
+/// 真实 Agent（不含演示 Agent）各自能不能用这个 Provider。
+pub fn compatibility(provider: &ProviderConfig) -> Vec<Compat> {
+    [AgentKind::ClaudeCode, AgentKind::Codex]
+        .into_iter()
+        .map(|kind| Compat {
+            agent: kind.as_str().to_string(),
+            agent_name: kind.display_name().to_string(),
+            compatible: provider.protocol.supports(kind),
+            bridge_guide: bridge_guide(kind, provider),
+        })
+        .collect()
+}
+
 /// 注入结果：只作用于本次子进程。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Injection {
@@ -75,7 +166,7 @@ pub fn inject(
 ) -> Result<Injection> {
     if !provider.protocol.supports(kind) {
         return Err(Error::invalid(format!(
-            "Provider「{}」的协议 {} 与 {} 不兼容，需要经 LiteLLM 之类的代理桥接。",
+            "Provider「{}」的协议 {} 与 {} 不兼容，需要经 LiteLLM 之类的代理桥接：在 Provider 页打开它，「适用的 Agent」里有配置示例。",
             provider.name,
             provider.protocol.as_str(),
             kind.display_name()
@@ -274,6 +365,39 @@ mod tests {
             !inj.args.iter().any(|a| a.contains('k') && a == "k"),
             "密钥不进命令行"
         );
+    }
+
+    #[test]
+    fn mismatched_protocol_gets_a_litellm_guide_without_the_key() {
+        let p = deepseek();
+        let all = compatibility(&p);
+        assert_eq!(
+            all.iter()
+                .map(|c| (c.agent.as_str(), c.compatible))
+                .collect::<Vec<_>>(),
+            [("claude_code", true), ("codex", false)]
+        );
+        assert!(all[0].bridge_guide.is_none());
+        let guide = all[1].bridge_guide.as_deref().unwrap();
+        let model = p.default_model.as_deref().unwrap();
+        assert!(
+            guide.contains(&format!("model: anthropic/{model}")),
+            "{guide}"
+        );
+        assert!(guide.contains(p.base_url.as_deref().unwrap()));
+        assert!(guide.contains("api_key: os.environ/UPSTREAM_API_KEY"));
+        assert!(guide.contains("http://127.0.0.1:4000/v1"));
+
+        let openai = ProviderConfig {
+            protocol: Protocol::OpenaiChat,
+            base_url: Some("https://api.example.com/v1".into()),
+            default_model: None,
+            ..p
+        };
+        let guide = bridge_guide(AgentKind::ClaudeCode, &openai).unwrap();
+        assert!(guide.contains("model: openai/<上游模型名>"), "{guide}");
+        assert!(guide.contains("Base URL：`http://127.0.0.1:4000`"));
+        assert!(bridge_guide(AgentKind::Codex, &openai).is_none());
     }
 
     #[test]

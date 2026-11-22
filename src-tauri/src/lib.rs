@@ -12,6 +12,7 @@ use tidewatch_core::engine::{
 };
 use tidewatch_core::git;
 use tidewatch_core::prompt;
+use tidewatch_core::provider;
 use tidewatch_core::secrets;
 use tidewatch_core::store::{
     attachments, code_reviews, projects, providers, reviews, runs, settings, stats, tasks, tickets,
@@ -167,6 +168,25 @@ fn provider_save(
         }
         None => Ok(p),
     }
+}
+
+/// Claude Code / Codex 各自能不能直接用这个协议的 Provider；不能时给出 LiteLLM 桥接的配置示例。
+/// 只看表单里的协议、地址和模型，不读密钥。
+#[tauri::command]
+fn provider_compat(
+    name: String,
+    protocol: String,
+    base_url: Option<String>,
+    default_model: Option<String>,
+) -> CmdResult<Vec<provider::Compat>> {
+    Ok(provider::compatibility(&provider::ProviderConfig {
+        name,
+        protocol: provider::Protocol::parse(&protocol).map_err(err)?,
+        base_url,
+        default_model,
+        small_model: None,
+        extra_env: vec![],
+    }))
 }
 
 #[tauri::command]
@@ -997,6 +1017,7 @@ pub fn run() {
             provider_list,
             provider_save,
             provider_delete,
+            provider_compat,
             ticket_list,
             ticket_get,
             ticket_create,
