@@ -43,6 +43,23 @@ pub(crate) fn not_found(what: &str, id: &str) -> Error {
     Error::NotFound(format!("找不到{what}：{id}"))
 }
 
+thread_local! {
+    /// 当前线程在替哪个成员办事（接口请求处理期间）。
+    static ACTOR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// 在 `f` 执行期间，这个线程写下的时间线事件都记在 `actor` 名下。
+pub fn with_actor<T>(actor: &str, f: impl FnOnce() -> T) -> T {
+    struct Reset(Option<String>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ACTOR.with(|a| *a.borrow_mut() = self.0.take());
+        }
+    }
+    let _reset = Reset(ACTOR.with(|a| a.replace(Some(actor.to_string()))));
+    f()
+}
+
 /// 工单时间线。
 pub fn add_timeline(
     conn: &Connection,
@@ -50,7 +67,8 @@ pub fn add_timeline(
     kind: &str,
     payload: serde_json::Value,
 ) -> Result<()> {
-    add_timeline_as(conn, ticket_id, kind, payload, None)
+    let actor = ACTOR.with(|a| a.borrow().clone());
+    add_timeline_as(conn, ticket_id, kind, payload, actor.as_deref())
 }
 
 /// 工单时间线，带操作人（经接口进来的成员名；本机操作为空）。

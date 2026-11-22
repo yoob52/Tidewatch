@@ -69,21 +69,24 @@ impl Inner {
     pub(super) fn mcp_for(&self, run: &Run, kind: AgentKind) -> Option<(McpServer, String)> {
         if !matches!(
             kind,
-            AgentKind::ClaudeCode | AgentKind::Codex | AgentKind::OpenCode
+            AgentKind::ClaudeCode | AgentKind::Codex | AgentKind::OpenCode | AgentKind::Mock
         ) {
             return None;
         }
-        let api = self.api.lock().unwrap().clone()?;
         Some((
             McpServer {
-                url: format!("{}/mcp", api.base_url),
+                url: format!("{}/mcp", self.api.lock().unwrap().clone()?.base_url),
                 token_env: RUN_TOKEN_ENV.into(),
             },
-            format!(
-                "{RUN_TOKEN_PREFIX}{}_{}",
-                run.id,
-                sign(&api.secret, &run.id)
-            ),
+            self.run_token(&run.id)?,
+        ))
+    }
+
+    fn run_token(&self, run_id: &str) -> Option<String> {
+        let api = self.api.lock().unwrap().clone()?;
+        Some(format!(
+            "{RUN_TOKEN_PREFIX}{run_id}_{}",
+            sign(&api.secret, run_id)
         ))
     }
 
@@ -129,6 +132,11 @@ impl Engine {
     /// 本地接口启动 / 关闭时告诉引擎：之后启动的运行才会带上 MCP 服务。
     pub fn set_api(&self, api: Option<ApiEndpoint>) {
         *self.inner.api.lock().unwrap() = api;
+    }
+
+    /// 这一轮运行的令牌（接口没开时为空）。只交给这一轮的 Agent 子进程。
+    pub fn run_token(&self, run_id: &str) -> Option<String> {
+        self.inner.run_token(run_id)
     }
 
     /// 校验运行令牌：签名要对，而且那一轮还在跑。
