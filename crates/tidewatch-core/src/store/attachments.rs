@@ -198,6 +198,22 @@ pub fn read(workspace: &Path, a: &Attachment) -> Result<Vec<u8>> {
     Ok(std::fs::read(workspace.join(&a.path))?)
 }
 
+/// 界面显示用：`data:image/png;base64,...`。
+pub fn data_url(workspace: &Path, a: &Attachment) -> Result<String> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(read(workspace, a)?);
+    Ok(format!("data:{};base64,{b64}", a.mime))
+}
+
+/// 界面传来的图片内容（base64，可带 `data:...;base64,` 前缀）。
+pub fn decode_base64(data: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    let raw = data.rsplit_once("base64,").map(|x| x.1).unwrap_or(data);
+    base64::engine::general_purpose::STANDARD
+        .decode(raw.trim())
+        .map_err(|_| Error::invalid("图片内容不是有效的 base64。"))
+}
+
 /// 建单后把收件箱里被认领的图挪到工单自己的目录。挪不动就留在原处（路径照旧有效）。
 pub fn relocate(conn: &Connection, workspace: &Path, ticket_id: &str, key: &str) -> Result<()> {
     for a in list_for_ticket(conn, ticket_id)? {

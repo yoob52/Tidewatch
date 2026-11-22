@@ -45,6 +45,8 @@ export interface Settings {
   stuck_minutes: number;
   stuck_action: 'notify' | 'stop';
   stop_on_danger: boolean;
+  /** 开发阶段也把已被取代的参考图发给 Agent。 */
+  send_superseded_images: boolean;
 }
 
 export interface Commands {
@@ -91,6 +93,29 @@ export interface ProviderInput {
   extra_env: [string, string][];
   pricing: Pricing | null;
   proxy: string | null;
+  /** 模型只能处理文字：图片改发文字描述。 */
+  text_only: boolean;
+}
+
+export interface Attachment {
+  id: string;
+  ticket_id: string | null;
+  file_name: string;
+  mime: string;
+  description: string | null;
+  /** prd：随原始 PRD 导入；user：需求方之后贴的。 */
+  origin: 'prd' | 'user';
+  sha256: string;
+  width: number | null;
+  height: number | null;
+  created_at: string;
+}
+
+export interface Imported {
+  file_name: string;
+  markdown: string;
+  attachments: Attachment[];
+  warnings: string[];
 }
 
 export interface Provider extends ProviderInput {
@@ -505,12 +530,22 @@ export const api = {
   ticketGet: (id: string) => invoke<TicketDetail>('ticket_get', { id }),
   ticketCreate: (input: TicketInput) => invoke<Ticket>('ticket_create', { input }),
   ticketUpdate: (id: string, input: TicketInput) => invoke<Ticket>('ticket_update', { id, input }),
-  ticketSavePrd: (id: string, content: string, note?: string) =>
-    invoke<PrdVersion>('ticket_save_prd', { id, content, note: note ?? null }),
+  /** origin：image 表示这一版只动了图片（贴图、替换、改效力、移除）。 */
+  ticketSavePrd: (id: string, content: string, note?: string, origin?: 'edit' | 'image') =>
+    invoke<PrdVersion>('ticket_save_prd', { id, content, note: note ?? null, origin: origin ?? null }),
   ticketTransition: (id: string, to: TicketStatus) => invoke<Ticket>('ticket_transition', { id, to }),
   ticketDraft: (markdown: string) =>
     invoke<{ title: string; type: TicketType; content_md: string }>('ticket_draft', { markdown }),
   readTextFile: (path: string) => invoke<string>('read_text_file', { path }),
+  importDocument: (path: string) => invoke<Imported>('import_document', { path }),
+
+  /** ticketId 为空：工单还没建，建单时认领。 */
+  attachmentAdd: (ticketId: string | null, fileName: string, dataBase64: string, origin: 'prd' | 'user' = 'user') =>
+    invoke<Attachment>('attachment_add', { ticketId, fileName, dataBase64, origin }),
+  attachmentList: (ticketId: string) => invoke<Attachment[]>('attachment_list', { ticketId }),
+  attachmentData: (id: string) => invoke<string>('attachment_data', { id }),
+  attachmentDescribe: (id: string, description: string) =>
+    invoke<Attachment>('attachment_describe', { id, description }),
 
   reviewStart: (id: string) => invoke<Run>('review_start', { id }),
   reviewSkip: (id: string) => invoke<Ticket>('review_skip', { id }),

@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { Icon } from './Icon';
 import type { IconName } from './icons';
+import { parseImages, PrdImage, type ImageActions } from './images';
 import { onEngine, type EngineEvent, type Priority, type RunStatus, type TaskStatus, type TicketStatus, type TicketType } from './api';
 
 export const STAGES: { id: TicketStatus; name: string; num: string; hint: string; mine?: boolean }[] = [
@@ -320,16 +321,45 @@ export function Inline({ text }: { text: string }) {
 }
 
 /** `prev`：上一版正文，用来标出本版新增的行。 */
-export function Md({ src, prev }: { src: string; prev?: string | null }) {
+const cells = (l: string) =>
+  l
+    .trim()
+    .replace(/^\||\|$/g, '')
+    .split(/(?<!\\)\|/)
+    .map((c) => c.trim().replace(/\\\|/g, '|'));
+
+/** `images`：传了就在每张图上显示改效力 / 替换 / 移除的按钮。 */
+export function Md({ src, prev, images }: { src: string; prev?: string | null; images?: ImageActions }) {
   const blocks = useMemo(() => {
     const old = prev == null ? null : new Set(prev.split('\n'));
     const out: ReactNode[] = [];
     let list: ReactNode[] = [];
+    let table: string[] = [];
     let code: string[] | null = null;
     const flush = () => {
       if (list.length) {
         out.push(<ul key={`u${out.length}`}>{list}</ul>);
         list = [];
+      }
+      if (table.length) {
+        const rows = table.filter((r) => !/^\s*\|?[\s:|-]+\|?\s*$/.test(r)).map(cells);
+        out.push(
+          <table key={`t${out.length}`} className="mdtable">
+            <thead>
+              <tr>{rows[0]?.map((c, i) => <th key={i}>{inline(c, 0)}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.slice(1).map((r, i) => (
+                <tr key={i}>
+                  {r.map((c, j) => (
+                    <td key={j}>{c.split('<br>').map((x, k) => <div key={k}>{inline(x, 0)}</div>)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>,
+        );
+        table = [];
       }
     };
     src.split('\n').forEach((l, i) => {
@@ -352,6 +382,18 @@ export function Md({ src, prev }: { src: string; prev?: string | null }) {
         return;
       }
       const cls = old && l.trim() && !old.has(l) ? 'ins' : undefined;
+      if (l.trimStart().startsWith('|')) {
+        if (list.length) flush();
+        table.push(l);
+        return;
+      }
+      if (table.length) flush();
+      const imgs = parseImages(l);
+      if (imgs.length && !l.replace(/!\[[^\]\n]*\]\(attachment:[^)]*\)/g, '').trim()) {
+        flush();
+        imgs.forEach((img, k) => out.push(<PrdImage key={`${i}-${k}`} img={img} actions={images} added={!!cls} />));
+        return;
+      }
       const item = /^\s*(?:[-*]|\d+[.)])\s+(.*)$/.exec(l);
       if (item) {
         list.push(
@@ -370,7 +412,7 @@ export function Md({ src, prev }: { src: string; prev?: string | null }) {
     if (code) out.push(<pre key="tail" className="plain boxed">{(code as string[]).join('\n')}</pre>);
     flush();
     return out;
-  }, [src, prev]);
+  }, [src, prev, images]);
   return <>{blocks}</>;
 }
 
@@ -390,7 +432,7 @@ interface UiApi {
   /** 出错时提示并返回 undefined。 */
   attempt: <T>(p: Promise<T>, okMsg?: string) => Promise<T | undefined>;
   confirm: (title: string, body: ReactNode, ok: string, danger?: boolean) => Promise<boolean>;
-  prompt: (title: string, body: ReactNode, placeholder: string, ok?: string, required?: boolean) => Promise<string | null>;
+  prompt: (title: string, body: ReactNode, placeholder: string, ok?: string, required?: boolean, initial?: string) => Promise<string | null>;
 }
 
 const UiContext = createContext<UiApi | null>(null);
@@ -428,9 +470,9 @@ export function UiProvider({ children }: { children: ReactNode }) {
       },
       confirm: (title, body, ok, danger) =>
         new Promise((resolve) => setDialog({ title, body, ok, danger, resolve: (v) => resolve(v !== null) })),
-      prompt: (title, body, placeholder, ok = '确定', required = false) =>
+      prompt: (title, body, placeholder, ok = '确定', required = false, initial = '') =>
         new Promise((resolve) => {
-          setText('');
+          setText(initial);
           setDialog({ title, body, ok, prompt: { placeholder, required }, resolve });
         }),
     }),

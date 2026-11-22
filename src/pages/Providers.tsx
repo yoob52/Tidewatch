@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { api, type Provider, type ProviderInput } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
-import { Empty, Field, go, useUi } from '../lib/ui';
+import { Empty, Field, Switch, go, useUi } from '../lib/ui';
 
 const PROTOCOLS: [ProviderInput['protocol'], string, string][] = [
   ['native', '本机登录态', '不注入任何变量，用 Agent 自己登录的账号'],
@@ -29,6 +29,7 @@ const blank: ProviderInput = {
   extra_env: [],
   pricing: null,
   proxy: null,
+  text_only: false,
 };
 
 const toInput = (p: Provider): ProviderInput => ({
@@ -41,6 +42,7 @@ const toInput = (p: Provider): ProviderInput => ({
   extra_env: p.extra_env,
   pricing: p.pricing,
   proxy: p.proxy,
+  text_only: p.text_only,
 });
 
 const num = (v: string) => (Number.isFinite(Number(v)) && v.trim() !== '' ? Number(v) : 0);
@@ -247,6 +249,9 @@ export function ProvidersPage({ id }: { id?: string }) {
               <input className="input mono" value={f.proxy ?? ''} onChange={(e) => set({ proxy: e.target.value || null })} placeholder="http://127.0.0.1:7890" />
             </Field>
           </div>
+          <Field label="图片" hint="模型看不了图时打开：PRD 里的图片改发文字描述">
+            <Switch on={f.text_only} onChange={(v) => set({ text_only: v })} label="只能处理文字" />
+          </Field>
           <Field label="额外环境变量" hint="每行一条 NAME=value；不要在这里放密钥">
             <textarea
               className="textarea mono"

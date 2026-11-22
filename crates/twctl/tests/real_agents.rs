@@ -245,3 +245,124 @@ fn real_agent_review_and_split_are_parsed() {
     assert!(created.iter().any(|t| t.kind == "frontend"));
     engine.shutdown();
 }
+
+/// 真实 Agent 要能看到 PRD 里的图：让它把图里的券码抄进文件。
+#[test]
+#[ignore = "需要真实 Agent 的账号和网络"]
+fn real_agent_reads_the_prd_image() {
+    use tidewatch_core::engine::StartOptions;
+    use tidewatch_core::store::{attachments, tasks};
+
+    let agent = std::env::var("TW_REAL_AGENT").expect("设置 TW_REAL_AGENT=claude_code 或 codex");
+    let dir = tempfile::tempdir().unwrap();
+    let root = tidewatch_core::util::canonical(dir.path()).unwrap();
+    init_repo(&root.join("api"), &[("README.md", "# shop-api\n")]);
+    let conn = db::open(&root.join("data/tidewatch.db")).unwrap();
+    let secrets = MemoryStore::default();
+    let mut st = settings::Settings {
+        default_agent: agent.clone(),
+        ..Default::default()
+    };
+    if let Ok(base_url) = std::env::var("TW_REAL_BASE_URL") {
+        let model = std::env::var("TW_REAL_MODEL").ok();
+        let provider = providers::create(
+            &conn,
+            providers::ProviderInput {
+                name: "real".into(),
+                protocol: std::env::var("TW_REAL_PROTOCOL").unwrap_or_else(|_| {
+                    if agent == "codex" {
+                        "openai_responses".into()
+                    } else {
+                        "anthropic".into()
+                    }
+                }),
+                base_url: Some(base_url),
+                models: model.clone().into_iter().collect(),
+                default_model: model,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let key = std::env::var("TW_REAL_KEY").expect("设置了 TW_REAL_BASE_URL 就要给 TW_REAL_KEY");
+        providers::store_secret(&conn, &secrets, &provider.id, Some(&key)).unwrap();
+        st.default_provider_id = Some(provider.id);
+    }
+    settings::save(&conn, &st).unwrap();
+    let project = projects::create(
+        &conn,
+        projects::ProjectInput {
+            name: "shop-api".into(),
+            kind: "backend".into(),
+            local_path: root.join("api").display().to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .id;
+    let workspace = st.workspace(&root.join("data"));
+    let image = attachments::add(
+        &conn,
+        &workspace,
+        None,
+        "coupon.png",
+        include_bytes!("fixtures/coupon.png"),
+        "user",
+    )
+    .unwrap();
+    let engine = Engine::start(
+        db::shared(conn),
+        Box::new(secrets),
+        EngineConfig {
+            data_dir: root.join("data"),
+            mock_binary: None,
+        },
+        Arc::new(|_| {}),
+    )
+    .unwrap();
+    let task = {
+        let mut conn = lock(engine.db());
+        let ticket = tickets::create(
+            &mut conn,
+            tickets::TicketInput {
+                title: "把券码写进文件".into(),
+                kind: "bug".into(),
+                content_md: format!(
+                    "下面这张截图里有一个券码。在仓库根目录新建 code.txt，内容只有这个券码，一字不差。\n\n![券码截图](attachment:{} \"authoritative\")\n",
+                    image.id
+                ),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        tasks::create(
+            &mut conn,
+            tasks::TaskInput {
+                ticket_id: ticket.id,
+                kind: "bug".into(),
+                project_id: project,
+                title: "把券码写进文件".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let run = wait_run(
+        &engine,
+        &engine
+            .start_task(&task.id, StartOptions::default())
+            .unwrap()
+            .id,
+    );
+    println!(
+        "run: {} {:?}\ncommand: {:?}",
+        run.status, run.error, run.command
+    );
+    assert_eq!(run.status, "succeeded", "{:?}", run.error);
+    let worktree = tasks::get(&lock(engine.db()), &task.id)
+        .unwrap()
+        .worktree_path
+        .unwrap();
+    let code = std::fs::read_to_string(Path::new(&worktree).join("code.txt")).unwrap();
+    println!("code.txt: {code:?}");
+    assert_eq!(code.trim(), "TW-7391-KQ");
+}

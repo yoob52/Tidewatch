@@ -1670,3 +1670,54 @@ fn guards_flag_dangerous_commands_and_stop_runs_over_budget() {
         r.error
     );
 }
+
+#[test]
+fn prd_images_are_handed_to_the_agent_with_their_authority() {
+    use tidewatch_core::store::attachments;
+    const PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R', 0,
+        0, 0, 2, 0, 0, 0, 3, 8, 2, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let f = fixture(1, None);
+    let workspace = {
+        let conn = lock(f.db());
+        settings::get(&conn)
+            .unwrap()
+            .workspace(&f.repo.parent().unwrap().join("data"))
+    };
+    // 还没有工单时贴的图，建单时认领
+    let (shot, old) = {
+        let conn = lock(f.db());
+        let shot = attachments::add(&conn, &workspace, None, "截图.png", PNG, "user").unwrap();
+        let mut other = PNG.to_vec();
+        other.push(1);
+        let old = attachments::add(&conn, &workspace, None, "原图.png", &other, "prd").unwrap();
+        (shot.id, old.id)
+    };
+    let body = format!(
+        "结算页显示优惠明细 [mock:steps=1] [mock:delay=30]\n\n![需求方截图](attachment:{shot} \"authoritative\")\n\n![原 PRD 图](attachment:{old} \"reference; superseded-by={shot}\")\n"
+    );
+    let (_, task) = f.bug("带图的 Bug", &body, "medium");
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "succeeded", "{:?}", r.error);
+
+    // Agent 拿到的是文件路径和图片清单；开发阶段不发已被取代的图
+    let prompt = f.run(&r.id).prompt;
+    assert!(prompt.contains("## 图片清单"), "{prompt}");
+    assert!(prompt.contains("权威"), "{prompt}");
+    assert!(!prompt.contains(&format!("attachment:{shot}")), "{prompt}");
+    let events = runs::events(&lock(f.db()), &r.id, 0).unwrap();
+    let images = events
+        .iter()
+        .find(|e| e.kind == "images")
+        .expect("images 事件");
+    let files = images.payload["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "{files:?}");
+    // 这一轮结束后副本被清掉，原图还在
+    assert!(!workspace.join("tmp").join(&r.id).exists());
+    let conn = lock(f.db());
+    let a = attachments::get(&conn, &shot).unwrap();
+    assert!(a.ticket_id.is_some());
+    assert_eq!(attachments::read(&workspace, &a).unwrap(), PNG);
+}

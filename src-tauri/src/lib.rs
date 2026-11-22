@@ -11,7 +11,9 @@ use tidewatch_core::engine::{
 use tidewatch_core::git;
 use tidewatch_core::prompt;
 use tidewatch_core::secrets;
-use tidewatch_core::store::{projects, providers, reviews, runs, settings, stats, tasks, tickets};
+use tidewatch_core::store::{
+    attachments, projects, providers, reviews, runs, settings, stats, tasks, tickets,
+};
 
 /// 推给界面的事件名。
 pub const ENGINE_EVENT: &str = "tw://engine";
@@ -255,7 +257,87 @@ fn ticket_get(state: State, id: String) -> CmdResult<TicketDetail> {
 
 #[tauri::command]
 fn ticket_create(state: State, input: tickets::TicketInput) -> CmdResult<tickets::Ticket> {
-    tickets::create(&mut lock(state.engine.db()), input).map_err(err)
+    let mut conn = lock(state.engine.db());
+    let t = tickets::create(&mut conn, input).map_err(err)?;
+    // 导入 / 粘贴时先放在收件箱里的图，挪到这张工单的目录
+    let ws = workspace(&state, &conn);
+    let _ = attachments::relocate(&conn, &ws, &t.id, &t.key);
+    Ok(t)
+}
+
+fn workspace(state: &State, conn: &tidewatch_core::rusqlite::Connection) -> PathBuf {
+    settings::get(conn)
+        .unwrap_or_default()
+        .workspace(&state.data_dir)
+}
+
+// ---- 图片附件 ----
+
+/// 存一张图（粘贴 / 上传）。`ticket_id` 为空表示工单还没建，建单时认领。
+#[tauri::command]
+fn attachment_add(
+    state: State,
+    ticket_id: Option<String>,
+    file_name: String,
+    data_base64: String,
+    origin: String,
+) -> CmdResult<attachments::Attachment> {
+    let bytes = attachments::decode_base64(&data_base64).map_err(err)?;
+    let conn = lock(state.engine.db());
+    let ticket = ticket_id
+        .map(|id| tickets::get(&conn, &id))
+        .transpose()
+        .map_err(err)?;
+    attachments::add(
+        &conn,
+        &workspace(&state, &conn),
+        ticket.as_ref().map(|t| (t.id.as_str(), t.key.as_str())),
+        &file_name,
+        &bytes,
+        &origin,
+    )
+    .map_err(err)
+}
+
+#[tauri::command]
+fn attachment_list(state: State, ticket_id: String) -> CmdResult<Vec<attachments::Attachment>> {
+    attachments::list_for_ticket(&lock(state.engine.db()), &ticket_id).map_err(err)
+}
+
+/// 图片内容（data URL），界面渲染用。
+#[tauri::command]
+fn attachment_data(state: State, id: String) -> CmdResult<String> {
+    let conn = lock(state.engine.db());
+    let a = attachments::get(&conn, &id).map_err(err)?;
+    attachments::data_url(&workspace(&state, &conn), &a).map_err(err)
+}
+
+#[tauri::command]
+fn attachment_describe(
+    state: State,
+    id: String,
+    description: String,
+) -> CmdResult<attachments::Attachment> {
+    attachments::set_description(&lock(state.engine.db()), &id, &description).map_err(err)
+}
+
+/// 导入用户在文件对话框里选中的 md / txt / docx / pdf：返回 Markdown，图片存成附件。
+#[tauri::command]
+fn import_document(state: State, path: String) -> CmdResult<tidewatch_core::import::Imported> {
+    let p = std::path::Path::new(&path);
+    let meta = std::fs::metadata(p).map_err(err)?;
+    if meta.len() > tidewatch_core::import::MAX_FILE_BYTES as u64 {
+        return Err("文件超过 50 MB，没有导入。".into());
+    }
+    let bytes = std::fs::read(p).map_err(err)?;
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("导入的文件")
+        .to_string();
+    let conn = lock(state.engine.db());
+    tidewatch_core::import::import(&conn, &workspace(&state, &conn), &name, &bytes, p.parent())
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -273,8 +355,21 @@ fn ticket_save_prd(
     id: String,
     content: String,
     note: Option<String>,
+    origin: Option<String>,
 ) -> CmdResult<tickets::PrdVersion> {
-    tickets::save_prd(&mut lock(state.engine.db()), &id, &content, note.as_deref()).map_err(err)
+    // 界面只能存两种来源：手动编辑、图片变更（贴图、替换、改效力、移除）
+    let origin = match origin.as_deref() {
+        Some("image") => "image",
+        _ => "edit",
+    };
+    tickets::save_prd_as(
+        &mut lock(state.engine.db()),
+        &id,
+        &content,
+        origin,
+        note.as_deref(),
+    )
+    .map_err(err)
 }
 
 /// 手动流转。提交预审和定稿各有自己的命令（要起 AI 运行、做校验），这里转过去，
@@ -834,6 +929,11 @@ pub fn run() {
             prompt_save,
             ticket_draft,
             read_text_file,
+            attachment_add,
+            attachment_list,
+            attachment_data,
+            attachment_describe,
+            import_document,
             task_create,
             task_update,
             task_plan,

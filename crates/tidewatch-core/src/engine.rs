@@ -1672,6 +1672,8 @@ impl Inner {
             }
             RunnerEvent::Stderr(line) => self.log(&run.id, "stderr", json!({ "text": line })),
         });
+        // 这一轮用的图片副本不再需要；原图在 attachments/ 里
+        let _ = std::fs::remove_dir_all(st.workspace(&self.cfg.data_dir).join("tmp").join(&run.id));
         let outcome = match outcome {
             Ok(o) => o,
             Err(e) => {

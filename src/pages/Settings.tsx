@@ -265,6 +265,15 @@ export function SettingsPage({
               <Switch on={settings.stop_on_danger} onChange={(v) => void save({ stop_on_danger: v })} label="发现危险命令就停止" />
             </div>
           </div>
+          <div className="srow">
+            <div>
+              <b>开发时也发送已被取代的图</b>
+              <p>PRD 里被你替换掉的原图默认只在预审时发给 Agent；开发阶段不发，免得它照着旧图做。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.send_superseded_images} onChange={(v) => void save({ send_superseded_images: v })} label="开发时也发送已被取代的图" />
+            </div>
+          </div>
         </div>
 
         <h3 id="set-1">{SECTIONS[1]}</h3>
