@@ -1,12 +1,12 @@
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type UpdateInfo } from '../lib/api';
+import { api, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type Stage, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type UpdateInfo, type Workflow, type WorkflowInput } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { AGENTS, Field, Modal, PERMISSIONS, Seg, Switch, TYPES, useUi } from '../lib/ui';
 
-const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '接口与成员', '外部同步', '本机环境'];
+const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '接口与成员', '外部同步', '工作流', '本机环境'];
 
 /** 编辑一个 Prompt 模板：左边改，右边看用示例数据填出来的效果。 */
 function TemplateEditor({ tpl, onClose, onSaved }: { tpl: TemplateInfo; onClose: () => void; onSaved: (list: TemplateInfo[]) => void }) {
@@ -320,6 +320,181 @@ function ApiSection({ settings, save }: { settings: Settings; save: (patch: Part
             用法：请求头带上 <span className="mono">Authorization: Bearer {'<令牌>'}</span>。
           </p>
         </Modal>
+      )}
+    </div>
+  );
+}
+
+const GATE_NAME: Record<Stage['gate'], string> = { finalized: '定稿之前', done: '完成之前' };
+
+/** 新建 / 编辑一个工作流。 */
+function WorkflowEditor({ current, onClose, onSaved }: { current: Workflow | null; onClose: () => void; onSaved: () => void }) {
+  const ui = useUi();
+  const [f, setF] = useState<WorkflowInput>(
+    current
+      ? { name: current.name, config: current.config, enabled: current.enabled }
+      : { name: '', config: { ticket_types: ['feature_mixed'], stages: [{ id: '', name: '', gate: 'finalized', hint: '' }], auto_done: true }, enabled: true },
+  );
+  const cfg = (patch: Partial<WorkflowInput['config']>) => setF((x) => ({ ...x, config: { ...x.config, ...patch } }));
+  const stage = (i: number, patch: Partial<Stage>) => cfg({ stages: f.config.stages.map((s, k) => (k === i ? { ...s, ...patch } : s)) });
+  const move = (i: number, by: number) => {
+    const next = [...f.config.stages];
+    const [s] = next.splice(i, 1);
+    next.splice(i + by, 0, s);
+    cfg({ stages: next });
+  };
+  const toggleType = (t: TicketType) =>
+    cfg({ ticket_types: f.config.ticket_types.includes(t) ? f.config.ticket_types.filter((x) => x !== t) : [...f.config.ticket_types, t] });
+  const submit = async () => {
+    const saved = await ui.attempt(api.workflowSave(current?.id ?? null, f), '已保存');
+    if (saved) onSaved();
+  };
+  const onlyBug = f.config.ticket_types.length > 0 && f.config.ticket_types.every((t) => t === 'bug');
+  return (
+    <Modal
+      title={current ? `编辑「${current.name}」` : '添加工作流'}
+      hint="内置的状态（草稿、预审、人工审核、已定稿、开发中、验收中、已完成）不变。这里给某几类工单加上自己的环节：每个环节要有人点「通过」，工单才能往下走。"
+      width={720}
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button className="btn primary" disabled={!f.name.trim() || !f.config.ticket_types.length} onClick={() => void submit()}>
+            保存
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        <Field label="名称">
+          <input className="input" value={f.name} onChange={(e) => setF((x) => ({ ...x, name: e.target.value }))} placeholder="例如：带设计评审的需求流程" />
+        </Field>
+        <Field label="适用的工单类型" hint="一种类型同一时间只能有一个启用的工作流">
+          <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
+            {(Object.keys(TYPES) as TicketType[]).map((t) => (
+              <label key={t} className="row">
+                <input type="checkbox" checked={f.config.ticket_types.includes(t)} onChange={() => toggleType(t)} />
+                {TYPES[t].name}
+              </label>
+            ))}
+          </div>
+        </Field>
+        <Field label="环节" hint="按顺序逐个通过。工单退回前面的状态（比如发起变更、打回返工）后要重新过">
+          {f.config.stages.map((s, i) => (
+            <div key={i} className="row" style={{ gap: 6, marginBottom: 6, alignItems: 'center' }}>
+              <input className="input" style={{ width: 150 }} value={s.name} onChange={(e) => stage(i, { name: e.target.value })} placeholder="环节名称" aria-label={`环节 ${i + 1} 名称`} />
+              <select className="input" style={{ width: 110 }} value={s.gate} onChange={(e) => stage(i, { gate: e.target.value as Stage['gate'] })} aria-label={`环节 ${i + 1} 位置`}>
+                <option value="finalized">{GATE_NAME.finalized}</option>
+                <option value="done">{GATE_NAME.done}</option>
+              </select>
+              <input className="input" style={{ flex: 1 }} value={s.hint} onChange={(e) => stage(i, { hint: e.target.value })} placeholder="要检查什么（可选）" aria-label={`环节 ${i + 1} 说明`} />
+              <button className="btn sm ghost" disabled={i === 0} onClick={() => move(i, -1)} aria-label="上移">
+                ↑
+              </button>
+              <button className="btn sm ghost" disabled={i === f.config.stages.length - 1} onClick={() => move(i, 1)} aria-label="下移">
+                ↓
+              </button>
+              <button className="btn sm ghost" onClick={() => cfg({ stages: f.config.stages.filter((_, k) => k !== i) })} aria-label={`删除环节 ${i + 1}`}>
+                <Icon name="x" size={13} />
+              </button>
+            </div>
+          ))}
+          <button className="btn sm" onClick={() => cfg({ stages: [...f.config.stages, { id: '', name: '', gate: 'done', hint: '' }] })}>
+            加一个环节
+          </button>
+          {onlyBug && f.config.stages.some((s) => s.gate === 'finalized') && (
+            <p className="dim" style={{ marginTop: 6 }}>
+              Bug 走快速通道、不经过定稿，「定稿之前」的环节对它不起作用。
+            </p>
+          )}
+        </Field>
+        <label className="row">
+          <input type="checkbox" checked={f.config.auto_done} onChange={(e) => cfg({ auto_done: e.target.checked })} />
+          子任务全部合并、环节都通过后，自动完成工单（关掉后要手动把工单拖到「已完成」）
+        </label>
+      </div>
+    </Modal>
+  );
+}
+
+/** 自定义工作流：在内置流程上加自己的环节。 */
+function WorkflowSection() {
+  const ui = useUi();
+  const { reload } = useData();
+  const [list, setList] = useState<Workflow[]>([]);
+  const [editing, setEditing] = useState<Workflow | 'new' | null>(null);
+  const refresh = () => {
+    void api.workflowList().then(setList, () => undefined);
+    // 看板上的「待：环节」跟着变
+    void reload();
+  };
+  useEffect(() => void api.workflowList().then(setList, () => undefined), []);
+  const toggle = async (w: Workflow) => {
+    await ui.attempt(api.workflowSave(w.id, { name: w.name, config: w.config, enabled: !w.enabled }));
+    refresh();
+  };
+  const remove = async (w: Workflow) => {
+    if (!(await ui.confirm(`删除工作流「${w.name}」？`, '这几类工单回到内置流程；已经通过的环节记录一并删除，时间线里的记录留着。', '删除', true))) return;
+    await ui.attempt(api.workflowDelete(w.id));
+    refresh();
+  };
+  return (
+    <div className="card">
+      {list.length === 0 && (
+        <div className="srow">
+          <div>
+            <b>现在用的是内置流程</b>
+            <p>可以给某几类工单加上自己的环节，比如定稿前的「设计评审」、完成前的「QA 验证」。环节由人点通过，没通过之前工单不能定稿 / 完成。</p>
+          </div>
+        </div>
+      )}
+      {list.map((w) => (
+        <div className="srow" key={w.id}>
+          <div>
+            <b>{w.name}</b>
+            <p>
+              {w.config.ticket_types.map((t) => TYPES[t]?.name ?? t).join('、')}
+              {w.config.stages.length > 0 ? ` · ${w.config.stages.map((s) => `${s.name}（${GATE_NAME[s.gate]}）`).join(' → ')}` : ' · 没有环节'}
+              {!w.config.auto_done && ' · 手动完成'}
+            </p>
+          </div>
+          <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {!w.enabled && <span className="tag amber">已停用</span>}
+            <button className="btn sm" onClick={() => setEditing(w)}>
+              编辑
+            </button>
+            <button className="btn sm" onClick={() => void toggle(w)}>
+              {w.enabled ? '停用' : '启用'}
+            </button>
+            <button className="btn sm ghost" onClick={() => void remove(w)} aria-label={`删除 ${w.name}`}>
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className="srow">
+        <div>
+          <b>添加工作流</b>
+          <p>改动立刻对进行中的工单生效：新加的环节要补过，删掉的环节不再卡。</p>
+        </div>
+        <div className="sctl">
+          <button className="btn sm" onClick={() => setEditing('new')}>
+            添加…
+          </button>
+        </div>
+      </div>
+      {editing && (
+        <WorkflowEditor
+          current={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            refresh();
+          }}
+        />
       )}
     </div>
   );
@@ -972,6 +1147,9 @@ export function SettingsPage({
         <SyncSection />
 
         <h3 id="set-8">{SECTIONS[8]}</h3>
+        <WorkflowSection />
+
+        <h3 id="set-9">{SECTIONS[9]}</h3>
         <div className="card">
           <div className="srow">
             <div>

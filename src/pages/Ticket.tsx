@@ -302,6 +302,8 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
       return [p.error ? 'alert' : 'spark', 'Agent', `委派给 ${AGENTS[p.agent as string]?.name ?? p.agent} 的只读检查${p.error ? `没有完成：${p.error}` : '完成'}`];
     case 'comment':
       return ['edit', '你', `评论：${p.body ?? ''}`];
+    case 'stage_passed':
+      return ['check', '你', `通过了环节「${p.stage ?? ''}」${p.note ? `：${p.note}` : ''}`];
     case 'source_linked':
       return ['upload', '系统', `从${p.kind === 'github' ? ' GitHub Issue ' : '飞书文档'}导入（${p.source ?? ''}）`];
     case 'source_comment':
@@ -319,6 +321,37 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
     default:
       return ['info', '系统', e.type];
   }
+}
+
+/** 自定义工作流：现在轮到的环节，由人点通过。 */
+function StageGate({ d }: { d: TicketDetail }) {
+  const ui = useUi();
+  const [note, setNote] = useState('');
+  const cur = d.stages.find((s) => s.current);
+  if (!cur) return null;
+  const same = d.stages.filter((s) => s.gate === cur.gate);
+  const pass = async () => {
+    const done = await ui.attempt(api.ticketStagePass(d.ticket.id, cur.id, note), `「${cur.name}」已通过`);
+    if (done) setNote('');
+  };
+  return (
+    <div className="callout tide">
+      <Icon name="info" size={15} />
+      <div style={{ flex: 1 }}>
+        <b>
+          等待环节：{cur.name}（{same.indexOf(cur) + 1}/{same.length}）
+        </b>{' '}
+        通过之后才能{cur.gate === 'finalized' ? '定稿' : '完成这张工单'}。
+        {cur.hint && <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{cur.hint}</div>}
+        <div className="row" style={{ gap: 6, marginTop: 8 }}>
+          <input className="input" style={{ flex: 1, minWidth: 180 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="备注（可选）" aria-label="环节备注" />
+          <button className="btn sm primary" onClick={() => void pass()}>
+            通过
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** 源已变更：外部的 Issue / 文档有一版还没导入。 */
@@ -436,6 +469,7 @@ function OverviewTab({ d }: { d: TicketDetail }) {
       <div className="ov-main">
         <Questions d={d} />
         <SourceChanged d={d} />
+        <StageGate d={d} />
         {t.status === 'ai_review' && (
           <div className="callout tide">
             <Icon name="spark" size={15} />
@@ -550,6 +584,18 @@ function OverviewTab({ d }: { d: TicketDetail }) {
           <dd>
             <Stamp type={t.type} /> {TYPES[t.type]?.name}
           </dd>
+          {d.stages.length > 0 && (
+            <>
+              <dt>环节</dt>
+              <dd>
+                {d.stages.map((s) => (
+                  <div key={s.id} className={s.passed_at ? '' : 'dim'} title={s.note ?? undefined}>
+                    {s.passed_at ? '✓' : s.current ? '→' : '·'} {s.name}
+                  </div>
+                ))}
+              </dd>
+            </>
+          )}
           {d.source && (
             <>
               <dt>来源</dt>

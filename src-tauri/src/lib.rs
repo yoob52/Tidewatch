@@ -17,6 +17,7 @@ use tidewatch_core::provider;
 use tidewatch_core::secrets;
 use tidewatch_core::store::members::{self, Member};
 use tidewatch_core::store::questions::{self, Question};
+use tidewatch_core::store::workflows;
 use tidewatch_core::store::{
     attachments, code_reviews, projects, providers, reviews, runs, settings, stats, tasks, tickets,
 };
@@ -245,6 +246,46 @@ fn member_delete(state: State, id: String) -> CmdResult<()> {
     members::delete(&lock(state.engine.db()), &id).map_err(err)
 }
 
+// ---- 自定义工作流 ----
+
+#[tauri::command]
+fn workflow_list(state: State) -> CmdResult<Vec<workflows::Workflow>> {
+    workflows::list(&lock(state.engine.db())).map_err(err)
+}
+
+/// `id` 为空是新建。
+#[tauri::command]
+fn workflow_save(
+    state: State,
+    id: Option<String>,
+    input: workflows::WorkflowInput,
+) -> CmdResult<workflows::Workflow> {
+    let conn = lock(state.engine.db());
+    match id {
+        Some(id) => workflows::update(&conn, &id, input),
+        None => workflows::create(&conn, input),
+    }
+    .map_err(err)
+}
+
+#[tauri::command]
+fn workflow_delete(state: State, id: String) -> CmdResult<()> {
+    workflows::delete(&lock(state.engine.db()), &id).map_err(err)
+}
+
+#[tauri::command]
+fn ticket_stage_pass(
+    state: State,
+    ticket_id: String,
+    stage_id: String,
+    note: String,
+) -> CmdResult<workflows::StageState> {
+    state
+        .engine
+        .pass_stage(&ticket_id, &stage_id, &note)
+        .map_err(err)
+}
+
 // ---- 外部同步 ----
 
 #[tauri::command]
@@ -463,6 +504,8 @@ struct TicketSummary {
     tasks_running: usize,
     /// 预审提出、还没处理的问题数。
     issues_open: usize,
+    /// 正在等的自定义环节（自定义工作流）。
+    waiting_stage: Option<String>,
 }
 
 #[tauri::command]
@@ -470,6 +513,10 @@ fn ticket_list(state: State, query: Option<String>) -> CmdResult<Vec<TicketSumma
     let conn = lock(state.engine.db());
     let all_tasks = tasks::list_all(&conn).map_err(err)?;
     let open_issues = reviews::open_counts(&conn).map_err(err)?;
+    let mut waiting: std::collections::HashMap<String, String> = workflows::waiting(&conn)
+        .map_err(err)?
+        .into_iter()
+        .collect();
     Ok(tickets::list(&conn, query.as_deref())
         .map_err(err)?
         .into_iter()
@@ -485,6 +532,7 @@ fn ticket_list(state: State, query: Option<String>) -> CmdResult<Vec<TicketSumma
             }
             TicketSummary {
                 issues_open: open_issues.get(&ticket.id).copied().unwrap_or(0),
+                waiting_stage: waiting.remove(&ticket.id),
                 ticket,
                 tasks_total: total,
                 tasks_done: done,
@@ -514,6 +562,8 @@ struct TicketDetail {
     questions: Vec<Question>,
     /// 外部来源（GitHub Issue / 飞书文档），以及有没有还没导入的新版本。
     source: Option<sync::TicketSource>,
+    /// 自定义工作流的环节，按顺序；没有工作流时为空。
+    stages: Vec<workflows::StageState>,
     /// 负责人的名字。
     assignee: Option<String>,
 }
@@ -535,6 +585,7 @@ fn ticket_get(state: State, id: String) -> CmdResult<TicketDetail> {
         code_reviews: code_reviews::list_for_ticket(&conn, &ticket.id).map_err(err)?,
         questions: questions::list_for_ticket(&conn, &ticket.id).map_err(err)?,
         source: sync::ticket_source(&conn, &ticket.id).map_err(err)?,
+        stages: workflows::stages_of(&conn, &ticket).map_err(err)?,
         assignee: ticket
             .assignee_id
             .as_deref()
@@ -1301,6 +1352,10 @@ pub fn run() {
             member_update,
             member_reset_token,
             member_delete,
+            workflow_list,
+            workflow_save,
+            workflow_delete,
+            ticket_stage_pass,
             sync_source_list,
             sync_source_save,
             sync_source_delete,

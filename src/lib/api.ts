@@ -70,6 +70,42 @@ export interface Member {
   last_seen_at: string | null;
 }
 
+/** 自定义环节：卡在定稿前（人工审核时通过）或完成前（验收时通过）。 */
+export interface Stage {
+  id: string;
+  name: string;
+  gate: 'finalized' | 'done';
+  hint: string;
+}
+
+export interface WorkflowConfig {
+  ticket_types: TicketType[];
+  stages: Stage[];
+  auto_done: boolean;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  config: WorkflowConfig;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface WorkflowInput {
+  name: string;
+  config: WorkflowConfig;
+  enabled: boolean;
+}
+
+export interface StageState extends Stage {
+  passed_at: string | null;
+  actor: string | null;
+  note: string | null;
+  /** 现在轮到它。 */
+  current: boolean;
+}
+
 export interface SourceConfig {
   /** GitHub：owner/name。 */
   repo: string;
@@ -291,6 +327,8 @@ export interface TicketSummary extends Ticket {
   tasks_done: number;
   tasks_running: number;
   issues_open: number;
+  /** 正在等的自定义环节（自定义工作流）。 */
+  waiting_stage: string | null;
 }
 
 export interface PrdVersion {
@@ -643,6 +681,7 @@ export interface TicketDetail {
   questions: Question[];
   assignee: string | null;
   source: TicketSource | null;
+  stages: StageState[];
 }
 
 export interface RunDetail {
@@ -725,6 +764,11 @@ export const api = {
   memberUpdate: (m: Member) => invoke<Member>('member_update', { id: m.id, name: m.name, role: m.role, disabled: m.disabled }),
   memberResetToken: (id: string) => invoke<{ member: Member; token: string }>('member_reset_token', { id }),
   memberDelete: (id: string) => invoke<void>('member_delete', { id }),
+  workflowList: () => invoke<Workflow[]>('workflow_list'),
+  workflowSave: (id: string | null, input: WorkflowInput) => invoke<Workflow>('workflow_save', { id, input }),
+  workflowDelete: (id: string) => invoke<void>('workflow_delete', { id }),
+  ticketStagePass: (ticketId: string, stageId: string, note: string) =>
+    invoke<StageState>('ticket_stage_pass', { ticketId, stageId, note }),
   syncSourceList: () => invoke<SyncSource[]>('sync_source_list'),
   /** secret：undefined 不动现有令牌 / App Secret，空串清除。 */
   syncSourceSave: (id: string | null, input: SourceInput, secret?: string) =>
