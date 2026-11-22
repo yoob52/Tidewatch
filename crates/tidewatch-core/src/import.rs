@@ -7,6 +7,17 @@ use std::io::Read;
 use std::path::Path;
 
 pub const MAX_FILE_BYTES: usize = 50 * 1024 * 1024;
+/// docx 里单个 XML 解压后的上限：正常文档远小于它，超过的多半是压缩炸弹。
+const MAX_XML_BYTES: u64 = 64 * 1024 * 1024;
+/// 一次导入里所有图片解压后的总量上限。
+const MAX_IMAGES_TOTAL_BYTES: usize = 200 * 1024 * 1024;
+
+/// 最多读 `limit` 字节；超过就算读不了，不把整个内容装进内存。
+fn read_capped(r: impl Read, limit: u64) -> Option<Vec<u8>> {
+    let mut buf = vec![];
+    r.take(limit + 1).read_to_end(&mut buf).ok()?;
+    (buf.len() as u64 <= limit).then_some(buf)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedImage {
@@ -144,10 +155,30 @@ fn markdown(text: &str, base_dir: Option<&Path>) -> Parsed {
         let remote = ["http://", "https://", "data:", "attachment:"]
             .iter()
             .any(|p| target.starts_with(p));
-        let local = base_dir
-            .filter(|_| !remote)
-            .map(|d| d.join(target.trim_matches(|c| c == '<' || c == '>')));
-        match local.as_ref().map(std::fs::read) {
+        // 只自动带上文档所在目录里面的图：别人给的 Markdown 不能借绝对路径或 `..`
+        // 把本机其它位置的图片塞进附件（附件之后会发给 Agent）
+        let local = base_dir.filter(|_| !remote).map(|d| {
+            let path = d.join(target.trim_matches(|c| c == '<' || c == '>'));
+            let (Ok(root), Ok(real)) = (d.canonicalize(), path.canonicalize()) else {
+                return Err(false);
+            };
+            if !real.starts_with(&root) {
+                return Err(true);
+            }
+            let used: usize = out.images.iter().map(|i| i.bytes.len()).sum();
+            let room = MAX_IMAGES_TOTAL_BYTES.saturating_sub(used);
+            std::fs::File::open(&real)
+                .ok()
+                .and_then(|f| read_capped(f, attachments::MAX_IMAGE_BYTES.min(room) as u64))
+                .ok_or(false)
+        });
+        match local {
+            Some(Err(true)) => {
+                out.warnings.push(format!(
+                    "图片 {target} 不在文档所在的目录里，没有自动导入；需要的话请手动上传。"
+                ));
+                md.push_str(&tail[..len]);
+            }
             Some(Ok(bytes)) => {
                 md.push_str(&format!("![{alt}](import:{})", out.images.len()));
                 out.images.push(ParsedImage {
@@ -159,9 +190,10 @@ fn markdown(text: &str, base_dir: Option<&Path>) -> Parsed {
                     bytes,
                 });
             }
-            Some(Err(_)) => {
-                out.warnings
-                    .push(format!("找不到正文引用的图片 {target}，保留了原来的写法。"));
+            Some(Err(false)) => {
+                out.warnings.push(format!(
+                    "正文引用的图片 {target} 找不到或太大，保留了原来的写法。"
+                ));
                 md.push_str(&tail[..len]);
             }
             None => md.push_str(&tail[..len]),
@@ -179,10 +211,8 @@ const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 fn zip_text<Rd: Read + std::io::Seek>(z: &mut zip::ZipArchive<Rd>, name: &str) -> Option<String> {
-    let mut f = z.by_name(name).ok()?;
-    let mut s = String::new();
-    f.read_to_string(&mut s).ok()?;
-    Some(s)
+    let f = z.by_name(name).ok()?;
+    String::from_utf8(read_capped(f, MAX_XML_BYTES)?).ok()
 }
 
 fn docx(bytes: &[u8]) -> Result<Parsed> {
@@ -331,12 +361,12 @@ fn docx(bytes: &[u8]) -> Result<Parsed> {
                 let idx = match media.get(&path) {
                     Some(i) => Some(*i),
                     None => {
-                        let mut buf = vec![];
-                        let read = z
-                            .by_name(&path)
-                            .ok()
-                            .and_then(|mut f| f.read_to_end(&mut buf).ok());
-                        read.map(|_| {
+                        let used: usize = out.images.iter().map(|i| i.bytes.len()).sum();
+                        let room = MAX_IMAGES_TOTAL_BYTES.saturating_sub(used);
+                        let read = z.by_name(&path).ok().and_then(|f| {
+                            read_capped(f, attachments::MAX_IMAGE_BYTES.min(room) as u64)
+                        });
+                        read.map(|buf| {
                             out.images.push(ParsedImage {
                                 file_name: path.rsplit('/').next().unwrap_or(&path).to_string(),
                                 bytes: buf,
@@ -359,7 +389,7 @@ fn docx(bytes: &[u8]) -> Result<Parsed> {
                     Some(i) => s.push_str(&format!("\n\n![{alt}](import:{i})\n\n")),
                     None => out
                         .warnings
-                        .push(format!("文档里的图片 {path} 读不出来，已跳过。")),
+                        .push(format!("文档里的图片 {path} 读不出来或太大，已跳过。")),
                 }
             }
         }
@@ -649,6 +679,26 @@ mod tests {
         assert!(p.markdown.contains("![外链](https://x/y.png)"));
         assert!(p.markdown.contains("![丢了](img/none.png)"));
         assert_eq!((p.images.len(), p.warnings.len()), (1, 1));
+
+        // 文档目录之外的图不自动带进来：`..` 和绝对路径都一样
+        let outer = tempfile::tempdir().unwrap();
+        std::fs::write(outer.path().join("secret.png"), PNG).unwrap();
+        let docs = outer.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        let abs = outer.path().join("secret.png");
+        let md = format!("![a](../secret.png)\n![b]({})\n", abs.display());
+        let p = parse("a.md", md.as_bytes(), Some(&docs)).unwrap();
+        assert!(p.images.is_empty(), "{}", p.markdown);
+        assert_eq!(p.markdown, md);
+        assert_eq!(p.warnings.len(), 2);
+        assert!(p.warnings[0].contains("不在文档所在的目录里"));
+    }
+
+    #[test]
+    fn oversized_entries_in_a_docx_are_not_read_into_memory() {
+        assert_eq!(read_capped(&b"abcd"[..], 4).as_deref(), Some(&b"abcd"[..]));
+        assert!(read_capped(&b"abcde"[..], 4).is_none());
+        assert!(read_capped(std::io::repeat(0), 1024).is_none());
 
         let (gbk, _, _) = encoding_rs::GB18030.encode("需求：导出订单");
         assert_eq!(
