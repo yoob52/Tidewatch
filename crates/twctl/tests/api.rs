@@ -10,7 +10,7 @@ use tidewatch_core::engine::{DelegateInput, Engine, EngineConfig, EngineEvent, S
 use tidewatch_core::git;
 use tidewatch_core::secrets::MemoryStore;
 use tidewatch_core::store::{
-    delegations, members, projects, questions, runs, settings, tasks, tickets,
+    delegations, members, projects, questions, runs, settings, tasks, tickets, workflows,
 };
 
 struct Fixture {
@@ -349,6 +349,32 @@ fn tokens_and_roles_gate_every_route() {
         Some(Value::String("x".into())),
     );
     assert_eq!(status, 400, "{err}");
+
+    // 自定义工作流的环节可以经接口通过，记下是谁
+    workflows::create(
+        &lock(f.engine.db()),
+        workflows::WorkflowInput {
+            name: "带 QA".into(),
+            enabled: true,
+            config: workflows::WorkflowConfig {
+                ticket_types: vec!["bug".into()],
+                stages: vec![workflows::Stage {
+                    name: "QA 验证".into(),
+                    gate: "done".into(),
+                    ..Default::default()
+                }],
+                auto_done: true,
+            },
+        },
+    )
+    .unwrap();
+    let (_, detail) = f.http("GET", &path, Some(&f.viewer), None);
+    let stage = detail["stages"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(detail["stages"][0]["current"], false, "工单还没到验收");
+    let pass = format!("{path}/stages/{stage}/pass");
+    assert_eq!(f.http("POST", &pass, Some(&f.viewer), None).0, 403);
+    let (status, err) = f.http("POST", &pass, Some(&f.member), None);
+    assert_eq!(status, 400, "还没轮到这个环节：{err}");
 
     // 停用后令牌立刻失效
     let id = wang["id"].as_str().unwrap().to_string();

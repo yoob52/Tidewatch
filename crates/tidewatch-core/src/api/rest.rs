@@ -6,7 +6,7 @@ use crate::db::lock;
 use crate::engine::{Engine, RejectInput, StartOptions};
 use crate::store::members::{self, Member};
 use crate::store::tickets::{self, Ticket, TicketInput, TicketProject};
-use crate::store::{projects, questions, runs, tasks, with_actor};
+use crate::store::{projects, questions, runs, tasks, with_actor, workflows};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -192,6 +192,7 @@ pub(super) fn handle(
                 .as_deref()
                 .and_then(|a| members::get(&conn, a).ok())
                 .map(|x| x.name));
+            v["stages"] = json!(workflows::stages_of(&conn, &t)?);
             v["timeline"] = json!(tickets::timeline(&conn, &t.id)?);
             v["runs"] = json!(runs::list_for_ticket(&conn, &t.id)?
                 .iter()
@@ -209,6 +210,13 @@ pub(super) fn handle(
             writer(m)?;
             let t = tickets::set_assignee(&lock(engine.db()), id, text(&body, "member_id"))?;
             ok(json!({ "id": t.id, "assignee_id": t.assignee_id }))
+        }
+        // 自定义工作流的环节：通过的人记在环节上
+        ("POST", ["tickets", id, "stages", stage, "pass"]) => {
+            writer(m)?;
+            let id = tickets::get(&lock(engine.db()), id)?.id;
+            let note = text(&body, "note").unwrap_or_default();
+            ok(json!(engine.pass_stage(&id, stage, note)?))
         }
         ("POST", ["tickets", id, "review"]) => {
             writer(m)?;
