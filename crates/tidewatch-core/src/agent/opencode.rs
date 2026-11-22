@@ -7,6 +7,12 @@ pub struct OpenCodeAdapter;
 
 /// OpenCode 读取内联配置的环境变量。
 pub const CONFIG_ENV: &str = "OPENCODE_CONFIG_CONTENT";
+
+/// 内联配置里有没有观澜注入的 Provider（没有的话登录凭据仍然来自用户自己的环境或 `opencode auth`）。
+pub fn config_has_provider(config: &str) -> bool {
+    serde_json::from_str::<Value>(config)
+        .is_ok_and(|v| v["provider"][PROVIDER_ID].is_object())
+}
 /// 注入的 Provider 在 OpenCode 配置里的名字；模型写成 `tidewatch/<模型>`。
 pub const PROVIDER_ID: &str = "tidewatch";
 

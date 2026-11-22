@@ -207,10 +207,12 @@ pub fn inherits_env(
         return true;
     }
     // 只注入了模型名之类的覆盖项不算：这时登录凭据仍然来自环境
-    let provider_injected = injected.iter().any(|(k, _)| {
+    let provider_injected = injected.iter().any(|(k, v)| {
         let k = k.to_ascii_uppercase();
         k == crate::provider::CODEX_KEY_ENV
-            || k == crate::agent::opencode::CONFIG_ENV
+            // OpenCode 的内联配置每次都有（权限、MCP）；里面带了 Provider 才算注入
+            || (k == crate::agent::opencode::CONFIG_ENV
+                && crate::agent::opencode::config_has_provider(v))
             || credentials.iter().any(|p| {
                 k.strip_prefix(p).is_some_and(|rest| {
                     matches!(rest, "API_KEY" | "AUTH_TOKEN" | "BASE_URL" | "API_BASE")

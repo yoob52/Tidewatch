@@ -377,8 +377,22 @@ fn new_agents_follow_the_env_allowlist() {
         &none,
         &[]
     ));
+    // 没配 Provider 时适配器也会写内联配置（权限、MCP）：登录凭据仍然从环境里来
+    let permissions_only = vec![(
+        "OPENCODE_CONFIG_CONTENT".to_string(),
+        r#"{"permission":{"edit":"allow","bash":"allow"}}"#.to_string(),
+    )];
+    assert!(inherits_env(
+        AgentKind::OpenCode,
+        "OPENAI_API_KEY",
+        &permissions_only,
+        &[]
+    ));
     for injected in [
-        pair("OPENCODE_CONFIG_CONTENT"),
+        vec![(
+            "OPENCODE_CONFIG_CONTENT".to_string(),
+            r#"{"provider":{"tidewatch":{"options":{"baseURL":"http://x"}}}}"#.to_string(),
+        )],
         pair("TIDEWATCH_PROVIDER_KEY"),
     ] {
         assert!(!inherits_env(
