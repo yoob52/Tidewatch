@@ -626,7 +626,14 @@ export interface UpdateInfo {
   newer: boolean;
   url: string | null;
   notes: string | null;
+  /** 这个版本不能在应用内安装的原因；能装时为 null。 */
+  install_blocked: string | null;
 }
+
+/** 应用内更新的进度。 */
+export type UpdateProgress =
+  | { phase: 'checking' | 'installing' | 'restarting' }
+  | { phase: 'downloading'; downloaded: number; total: number | null };
 
 export interface ProviderCompat {
   agent: string;
@@ -764,6 +771,8 @@ export const api = {
     invoke<ProviderCompat[]>('provider_compat', { name, protocol, baseUrl, defaultModel }),
   /** 联网读 GitHub 上最新发布的版本号。 */
   updateCheck: () => invoke<UpdateInfo>('update_check'),
+  /** 下载、校验签名并安装，然后重启；成功时不会返回。 */
+  updateInstall: () => invoke<void>('update_install'),
   backupList: () => invoke<BackupFile[]>('backup_list'),
   backupNow: () => invoke<BackupFile[]>('backup_now'),
   /** 导出到 dest 下新建的一个目录。 */
@@ -893,6 +902,14 @@ export const api = {
 /** 订阅引擎事件；返回取消订阅的函数。 */
 export function onEngine(handler: (ev: EngineEvent) => void): () => void {
   const pending = listen<EngineEvent>('tw://engine', (e) => handler(e.payload));
+  return () => {
+    void pending.then((off) => off());
+  };
+}
+
+/** 订阅应用内更新的进度；返回取消订阅的函数。 */
+export function onUpdateProgress(handler: (p: UpdateProgress) => void): () => void {
+  const pending = listen<UpdateProgress>('tw://update', (e) => handler(e.payload));
   return () => {
     void pending.then((off) => off());
   };

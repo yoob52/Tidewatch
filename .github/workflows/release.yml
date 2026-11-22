@@ -1,0 +1,59 @@
+name: Release
+
+# 推送 v 开头的标签（如 v0.2.0）时：构建 Windows 安装包、给它签名、发布到 GitHub Releases，
+# 并附上应用内更新读的 latest.json。需要仓库 Secret：TAURI_SIGNING_PRIVATE_KEY
+# （有密码时再加 TAURI_SIGNING_PRIVATE_KEY_PASSWORD），以及 tauri.conf.json 里对应的公钥。
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  windows:
+    name: Windows 安装包与更新清单
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 检查版本号和签名配置
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          [ "v$version" = "$GITHUB_REF_NAME" ] || fail "标签 $GITHUB_REF_NAME 和 tauri.conf.json 里的版本 $version 不一致"
+          [ "$(node -p "require('./package.json').version")" = "$version" ] || fail "package.json 的版本不是 $version"
+          grep -q "^version = \"$version\"" Cargo.toml || fail "Cargo.toml 的版本不是 $version"
+          [ -n "$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")" ] || fail "tauri.conf.json 的 plugins.updater.pubkey 是空的：发出去的版本将不能在应用内更新"
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || fail "没有配置仓库 Secret TAURI_SIGNING_PRIVATE_KEY"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: 构建并签名
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
+      - name: 发布
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd target/release/bundle/nsis
+          exe="Tidewatch_${VERSION}_x64-setup.exe"
+          test -f "$exe" && test -f "$exe.sig"
+          node "$GITHUB_WORKSPACE/scripts/latest-json.mjs" "$VERSION" windows-x86_64 "$exe.sig" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$exe" > latest.json
+          gh release create "$GITHUB_REF_NAME" "$exe" "$exe.sig" latest.json \
+            --repo "$GITHUB_REPOSITORY" --title "观澜 $VERSION" --generate-notes --verify-tag

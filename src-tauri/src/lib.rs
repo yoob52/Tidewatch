@@ -1,4 +1,6 @@
 //! Tauri 壳：把 tidewatch-core 暴露成命令，并把引擎事件转给界面。业务逻辑都在 core 里。
+mod updater;
+
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -1008,14 +1010,47 @@ fn code_review_start(
         .map_err(err)
 }
 
+#[derive(Serialize)]
+struct UpdateStatus {
+    #[serde(flatten)]
+    info: update::UpdateInfo,
+    /// 这个版本不能在应用内安装的原因；能装时为空。
+    install_blocked: Option<String>,
+}
+
 /// 联网看有没有新版本。只在用户点了「检查更新」或打开了启动时检查的开关时调用。
 #[tauri::command]
-async fn update_check() -> CmdResult<update::UpdateInfo> {
-    tauri::async_runtime::spawn_blocking(|| {
-        update::check(env!("CARGO_PKG_VERSION"), update::RELEASES_URL).map_err(err)
+async fn update_check(app: tauri::AppHandle) -> CmdResult<UpdateStatus> {
+    let info = tauri::async_runtime::spawn_blocking(|| {
+        // 自己分发的构建可以在编译时用 TIDEWATCH_RELEASES_URL 换成自己的发布源；运行时不能改
+        let url = option_env!("TIDEWATCH_RELEASES_URL").unwrap_or(update::RELEASES_URL);
+        update::check(env!("CARGO_PKG_VERSION"), url).map_err(err)
     })
     .await
-    .map_err(err)?
+    .map_err(err)??;
+    Ok(UpdateStatus {
+        info,
+        install_blocked: updater::blocked(&app),
+    })
+}
+
+/// 下载、校验并安装最新版本，然后重启。只在用户点了「下载并安装」并确认之后调用；
+/// 有运行在进行时不装，免得把 Agent 留成孤儿进程。
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle, state: State<'_>) -> CmdResult<()> {
+    let busy: i64 = lock(state.engine.db())
+        .query_row(
+            "SELECT COUNT(*) FROM run WHERE status IN ('starting', 'running', 'finalizing', 'stopping')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(err)?;
+    if busy > 0 {
+        return Err(format!(
+            "还有 {busy} 个运行在进行。请等它们结束或先停止，再安装更新。"
+        ));
+    }
+    updater::install(&app).await
 }
 
 #[tauri::command]
@@ -1334,6 +1369,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let data_dir = match std::env::var_os("TIDEWATCH_DATA_DIR") {
                 Some(p) => PathBuf::from(p),
@@ -1447,6 +1483,7 @@ pub fn run() {
             task_reject,
             code_review_start,
             update_check,
+            update_install,
             backup_list,
             backup_now,
             export_tickets,
