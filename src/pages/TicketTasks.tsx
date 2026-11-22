@@ -3,9 +3,12 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   api,
   type CodeFinding,
+  type CompareOption,
   type InlineComment,
   type Proposal,
+  type Run,
   type RunDetail,
+  type Task,
   type TaskDiff,
   type TaskDraft,
   type TaskImpact,
@@ -21,6 +24,7 @@ import {
   Field,
   Inline,
   KindStamp,
+  Modal,
   PERMISSIONS,
   Ripple,
   Seg,
@@ -492,6 +496,156 @@ function ProposalPanel({ d, p, refresh }: { d: TabProps['d']; p: Proposal; refre
   );
 }
 
+/** 同题对比里还没取消的子任务（含自己）；不在对比里时只有自己。 */
+export function compareGroup(tasks: Task[], k: Task): Task[] {
+  const root = k.compare_of ?? k.id;
+  return tasks.filter((x) => (x.id === root || x.compare_of === root) && x.status !== 'cancelled');
+}
+
+/** 发起多 Agent 对比：另选 1 到 3 个 Agent，和这个子任务各做一遍。 */
+function CompareModal({ task, onClose, onDone }: { task: Task; onClose: () => void; onDone: () => void }) {
+  const { providers } = useData();
+  const ui = useUi();
+  const blank: CompareOption = { agent: Object.keys(AGENTS).find((a) => a !== task.agent && a !== 'mock') ?? 'codex', provider_id: null, model: null };
+  const [picks, setPicks] = useState<CompareOption[]>([blank]);
+  const patch = (i: number, p: Partial<CompareOption>) => setPicks((x) => x.map((o, k) => (k === i ? { ...o, ...p } : o)));
+  const submit = async () => {
+    const group = await ui.attempt(api.taskCompare(task.id, picks), `已入队，${picks.length + 1} 个 Agent 各做一遍`);
+    if (group) onDone();
+  };
+  return (
+    <Modal
+      title="多 Agent 对比"
+      hint={`「${task.title}」原样交给下面的 Agent 各做一遍：说明、验收标准、权限相同，各在自己的 worktree 和分支里，互不影响。跑完后比较结果，采用一个，其余的取消。费用按 Agent 个数成倍增加。`}
+      width={680}
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button className="btn primary" onClick={() => void submit()}>
+            开始对比
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        {picks.map((o, i) => (
+          <div key={i} className="row" style={{ gap: 6, marginBottom: 6, alignItems: 'center' }}>
+            <select className="input" style={{ width: 150 }} value={o.agent} onChange={(e) => patch(i, { agent: e.target.value })} aria-label={`候选 ${i + 1} 的 Agent`}>
+              {Object.entries(AGENTS).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v.name}
+                </option>
+              ))}
+            </select>
+            <select className="input" style={{ flex: 1 }} value={o.provider_id ?? ''} onChange={(e) => patch(i, { provider_id: e.target.value || null })} aria-label={`候选 ${i + 1} 的 Provider`}>
+              <option value="">Provider 跟随默认</option>
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <input className="input mono" style={{ width: 170 }} value={o.model ?? ''} onChange={(e) => patch(i, { model: e.target.value || null })} placeholder="模型（默认）" aria-label={`候选 ${i + 1} 的模型`} />
+            <button className="btn sm ghost" disabled={picks.length === 1} onClick={() => setPicks((x) => x.filter((_, k) => k !== i))} aria-label={`去掉候选 ${i + 1}`}>
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        ))}
+        {picks.length < 3 && (
+          <button className="btn sm" onClick={() => setPicks((x) => [...x, blank])}>
+            再加一个
+          </button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/** 一轮运行的自动检查结果：几条通过、几条没通过。 */
+function CheckCell({ runId }: { runId: string }) {
+  const [text, setText] = useState('…');
+  useEffect(() => {
+    let stale = false;
+    api.runGet(runId).then(
+      (r) => {
+        if (stale) return;
+        const failed = r.reports.filter((x) => x.exit_code !== 0).length;
+        setText(!r.reports.length ? '没有检查' : failed ? `${failed} 条没通过` : '全部通过');
+      },
+      () => !stale && setText('—'),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [runId]);
+  return <span>{text}</span>;
+}
+
+/** 对比中的一组：各个 Agent 的结果并排，选一个采用。 */
+function ComparePanel({ group, runs, adopt }: { group: Task[]; runs: Run[]; adopt: (k: Task) => void }) {
+  const { providers } = useData();
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="srow">
+        <div>
+          <b>多 Agent 对比：{group[0].title.replace(/（对比 · .*）$/, '')}</b>
+          <p>各在自己的 worktree 里做同一个子任务。到「验收」页看每个的 Diff，采用一个之后其余的取消（分支留着）；没采用之前不能通过、不能合并。</p>
+        </div>
+      </div>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Provider · 模型</th>
+            <th>状态</th>
+            <th>改动</th>
+            <th>检查</th>
+            <th>耗时 · 费用</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {group.map((k) => {
+            const mine = runs.filter((r) => r.task_id === k.id);
+            const last = mine[mine.length - 1];
+            const agent = k.agent ?? last?.agent;
+            const provider = providers.find((p) => p.id === (k.provider_id ?? last?.provider_id));
+            return (
+              <tr key={k.id}>
+                <td>{agent ? <AgentTag agent={agent} /> : <span className="dim">跟随默认</span>}</td>
+                <td>
+                  {provider?.name ?? '跟随默认'} · <span className="mono">{k.model ?? last?.model ?? '默认模型'}</span>
+                </td>
+                <td>
+                  <TaskStatusTag status={k.status} />
+                </td>
+                <td className="mono">
+                  {last && last.diff_stat.length > 0
+                    ? `${last.diff_stat.length} 个文件 +${last.diff_stat.reduce((a, x) => a + x.added, 0)} −${last.diff_stat.reduce((a, x) => a + x.removed, 0)}`
+                    : '—'}
+                </td>
+                <td>{last && !runActive(last.status) && last.status !== 'queued' ? <CheckCell key={`${last.id}:${last.status}`} runId={last.id} /> : '—'}</td>
+                <td className="mono">{mine.length ? `${fmtDur(mine.reduce((a, r) => a + runSeconds(r), 0))} · ${fmtCost(mine.reduce((a, r) => a + (r.cost_usd ?? 0), 0))}` : '—'}</td>
+                <td style={{ textAlign: 'right' }}>
+                  {['review', 'accepted'].includes(k.status) && (
+                    <button className="btn sm primary" onClick={() => adopt(k)}>
+                      采用这个结果
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function TasksTab({ d, reload }: TabProps) {
   const { projects, providers } = useData();
   const ui = useUi();
@@ -513,11 +667,38 @@ export function TasksTab({ d, reload }: TabProps) {
   const act = async (p: Promise<unknown>, ok: string) => {
     if ((await ui.attempt(p, ok)) !== undefined) await refresh();
   };
+  const [comparing, setComparing] = useState<Task | null>(null);
+  // 还在对比的各组，按原任务
+  const groups = d.tasks.filter((k) => !k.compare_of).map((k) => compareGroup(d.tasks, k)).filter((g) => g.length > 1);
+  const adopt = async (k: Task) => {
+    const others = compareGroup(d.tasks, k).filter((x) => x.id !== k.id);
+    if (
+      await ui.confirm(
+        '采用这个结果',
+        `其余 ${others.length} 个候选会取消：worktree 删掉，分支留着。依赖它们的子任务改为依赖这一个。之后照常验收、合并。`,
+        '采用',
+      )
+    )
+      await act(api.taskAdopt(k.id), '已采用，其余候选已取消');
+  };
 
   return (
     <div className="page">
       <div className="tasks">
         {proposal && <ProposalPanel key={`${proposal.id}:${proposal.status}`} d={d} p={proposal} refresh={refresh} />}
+        {groups.map((g) => (
+          <ComparePanel key={g[0].id} group={g} runs={d.runs} adopt={(k) => void adopt(k)} />
+        ))}
+        {comparing && (
+          <CompareModal
+            task={comparing}
+            onClose={() => setComparing(null)}
+            onDone={() => {
+              setComparing(null);
+              void refresh();
+            }}
+          />
+        )}
         {t.status === 'finalized' && !proposal && live.length > 0 && (
           <div className="callout tide">
             <Icon name="info" size={15} />
@@ -599,6 +780,7 @@ export function TasksTab({ d, reload }: TabProps) {
                       {TASK_KIND[k.kind]?.name ?? k.kind}子任务 · {projects.find((p) => p.id === k.project_id)?.name ?? '已删除的项目'}
                     </div>
                   </div>
+                  {compareGroup(d.tasks, k).length > 1 && <span className="tag tide">对比中</span>}
                   <TaskStatusTag status={k.status} />
                 </header>
                 <div className="task-grid">
@@ -690,6 +872,12 @@ export function TasksTab({ d, reload }: TabProps) {
                     <button className="btn primary sm" onClick={() => void start(k)}>
                       <Icon name="play" size={13} />
                       开始
+                    </button>
+                  )}
+                  {k.status === 'pending' && runs.length === 0 && !k.compare_of && compareGroup(d.tasks, k).length === 1 && (
+                    <button className="btn sm" onClick={() => setComparing(k)} title="同一个子任务交给几个 Agent 各做一遍，比较后采用一个">
+                      <Icon name="branch" size={13} />
+                      多 Agent 对比…
                     </button>
                   )}
                   {k.status === 'blocked' && (
@@ -873,6 +1061,19 @@ export function AcceptTab({ d, reload }: TabProps) {
     if (await ui.attempt(api.taskAccept(task.id), '已通过')) await refresh();
   };
 
+  const rivals = compareGroup(d.tasks, task).filter((x) => x.id !== task.id);
+  const adopt = async () => {
+    if (
+      !(await ui.confirm(
+        '采用这个结果',
+        `其余 ${rivals.length} 个候选会取消：worktree 删掉，分支留着。依赖它们的子任务改为依赖这一个。之后照常通过、合并。`,
+        '采用',
+      ))
+    )
+      return;
+    if (await ui.attempt(api.taskAdopt(task.id), '已采用，其余候选已取消')) await refresh();
+  };
+
   const comments = drafts[task.id] ?? [];
   const canComment = ['review', 'accepted'].includes(task.status);
   const addComment = async (path: string, line: number) => {
@@ -965,10 +1166,17 @@ export function AcceptTab({ d, reload }: TabProps) {
               <Icon name="undo" size={13} />
               打回{comments.length ? `（${comments.length} 条评论）` : ''}
             </button>
-            <button className="btn primary sm" onClick={() => void pass()}>
-              <Icon name="check" size={13} />
-              通过
-            </button>
+            {rivals.length > 0 ? (
+              <button className="btn primary sm" onClick={() => void adopt()} title="这个子任务还在和别的 Agent 对比，采用之后才能通过">
+                <Icon name="check" size={13} />
+                采用这个结果
+              </button>
+            ) : (
+              <button className="btn primary sm" onClick={() => void pass()}>
+                <Icon name="check" size={13} />
+                通过
+              </button>
+            )}
           </>
         )}
         {task.status === 'accepted' && (

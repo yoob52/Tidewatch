@@ -7,9 +7,10 @@ import { Empty, Field, Md, Modal, Switch, go, useUi } from '../lib/ui';
 
 const PROTOCOLS: [ProviderInput['protocol'], string, string][] = [
   ['native', '本机登录态', '不注入任何变量，用 Agent 自己登录的账号'],
-  ['anthropic', 'Anthropic 兼容', '给 Claude Code 用：注入 ANTHROPIC_BASE_URL 和密钥'],
-  ['openai_responses', 'OpenAI Responses', '给 Codex 用：Responses 接口'],
-  ['openai_chat', 'OpenAI Chat', '给 Codex 用：Chat Completions 接口'],
+  ['anthropic', 'Anthropic 兼容', '给 Claude Code、OpenCode、Aider 用：注入 Base URL 和密钥'],
+  ['openai_responses', 'OpenAI Responses', '给 Codex、OpenCode、Aider 用：Responses 接口'],
+  ['openai_chat', 'OpenAI Chat', '给 Codex、OpenCode、Aider 用：Chat Completions 接口'],
+  ['gemini', 'Gemini', '给 Gemini CLI 用：注入 GEMINI_API_KEY'],
 ];
 
 const TEMPLATES: [string, Partial<ProviderInput>][] = [
@@ -195,17 +196,22 @@ export function ProvidersPage({ id }: { id?: string }) {
             </div>
           </Field>
           {compat.length > 0 && (
-            <Field label="适用的 Agent" hint={compat.some((c) => !c.compatible) ? '协议不匹配的 Agent 要经 LiteLLM 之类的代理桥接' : undefined}>
+            <Field label="适用的 Agent" hint={compat.some((c) => c.bridge_guide) ? '协议不匹配的 Agent 要经 LiteLLM 之类的代理桥接' : undefined}>
               <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
                 {compat.map((c) =>
                   c.compatible ? (
                     <span key={c.agent} className="tag moss">
                       {c.agent_name} 可直接使用
                     </span>
-                  ) : (
+                  ) : c.bridge_guide ? (
                     <button key={c.agent} className="btn sm" onClick={() => setGuide(c)}>
                       {c.agent_name} 不能直接用 · 看桥接配置
                     </button>
+                  ) : (
+                    // 没有桥接办法的（Gemini CLI 只说 Gemini 协议）不给按钮
+                    <span key={c.agent} className="tag line">
+                      {c.agent_name} 不能用这个协议
+                    </span>
                   ),
                 )}
               </div>

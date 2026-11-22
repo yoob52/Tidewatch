@@ -6,6 +6,8 @@ use super::*;
 pub struct MockAdapter;
 
 pub const MOCK_BINARY_ENV: &str = "TIDEWATCH_MOCK_AGENT";
+/// 演示 Agent 从这个环境变量拿观澜 MCP 接口的地址。
+pub const MCP_URL_ENV: &str = "TIDEWATCH_MCP_URL";
 
 impl AgentAdapter for MockAdapter {
     fn kind(&self) -> AgentKind {
@@ -42,10 +44,14 @@ impl AgentAdapter for MockAdapter {
             args.extend(["--resume".into(), id.clone()]);
         }
         args.extend(spec.extra_args.iter().cloned());
+        let mut env = spec.env.clone();
+        if let Some(mcp) = &spec.mcp {
+            env.push((MCP_URL_ENV.into(), mcp.url.clone()));
+        }
         Ok(CommandSpec {
             program: self.resolve_binary(spec)?,
             args,
-            env: spec.env.clone(),
+            env,
             cwd: spec.cwd.clone(),
             stdin: spec.prompt.clone(),
         })

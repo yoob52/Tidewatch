@@ -33,6 +33,21 @@ impl AgentAdapter for CodexAdapter {
             args.extend(["-m".into(), m.clone()]);
         }
         args.extend(["-c".into(), format!("sandbox_mode={sandbox}")]);
+        if let Some(mcp) = &spec.mcp {
+            let name = super::MCP_SERVER_NAME;
+            args.extend([
+                "-c".into(),
+                format!("mcp_servers.{name}.url={:?}", mcp.url),
+                "-c".into(),
+                format!(
+                    "mcp_servers.{name}.bearer_token_env_var={:?}",
+                    mcp.token_env
+                ),
+                // exec 的审批策略是 never，MCP 工具默认要审批，不预先放行就全部被拒
+                "-c".into(),
+                format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\""),
+            ]);
+        }
         args.extend(spec.extra_args.iter().cloned());
         if let Some(id) = &spec.resume_session {
             args.push(id.clone());

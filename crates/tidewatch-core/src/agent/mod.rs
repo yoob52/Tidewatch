@@ -1,8 +1,11 @@
 //! Agent 适配层：把各家 CLI 的命令行与事件流统一成 `RunSpec` → `AgentEvent`。
+pub mod aider;
 pub mod claude;
 pub mod codex;
+pub mod gemini;
 pub mod mock;
 pub mod mock_process;
+pub mod opencode;
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -13,6 +16,10 @@ use std::path::PathBuf;
 pub enum AgentKind {
     ClaudeCode,
     Codex,
+    #[serde(rename = "opencode")]
+    OpenCode,
+    Gemini,
+    Aider,
     /// 内置演示 Agent：不联网、不需要账号，按 Claude 的事件格式输出。
     Mock,
 }
@@ -22,6 +29,9 @@ impl AgentKind {
         match self {
             AgentKind::ClaudeCode => "claude_code",
             AgentKind::Codex => "codex",
+            AgentKind::OpenCode => "opencode",
+            AgentKind::Gemini => "gemini",
+            AgentKind::Aider => "aider",
             AgentKind::Mock => "mock",
         }
     }
@@ -29,14 +39,28 @@ impl AgentKind {
         match s {
             "claude_code" | "claude" => Ok(AgentKind::ClaudeCode),
             "codex" => Ok(AgentKind::Codex),
+            "opencode" => Ok(AgentKind::OpenCode),
+            "gemini" | "gemini_cli" => Ok(AgentKind::Gemini),
+            "aider" => Ok(AgentKind::Aider),
             "mock" => Ok(AgentKind::Mock),
             other => Err(Error::invalid(format!("未知 Agent 类型：{other}"))),
         }
     }
+    /// 真实 Agent（不含演示 Agent），按界面上的顺序。
+    pub const REAL: [AgentKind; 5] = [
+        AgentKind::ClaudeCode,
+        AgentKind::Codex,
+        AgentKind::OpenCode,
+        AgentKind::Gemini,
+        AgentKind::Aider,
+    ];
     pub fn display_name(self) -> &'static str {
         match self {
             AgentKind::ClaudeCode => "Claude Code",
             AgentKind::Codex => "Codex",
+            AgentKind::OpenCode => "OpenCode",
+            AgentKind::Gemini => "Gemini CLI",
+            AgentKind::Aider => "Aider",
             AgentKind::Mock => "演示 Agent",
         }
     }
@@ -90,7 +114,21 @@ pub struct RunSpec {
     pub extra_args: Vec<String>,
     /// 随 Prompt 发给 Agent 的图片（绝对路径，在 worktree 之外）。
     pub images: Vec<PathBuf>,
+    /// 观澜自己的 MCP 服务（委派、提问）；不支持 MCP 的 Agent 忽略它。
+    pub mcp: Option<McpServer>,
 }
+
+/// 注入给 Agent 的 MCP 服务：地址进配置，令牌只放在环境变量里。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServer {
+    /// `http://127.0.0.1:<端口>/mcp`
+    pub url: String,
+    /// 存着 Bearer 令牌的环境变量名（值在 `RunSpec::env` 里）。
+    pub token_env: String,
+}
+
+/// MCP 服务在各 Agent 配置里的名字。
+pub const MCP_SERVER_NAME: &str = "tidewatch";
 
 /// 可直接交给 `std::process::Command` 的命令描述。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,6 +251,10 @@ pub enum AgentEvent {
 /// 逐行解析 CLI 的 JSONL 输出；有状态（会话 id、累计用量）。
 pub trait EventParser: Send {
     fn parse_line(&mut self, line: &str) -> Vec<AgentEvent>;
+    /// 输出读完之后调用一次：没有结束事件的 CLI（Aider）在这里补上。
+    fn finish(&mut self) -> Vec<AgentEvent> {
+        vec![]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +271,10 @@ pub trait AgentAdapter: Send + Sync {
     fn default_binary(&self) -> &'static str;
     fn build_command(&self, spec: &RunSpec) -> Result<CommandSpec>;
     fn parser(&self) -> Box<dyn EventParser>;
+    /// 启动前在工作目录里要做的准备（写提示词文件等）；多数 Agent 不需要。
+    fn prepare(&self, _spec: &RunSpec) -> Result<()> {
+        Ok(())
+    }
 
     fn resolve_binary(&self, spec: &RunSpec) -> Result<PathBuf> {
         match &spec.binary {
@@ -261,6 +307,9 @@ pub fn adapter(kind: AgentKind) -> Box<dyn AgentAdapter> {
     match kind {
         AgentKind::ClaudeCode => Box::new(claude::ClaudeAdapter),
         AgentKind::Codex => Box::new(codex::CodexAdapter),
+        AgentKind::OpenCode => Box::new(opencode::OpenCodeAdapter),
+        AgentKind::Gemini => Box::new(gemini::GeminiAdapter),
+        AgentKind::Aider => Box::new(aider::AiderAdapter),
         AgentKind::Mock => Box::new(mock::MockAdapter),
     }
 }

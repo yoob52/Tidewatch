@@ -159,6 +159,11 @@ export function BoardPage() {
                         </span>
                       ))}
                     </div>
+                    {t.waiting_stage && (
+                      <span className="subchip dim" title="自定义工作流：这个环节通过后才能往下走">
+                        待：{t.waiting_stage}
+                      </span>
+                    )}
                     {(t.tasks_total > 0 || (t.status === 'human_review' && t.issues_open > 0) || t.status === 'ai_review') && (
                       <div className="tcard-foot">
                         {t.tasks_total > 0 && <TaskChips t={t} />}

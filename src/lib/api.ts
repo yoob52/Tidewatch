@@ -13,7 +13,7 @@ export interface SystemInfo {
   secret_store: string;
 }
 
-export type AgentKind = 'claude_code' | 'codex' | 'mock';
+export type AgentKind = 'claude_code' | 'codex' | 'opencode' | 'gemini' | 'aider' | 'mock';
 
 export interface Detection {
   kind: AgentKind;
@@ -53,6 +53,137 @@ export interface Settings {
   stop_on_danger: boolean;
   /** 开发阶段也把已被取代的参考图发给 Agent。 */
   send_superseded_images: boolean;
+  /** 本地 HTTP / MCP 接口。 */
+  api_enabled: boolean;
+  api_port: number;
+  /** 监听所有网卡，局域网里的其他人可以带令牌访问。 */
+  api_remote: boolean;
+}
+
+export interface Member {
+  id: string;
+  name: string;
+  role: 'owner' | 'member' | 'viewer';
+  token_hint: string | null;
+  disabled: boolean;
+  created_at: string;
+  last_seen_at: string | null;
+}
+
+/** 自定义环节：卡在定稿前（人工审核时通过）或完成前（验收时通过）。 */
+export interface Stage {
+  id: string;
+  name: string;
+  gate: 'finalized' | 'done';
+  hint: string;
+}
+
+export interface WorkflowConfig {
+  ticket_types: TicketType[];
+  stages: Stage[];
+  auto_done: boolean;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  config: WorkflowConfig;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface WorkflowInput {
+  name: string;
+  config: WorkflowConfig;
+  enabled: boolean;
+}
+
+export interface StageState extends Stage {
+  passed_at: string | null;
+  actor: string | null;
+  note: string | null;
+  /** 现在轮到它。 */
+  current: boolean;
+}
+
+export interface SourceConfig {
+  /** GitHub：owner/name。 */
+  repo: string;
+  labels: string[];
+  write_back: boolean;
+  /** 飞书：自建应用的 App ID。 */
+  app_id: string;
+  api_base: string | null;
+  project_id: string | null;
+  ticket_type: TicketType;
+}
+
+export interface SyncSource {
+  id: string;
+  kind: 'github' | 'feishu';
+  name: string;
+  config: SourceConfig;
+  enabled: boolean;
+  has_secret: boolean;
+  last_synced_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+export interface SourceInput {
+  kind: 'github' | 'feishu';
+  name: string;
+  config: SourceConfig;
+  enabled: boolean;
+}
+
+/** 工单的外部来源；pending_* 是外部还没导入的那一版。 */
+export interface TicketSource {
+  ticket_id: string;
+  source_id: string;
+  kind: 'github' | 'feishu';
+  source_name: string;
+  external_id: string;
+  url: string;
+  rev: string;
+  pending_rev: string | null;
+  pending_title: string | null;
+  pending_md: string | null;
+  pending_at: string | null;
+  remote_state: string | null;
+  written_back_at: string | null;
+}
+
+export interface SyncReport {
+  created: string[];
+  changed: string[];
+  comments: number;
+  written_back: string[];
+  warnings: string[];
+}
+
+export interface ApiStatus {
+  running: boolean;
+  port: number | null;
+  remote: boolean;
+  error: string | null;
+  lan_urls: string[];
+}
+
+/** Agent 经 MCP 提给人的问题。 */
+export interface Question {
+  id: string;
+  ticket_id: string;
+  task_id: string | null;
+  run_id: string | null;
+  body: string;
+  options: string[];
+  status: 'open' | 'answered' | 'dismissed';
+  answer: string | null;
+  answered_by: string | null;
+  consumed_run_id: string | null;
+  created_at: string;
+  answered_at: string | null;
 }
 
 export interface Commands {
@@ -91,7 +222,7 @@ export interface Pricing {
 
 export interface ProviderInput {
   name: string;
-  protocol: 'native' | 'anthropic' | 'openai_responses' | 'openai_chat';
+  protocol: 'native' | 'anthropic' | 'openai_responses' | 'openai_chat' | 'gemini';
   base_url: string | null;
   models: string[];
   default_model: string | null;
@@ -185,6 +316,7 @@ export interface Ticket {
   /** 变更进行中：发起变更时的定稿版本。 */
   change_from_version_id: string | null;
   change_reason: string | null;
+  assignee_id: string | null;
   created_at: string;
   updated_at: string;
   projects: TicketProject[];
@@ -195,6 +327,8 @@ export interface TicketSummary extends Ticket {
   tasks_done: number;
   tasks_running: number;
   issues_open: number;
+  /** 正在等的自定义环节（自定义工作流）。 */
+  waiting_stage: string | null;
 }
 
 export interface PrdVersion {
@@ -213,6 +347,8 @@ export interface TimelineEvent {
   ts: string;
   type: string;
   payload: Record<string, unknown>;
+  /** 经接口操作的成员名；本机操作为空。 */
+  actor: string | null;
 }
 
 export type TaskStatus =
@@ -255,8 +391,17 @@ export interface Task extends TaskInput {
   pushed_commit: string | null;
   /** 用户手动开的 PR。 */
   pr_url: string | null;
+  /** 多 Agent 同题对比的候选：被对比的那个子任务的 id。 */
+  compare_of: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** 同题对比的一个候选：用哪个 Agent / Provider / 模型。 */
+export interface CompareOption {
+  agent: string;
+  provider_id: string | null;
+  model: string | null;
 }
 
 export interface FileStat {
@@ -542,6 +687,10 @@ export interface TicketDetail {
   impact: Proposal | null;
   artifacts: Artifact[];
   code_reviews: CodeReview[];
+  questions: Question[];
+  assignee: string | null;
+  source: TicketSource | null;
+  stages: StageState[];
 }
 
 export interface RunDetail {
@@ -598,6 +747,7 @@ export type EngineEvent =
     }
   | { type: 'review_finished'; ticket_id: string; ticket_key: string; ticket_title: string; issues: number; blockers: number; error: string | null }
   | { type: 'proposal_ready'; ticket_id: string; ticket_key: string; ticket_title: string; kind: 'split' | 'impact'; error: string | null }
+  | { type: 'question_asked'; question_id: string; ticket_id: string; ticket_key: string; body: string }
   | { type: 'api_doc_ready'; ticket_key: string; task_title: string; path: string; unblocked: number };
 
 export const api = {
@@ -615,6 +765,35 @@ export const api = {
 
   settingsGet: () => invoke<Settings>('settings_get'),
   settingsSave: (settings: Settings) => invoke<Settings>('settings_save', { settings }),
+
+  apiStatus: () => invoke<ApiStatus>('api_status'),
+  memberList: () => invoke<Member[]>('member_list'),
+  /** 令牌只在创建 / 重置时返回这一次。 */
+  memberCreate: (name: string, role: string) => invoke<{ member: Member; token: string }>('member_create', { name, role }),
+  memberUpdate: (m: Member) => invoke<Member>('member_update', { id: m.id, name: m.name, role: m.role, disabled: m.disabled }),
+  memberResetToken: (id: string) => invoke<{ member: Member; token: string }>('member_reset_token', { id }),
+  memberDelete: (id: string) => invoke<void>('member_delete', { id }),
+  workflowList: () => invoke<Workflow[]>('workflow_list'),
+  workflowSave: (id: string | null, input: WorkflowInput) => invoke<Workflow>('workflow_save', { id, input }),
+  workflowDelete: (id: string) => invoke<void>('workflow_delete', { id }),
+  ticketStagePass: (ticketId: string, stageId: string, note: string) =>
+    invoke<StageState>('ticket_stage_pass', { ticketId, stageId, note }),
+  syncSourceList: () => invoke<SyncSource[]>('sync_source_list'),
+  /** secret：undefined 不动现有令牌 / App Secret，空串清除。 */
+  syncSourceSave: (id: string | null, input: SourceInput, secret?: string) =>
+    invoke<SyncSource>('sync_source_save', { id, input, secret: secret ?? null }),
+  syncSourceDelete: (id: string) => invoke<void>('sync_source_delete', { id }),
+  syncRun: (id: string) => invoke<SyncReport>('sync_run', { id }),
+  syncFeishuImport: (sourceId: string, url: string) =>
+    invoke<{ ticket: Ticket; warnings: string[] }>('sync_feishu_import', { sourceId, url }),
+  /** 把外部的新版本导入为新的 PRD 版本（已定稿的工单会先发起变更）。 */
+  syncApply: (ticketId: string) => invoke<Ticket>('sync_apply', { ticketId }),
+  syncDismiss: (ticketId: string) => invoke<void>('sync_dismiss', { ticketId }),
+  ticketAssign: (id: string, memberId: string | null) => invoke<Ticket>('ticket_assign', { id, memberId }),
+  /** 不传工单：所有还没回答的问题。 */
+  questionList: (ticketId?: string) => invoke<Question[]>('question_list', { ticketId: ticketId ?? null }),
+  questionAnswer: (id: string, answer: string) => invoke<Question>('question_answer', { id, answer }),
+  questionDismiss: (id: string) => invoke<Question>('question_dismiss', { id }),
 
   projectList: () => invoke<Project[]>('project_list'),
   projectSave: (id: string | null, input: ProjectInput) => invoke<Project>('project_save', { id, input }),
@@ -681,6 +860,8 @@ export const api = {
   taskReject: (id: string, input: RejectInput) => invoke<Task>('task_reject', { id, input }),
   taskMerge: (id: string) => invoke<Task>('task_merge', { id }),
   taskCancel: (id: string) => invoke<Task>('task_cancel', { id }),
+  taskCompare: (id: string, options: CompareOption[]) => invoke<Task[]>('task_compare', { id, options }),
+  taskAdopt: (id: string) => invoke<Task>('task_adopt', { id }),
   taskDiff: (id: string) => invoke<TaskDiff>('task_diff', { id }),
   /** 把子任务的分支推到远程。只在用户点了之后调用。 */
   taskPush: (id: string) => invoke<Task>('task_push', { id }),

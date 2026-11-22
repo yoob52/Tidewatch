@@ -83,6 +83,7 @@ table.tbl{width:100%;border-collapse:collapse}
 .agent{display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap}
 .agent .glyph{width:16px;height:16px;border-radius:4px;display:grid;place-items:center;font:700 9px var(--font-mono);color:#fff}
 .agent .glyph.cc{background:#B5673E}.agent .glyph.cx{background:#3B3F46}.agent .glyph.ds{background:#3E63C4}
+.agent .glyph.oc{background:#4A6B5D}.agent .glyph.gm{background:#7A5BB5}.agent .glyph.ad{background:#2F7A8C}
 [data-theme="dark"] .agent .glyph.cx{background:#6B717B}
 
 /* 浮层 */

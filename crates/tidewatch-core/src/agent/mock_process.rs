@@ -168,6 +168,98 @@ fn api_doc_path(prompt: &str) -> Option<&str> {
     Some(&rest[..rest.find('`')?]).filter(|p| p.ends_with(".md") && !p.contains(".."))
 }
 
+/// 演示 Agent 调观澜 MCP 工具（地址和运行令牌由引擎放在环境变量里）；没开接口时返回 None。
+fn mcp_call(tool: &str, arguments: Value) -> Option<Value> {
+    let url = std::env::var(super::mock::MCP_URL_ENV).ok()?;
+    let token = std::env::var(crate::engine::RUN_TOKEN_ENV).ok()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(70)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":tool,"arguments":arguments}});
+    let text = agent
+        .post(&url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .ok()?
+        .body_mut()
+        .read_to_string()
+        .ok()?;
+    let resp: Value = serde_json::from_str(&text).ok()?;
+    let result = resp.get("result")?;
+    let text = result["content"][0]["text"].as_str().unwrap_or_default();
+    Some(json!({
+        "is_error": result["isError"].as_bool().unwrap_or(false),
+        "value": serde_json::from_str::<Value>(text).unwrap_or(Value::String(text.into())),
+    }))
+}
+
+/// `[mock:ask]` / `[mock:delegate]`：演示经 MCP 提问和委派。返回要写进结论的一句话。
+fn mcp_demo(session: &str, prompt: &str) -> Option<String> {
+    let step = |id: &str, tool: &str, args: Value| -> Option<Value> {
+        assistant(
+            session,
+            json!({"type":"tool_use","id":id,"name":format!("mcp__tidewatch__{tool}"),"input":args}),
+        );
+        let out = mcp_call(tool, args);
+        emit(
+            json!({"type":"user","session_id":session,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":id,
+            "content":out.as_ref().map(|v| v["value"].to_string()).unwrap_or_else(|| "观澜的接口没有开启。".into()),
+            "is_error":out.as_ref().is_none_or(|v| v["is_error"] == true)}]}}),
+        );
+        out.filter(|v| v["is_error"] != true)
+            .map(|v| v["value"].clone())
+    };
+    let mut notes = Vec::new();
+    if prompt.contains("[mock:ask]") {
+        let asked = step(
+            "toolu_ask",
+            "tw_ask_user",
+            json!({"question":"空列表时返回 [] 还是 null？","options":["[]","null"],"client_request_id":"mock-ask"}),
+        );
+        notes.push(match asked {
+            Some(_) => "有一个问题挂给了你。".to_string(),
+            None => "提问失败。".to_string(),
+        });
+    }
+    if prompt.contains("[mock:delegate]") {
+        let task = "只读看一遍 TIDEWATCH_DEMO.md，说说有没有问题。[mock:steps=1] [mock:delay=50]";
+        let note = match step(
+            "toolu_delegate",
+            "tw_task_delegate",
+            json!({"prompt":task,"client_request_id":"mock-delegate"}),
+        ) {
+            Some(child) => {
+                let run_id = child["run_id"].as_str().unwrap_or_default().to_string();
+                let mut last = child;
+                for i in 0..6 {
+                    if last["finished"] == true {
+                        break;
+                    }
+                    match step(
+                        &format!("toolu_wait_{i}"),
+                        "tw_task_wait",
+                        json!({"run_id":run_id,"timeout_seconds":20}),
+                    ) {
+                        Some(v) => last = v,
+                        None => break,
+                    }
+                }
+                format!(
+                    "委派的检查结束（{}）：{}",
+                    last["status"].as_str().unwrap_or("未知"),
+                    last["result"].as_str().unwrap_or("没有结论")
+                )
+            }
+            None => "委派失败。".to_string(),
+        };
+        notes.push(note);
+    }
+    (!notes.is_empty()).then(|| notes.join(" "))
+}
+
 pub fn run(mut args: MockArgs) -> i32 {
     let mut prompt = String::new();
     let _ = std::io::stdin().read_to_string(&mut prompt);
@@ -262,6 +354,7 @@ pub fn run(mut args: MockArgs) -> i32 {
             json!({"type":"user","session_id":session,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("toolu_{step}"),"content":match &res {Ok(_)=>"已写入".to_string(),Err(e)=>e.to_string()},"is_error":res.is_err()}]}}),
         );
     }
+    let mcp_note = mcp_demo(&session, &prompt);
     pause();
     if fail {
         let msg = "演示 Agent 按提示词中的 [mock:fail] 标记失败。";
@@ -288,6 +381,10 @@ pub fn run(mut args: MockArgs) -> i32 {
         "只读检查完成，没有修改文件。".to_string()
     } else {
         format!("已在 TIDEWATCH_DEMO.md 追加 {} 条记录。", args.steps)
+    };
+    let summary = match mcp_note {
+        Some(note) => format!("{summary} {note}"),
+        None => summary,
     };
     assistant(&session, json!({"type":"text","text":summary}));
     let chars = prompt.chars().count() as u64;

@@ -11,6 +11,8 @@ pub enum Protocol {
     Anthropic,
     OpenaiResponses,
     OpenaiChat,
+    /// Google Gemini API（只有 Gemini CLI 直接用）。
+    Gemini,
 }
 
 impl Protocol {
@@ -20,6 +22,7 @@ impl Protocol {
             Protocol::Anthropic => "anthropic",
             Protocol::OpenaiResponses => "openai_responses",
             Protocol::OpenaiChat => "openai_chat",
+            Protocol::Gemini => "gemini",
         }
     }
     pub fn parse(s: &str) -> Result<Self> {
@@ -28,6 +31,7 @@ impl Protocol {
             "anthropic" => Ok(Protocol::Anthropic),
             "openai_responses" => Ok(Protocol::OpenaiResponses),
             "openai_chat" => Ok(Protocol::OpenaiChat),
+            "gemini" => Ok(Protocol::Gemini),
             other => Err(Error::invalid(format!("未知协议：{other}"))),
         }
     }
@@ -41,6 +45,11 @@ impl Protocol {
                     Protocol::OpenaiResponses | Protocol::OpenaiChat,
                     AgentKind::Codex
                 )
+                | (
+                    Protocol::Anthropic | Protocol::OpenaiResponses | Protocol::OpenaiChat,
+                    AgentKind::OpenCode | AgentKind::Aider
+                )
+                | (Protocol::Gemini, AgentKind::Gemini)
         )
     }
 }
@@ -80,8 +89,13 @@ pub fn bridge_guide(kind: AgentKind, provider: &ProviderConfig) -> Option<String
     let prefix = match provider.protocol {
         Protocol::Anthropic => "anthropic",
         Protocol::OpenaiResponses | Protocol::OpenaiChat => "openai",
+        Protocol::Gemini => "gemini",
         Protocol::Native => return None,
     };
+    // Gemini CLI 只说 Gemini 协议，LiteLLM 转不出来
+    if kind == AgentKind::Gemini {
+        return None;
+    }
     let model = provider
         .default_model
         .as_deref()
@@ -136,7 +150,7 @@ litellm --config litellm.yaml --port {port}
 
 /// 真实 Agent（不含演示 Agent）各自能不能用这个 Provider。
 pub fn compatibility(provider: &ProviderConfig) -> Vec<Compat> {
-    [AgentKind::ClaudeCode, AgentKind::Codex]
+    AgentKind::REAL
         .into_iter()
         .map(|kind| Compat {
             agent: kind.as_str().to_string(),
@@ -230,6 +244,94 @@ pub fn inject(
             if let Some(k) = secret {
                 inj.env.push((CODEX_KEY_ENV.into(), k.to_string()));
             }
+        }
+        AgentKind::OpenCode => {
+            use crate::agent::opencode::{CONFIG_ENV, PROVIDER_ID};
+            // OpenCode 按 npm 包名选协议实现
+            let (npm, default_base) = match provider.protocol {
+                Protocol::Anthropic => ("@ai-sdk/anthropic", None),
+                Protocol::OpenaiResponses => ("@ai-sdk/openai", None),
+                _ => (
+                    "@ai-sdk/openai-compatible",
+                    Some("https://api.openai.com/v1"),
+                ),
+            };
+            let base = provider
+                .base_url
+                .as_deref()
+                .map(|u| u.trim_end_matches('/'))
+                .filter(|u| !u.is_empty())
+                .map(|u| match provider.protocol {
+                    // Anthropic 兼容端点的地址不带 /v1，这个包要带
+                    Protocol::Anthropic if !u.ends_with("/v1") => format!("{u}/v1"),
+                    _ => u.to_string(),
+                })
+                .or(default_base.map(String::from));
+            let mut options = serde_json::Map::new();
+            if let Some(b) = base {
+                options.insert("baseURL".into(), b.into());
+            }
+            if secret.is_some() {
+                // 密钥不写进配置，OpenCode 自己从环境变量取
+                options.insert("apiKey".into(), format!("{{env:{CODEX_KEY_ENV}}}").into());
+            }
+            let mut models = serde_json::Map::new();
+            for m in [&provider.default_model, &provider.small_model]
+                .into_iter()
+                .flatten()
+            {
+                models.insert(m.clone(), serde_json::json!({}));
+            }
+            let config = serde_json::json!({
+                "provider": { PROVIDER_ID: {
+                    "npm": npm,
+                    "name": provider.name,
+                    "options": options,
+                    "models": models,
+                }}
+            });
+            inj.env.push((CONFIG_ENV.into(), config.to_string()));
+            if let Some(k) = secret {
+                inj.env.push((CODEX_KEY_ENV.into(), k.to_string()));
+            }
+        }
+        AgentKind::Gemini => {
+            if let Some(k) = secret {
+                inj.env.push(("GEMINI_API_KEY".into(), k.to_string()));
+            }
+            if let Some(url) = provider
+                .base_url
+                .as_deref()
+                .filter(|u| !u.trim().is_empty())
+            {
+                inj.env.push((
+                    "GOOGLE_GEMINI_BASE_URL".into(),
+                    url.trim_end_matches('/').to_string(),
+                ));
+            }
+        }
+        AgentKind::Aider => {
+            // Aider 经 LiteLLM 调模型：协议由模型名前缀决定
+            let (prefix, key, base) = match provider.protocol {
+                Protocol::Anthropic => ("anthropic/", "ANTHROPIC_API_KEY", "ANTHROPIC_API_BASE"),
+                Protocol::OpenaiResponses => {
+                    ("openai/responses/", "OPENAI_API_KEY", "OPENAI_API_BASE")
+                }
+                _ => ("openai/", "OPENAI_API_KEY", "OPENAI_API_BASE"),
+            };
+            if let Some(k) = secret {
+                inj.env.push((key.into(), k.to_string()));
+            }
+            if let Some(url) = provider
+                .base_url
+                .as_deref()
+                .filter(|u| !u.trim().is_empty())
+            {
+                inj.env
+                    .push((base.into(), url.trim_end_matches('/').to_string()));
+            }
+            inj.env
+                .push((crate::agent::aider::MODEL_PREFIX_ENV.into(), prefix.into()));
         }
         AgentKind::Mock => unreachable!(),
     }
@@ -375,8 +477,16 @@ mod tests {
             all.iter()
                 .map(|c| (c.agent.as_str(), c.compatible))
                 .collect::<Vec<_>>(),
-            [("claude_code", true), ("codex", false)]
+            [
+                ("claude_code", true),
+                ("codex", false),
+                ("opencode", true),
+                ("gemini", false),
+                ("aider", true)
+            ]
         );
+        // Gemini CLI 只说 Gemini 协议，没有桥接办法
+        assert!(all[3].bridge_guide.is_none());
         assert!(all[0].bridge_guide.is_none());
         let guide = all[1].bridge_guide.as_deref().unwrap();
         let model = p.default_model.as_deref().unwrap();
@@ -398,6 +508,92 @@ mod tests {
         assert!(guide.contains("model: openai/<上游模型名>"), "{guide}");
         assert!(guide.contains("Base URL：`http://127.0.0.1:4000`"));
         assert!(bridge_guide(AgentKind::Codex, &openai).is_none());
+    }
+
+    #[test]
+    fn opencode_gets_an_inline_config_without_the_key() {
+        let mut p = deepseek();
+        p.base_url = Some("https://gw.example.com/".into());
+        let inj = inject(AgentKind::OpenCode, &p, Some("sk-secret")).unwrap();
+        let raw = env(&inj, crate::agent::opencode::CONFIG_ENV).unwrap();
+        assert!(!raw.contains("sk-secret"), "密钥不进配置");
+        let cfg: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let prov = &cfg["provider"]["tidewatch"];
+        assert_eq!(prov["npm"], "@ai-sdk/anthropic");
+        assert_eq!(prov["options"]["baseURL"], "https://gw.example.com/v1");
+        assert_eq!(prov["options"]["apiKey"], "{env:TIDEWATCH_PROVIDER_KEY}");
+        assert!(prov["models"]
+            .get(p.default_model.as_deref().unwrap())
+            .is_some());
+        assert_eq!(env(&inj, CODEX_KEY_ENV), Some("sk-secret"));
+
+        for (protocol, npm) in [
+            (Protocol::OpenaiResponses, "@ai-sdk/openai"),
+            (Protocol::OpenaiChat, "@ai-sdk/openai-compatible"),
+        ] {
+            let p = ProviderConfig {
+                protocol,
+                base_url: Some("https://api.example.com/v1".into()),
+                ..deepseek()
+            };
+            let inj = inject(AgentKind::OpenCode, &p, None).unwrap();
+            let cfg: serde_json::Value =
+                serde_json::from_str(env(&inj, crate::agent::opencode::CONFIG_ENV).unwrap())
+                    .unwrap();
+            let prov = &cfg["provider"]["tidewatch"];
+            assert_eq!(prov["npm"], npm);
+            assert_eq!(prov["options"]["baseURL"], "https://api.example.com/v1");
+            assert!(prov["options"].get("apiKey").is_none());
+            assert_eq!(env(&inj, CODEX_KEY_ENV), None);
+        }
+    }
+
+    #[test]
+    fn aider_and_gemini_get_their_own_variables() {
+        let p = ProviderConfig {
+            extra_env: vec![],
+            ..deepseek()
+        };
+        let inj = inject(AgentKind::Aider, &p, Some("k")).unwrap();
+        assert_eq!(env(&inj, "ANTHROPIC_API_KEY"), Some("k"));
+        assert_eq!(
+            env(&inj, "ANTHROPIC_API_BASE"),
+            Some("https://api.deepseek.com/anthropic")
+        );
+        assert_eq!(
+            env(&inj, crate::agent::aider::MODEL_PREFIX_ENV),
+            Some("anthropic/")
+        );
+        for (protocol, prefix) in [
+            (Protocol::OpenaiResponses, "openai/responses/"),
+            (Protocol::OpenaiChat, "openai/"),
+        ] {
+            let p = ProviderConfig {
+                protocol,
+                base_url: Some("https://api.example.com/v1/".into()),
+                ..p.clone()
+            };
+            let inj = inject(AgentKind::Aider, &p, Some("k")).unwrap();
+            assert_eq!(env(&inj, "OPENAI_API_KEY"), Some("k"));
+            assert_eq!(
+                env(&inj, "OPENAI_API_BASE"),
+                Some("https://api.example.com/v1")
+            );
+            assert_eq!(
+                env(&inj, crate::agent::aider::MODEL_PREFIX_ENV),
+                Some(prefix)
+            );
+        }
+
+        let g = ProviderConfig {
+            protocol: Protocol::Gemini,
+            base_url: None,
+            ..p.clone()
+        };
+        let inj = inject(AgentKind::Gemini, &g, Some("k")).unwrap();
+        assert_eq!(inj.env, [("GEMINI_API_KEY".to_string(), "k".to_string())]);
+        assert!(inject(AgentKind::Gemini, &p, Some("k")).is_err());
+        assert!(inject(AgentKind::ClaudeCode, &g, Some("k")).is_err());
     }
 
     #[test]

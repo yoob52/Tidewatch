@@ -43,6 +43,9 @@ pub struct Ticket {
     /// 变更进行中：发起变更时的定稿版本。再次定稿并处理完影响分析后清空。
     pub change_from_version_id: Option<String>,
     pub change_reason: Option<String>,
+    /// 负责人（成员 id）。
+    #[serde(default)]
+    pub assignee_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub projects: Vec<TicketProject>,
@@ -87,9 +90,11 @@ pub struct TimelineEvent {
     #[serde(rename = "type")]
     pub kind: String,
     pub payload: serde_json::Value,
+    /// 经接口操作的成员名；本机操作为空。
+    pub actor: Option<String>,
 }
 
-const COLS: &str = "id, key, title, type, status, priority, labels_json, due_date, source_kind, current_version_id, finalized_version_id, acceptance_criteria_json, bug_info_json, default_agent, default_provider_id, cancelled_from, created_at, updated_at, change_from_version_id, change_reason";
+const COLS: &str = "id, key, title, type, status, priority, labels_json, due_date, source_kind, current_version_id, finalized_version_id, acceptance_criteria_json, bug_info_json, default_agent, default_provider_id, cancelled_from, created_at, updated_at, change_from_version_id, change_reason, assignee_id";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Ticket> {
     Ok(Ticket {
@@ -119,6 +124,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Ticket> {
         updated_at: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
         change_from_version_id: r.get(18)?,
         change_reason: r.get(19)?,
+        assignee_id: r.get(20)?,
         projects: vec![],
     })
 }
@@ -333,6 +339,30 @@ pub fn update(conn: &mut Connection, id: &str, input: TicketInput) -> Result<Tic
     get(conn, id)
 }
 
+pub fn type_label(kind: &str) -> &str {
+    match kind {
+        "feature_backend" => "后端需求",
+        "feature_frontend" => "前端需求",
+        "feature_mixed" => "前后端混合",
+        "bug" => "Bug",
+        "chore" => "杂项",
+        other => other,
+    }
+}
+
+/// 只改标题（外部来源改了标题时用）。
+pub fn rename(conn: &Connection, id: &str, title: &str) -> Result<()> {
+    let title = required(title, "标题")?;
+    conn.execute(
+        "UPDATE ticket SET title = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![id, title, crate::util::now()],
+    )?;
+    let content = current_prd(conn, id)?
+        .map(|v| v.content_md)
+        .unwrap_or_default();
+    index(conn, id, &title, &content)
+}
+
 /// 保存正文为新版本（版本不可变）。定稿后不能直接改。
 pub fn save_prd(
     conn: &mut Connection,
@@ -437,6 +467,9 @@ pub fn transition(conn: &mut Connection, id: &str, to: &str) -> Result<Ticket> {
     if to == "finalized" {
         check_can_finalize(conn, &t)?;
     }
+    if to == "done" {
+        super::workflows::check_gate(conn, &t, "done")?;
+    }
     if to == "human_review" && matches!(t.status.as_str(), "finalized" | "developing") {
         return Err(Error::invalid(
             "定稿后要改需求，请用「发起变更」并填写变更原因。",
@@ -461,6 +494,7 @@ pub fn transition(conn: &mut Connection, id: &str, to: &str) -> Result<Ticket> {
         "status",
         serde_json::json!({ "from": t.status, "to": to }),
     )?;
+    super::workflows::reset(&tx, &t, to)?;
     tx.commit()?;
     get(conn, id)
 }
@@ -481,7 +515,7 @@ pub fn check_can_finalize(conn: &Connection, t: &Ticket) -> Result<()> {
     if t.acceptance_criteria.is_empty() {
         return Err(Error::invalid("验收标准为空，不能定稿。"));
     }
-    Ok(())
+    super::workflows::check_gate(conn, t, "finalized")
 }
 
 /// 只改验收标准。定稿后锁定（Bug 工单没有定稿环节，开发中也能改）。
@@ -535,6 +569,7 @@ pub fn request_change(conn: &mut Connection, id: &str, reason: &str) -> Result<T
         "change_requested",
         serde_json::json!({ "reason": reason }),
     )?;
+    super::workflows::reset(&tx, &t, "human_review")?;
     tx.commit()?;
     get(conn, &t.id)
 }
@@ -627,7 +662,7 @@ pub fn list(conn: &Connection, query: Option<&str>) -> Result<Vec<Ticket>> {
 
 pub fn timeline(conn: &Connection, ticket_id: &str) -> Result<Vec<TimelineEvent>> {
     let mut st = conn.prepare(
-        "SELECT id, ts, type, payload_json FROM timeline_event WHERE ticket_id = ?1 ORDER BY ts, rowid",
+        "SELECT id, ts, type, payload_json, actor FROM timeline_event WHERE ticket_id = ?1 ORDER BY ts, rowid",
     )?;
     let rows = st
         .query_map([ticket_id], |r| {
@@ -636,10 +671,41 @@ pub fn timeline(conn: &Connection, ticket_id: &str) -> Result<Vec<TimelineEvent>
                 ts: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 kind: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 payload: from_json(r.get(3)?),
+                actor: r.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// 在工单上留一条评论，同时进时间线。
+pub fn add_comment(conn: &Connection, id: &str, body: &str) -> Result<()> {
+    let t = get(conn, id)?;
+    let body = required(body, "评论")?;
+    conn.execute(
+        "INSERT INTO comment (id, ticket_id, kind, body_md, created_at) VALUES (?1, ?2, 'note', ?3, ?4)",
+        rusqlite::params![crate::util::new_id(), t.id, body, crate::util::now()],
+    )?;
+    add_timeline(conn, &t.id, "comment", serde_json::json!({ "body": body }))
+}
+
+/// 指派负责人；传空取消指派。
+pub fn set_assignee(conn: &Connection, id: &str, member_id: Option<&str>) -> Result<Ticket> {
+    let t = get(conn, id)?;
+    let member = member_id
+        .map(|m| super::members::get(conn, m))
+        .transpose()?;
+    conn.execute(
+        "UPDATE ticket SET assignee_id = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![t.id, member.as_ref().map(|m| &m.id), crate::util::now()],
+    )?;
+    add_timeline(
+        conn,
+        &t.id,
+        "assigned",
+        serde_json::json!({ "assignee": member.map(|m| m.name) }),
+    )?;
+    get(conn, &t.id)
 }
 
 /// 从粘贴 / 导入的 Markdown 预填工单：标题取第一个标题行或首行，按关键词猜是不是 Bug。

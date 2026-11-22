@@ -72,14 +72,14 @@ pub(super) fn check_no_open_proposal(conn: &rusqlite::Connection, ticket_id: &st
 }
 
 /// 工单级运行在哪个项目里跑、由谁来跑。
-struct TicketPlan {
-    project: Project,
-    agent: String,
-    provider_id: Option<String>,
-    model: Option<String>,
+pub(super) struct TicketPlan {
+    pub(super) project: Project,
+    pub(super) agent: String,
+    pub(super) provider_id: Option<String>,
+    pub(super) model: Option<String>,
 }
 
-fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<TicketPlan> {
+pub(super) fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<TicketPlan> {
     // 优先在后端项目里看代码；只绑了一个项目就用它
     let bound = ticket
         .projects
@@ -114,7 +114,7 @@ fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<Ticke
     })
 }
 
-fn enqueue_ticket_run(
+pub(super) fn enqueue_ticket_run(
     conn: &rusqlite::Connection,
     ticket: &Ticket,
     plan: &TicketPlan,
@@ -236,8 +236,8 @@ fn plan_code_review(
         Some(a) => AgentKind::parse(&a)?,
         None => match author_kind {
             Some(AgentKind::ClaudeCode) => AgentKind::Codex,
-            Some(AgentKind::Codex) => AgentKind::ClaudeCode,
-            _ => AgentKind::Mock,
+            Some(AgentKind::Mock) | None => AgentKind::Mock,
+            Some(_) => AgentKind::ClaudeCode,
         },
     };
     let provider = match crate::store::clean(opts.provider_id.clone()) {
@@ -652,6 +652,36 @@ impl Engine {
         Ok(started)
     }
 
+    /// 通过一个自定义环节。完成前的最后一个环节通过后，子任务都已合并的工单自动完成。
+    pub fn pass_stage(
+        &self,
+        ticket_id: &str,
+        stage_id: &str,
+        note: &str,
+    ) -> Result<workflows::StageState> {
+        let (ticket, state) = {
+            let mut conn = lock(&self.inner.db);
+            let state = workflows::pass(&conn, ticket_id, stage_id, note)?;
+            let ticket = tickets::get(&conn, ticket_id)?;
+            let all = tasks::list_for_ticket(&conn, &ticket.id)?;
+            let merged = !all.is_empty()
+                && all
+                    .iter()
+                    .all(|t| matches!(t.status.as_str(), "merged" | "cancelled"))
+                && all.iter().any(|t| t.status == "merged");
+            if state.gate == "done"
+                && ticket.status == "acceptance"
+                && merged
+                && workflows::can_auto_done(&conn, &ticket)?
+            {
+                tickets::transition(&mut conn, &ticket.id, "done")?;
+            }
+            (ticket, state)
+        };
+        self.inner.changed(Some(ticket.id), None, None);
+        Ok(state)
+    }
+
     /// 发起变更：定稿后的工单回到人工审核。`stop_running` 为真时停掉正在跑的子任务，否则让它们跑完。
     pub fn request_change(
         &self,
@@ -944,6 +974,8 @@ impl Inner {
                     Error::invalid("子任务的 worktree 已经不在了，没有可以审查的改动。")
                 })?;
                 (projects::get(&conn, &task.project_id)?, PathBuf::from(cwd))
+            } else if run.purpose == "delegate" {
+                super::api_flow::delegate_cwd(&conn, run, &ticket)?
             } else {
                 let project = plan_ticket_run(&conn, &ticket)?.project;
                 let cwd = PathBuf::from(&project.local_path);
@@ -1049,6 +1081,21 @@ impl Inner {
                     findings: cr.findings.len(),
                     blockers,
                     error: cr.error,
+                })
+            } else if run.purpose == "delegate" {
+                let d = crate::store::delegations::by_run(&conn, &run.id)?;
+                task_id = d.as_ref().and_then(|d| d.task_id.clone());
+                add_timeline(
+                    &conn,
+                    &ticket.id,
+                    "delegate_finished",
+                    json!({ "run_id": run.id, "parent_run_id": d.map(|d| d.parent_run_id),
+                            "agent": run.agent, "error": output.err() }),
+                )?;
+                Ok(EngineEvent::Changed {
+                    ticket_id: Some(ticket.id),
+                    task_id: task_id.clone(),
+                    run_id: Some(run.id.clone()),
                 })
             } else if run.purpose == "review" {
                 let review = reviews::save_result(

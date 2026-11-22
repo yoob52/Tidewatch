@@ -55,6 +55,25 @@ pub struct RunOutcome {
 }
 
 impl RunOutcome {
+    fn absorb(&mut self, ev: &AgentEvent) {
+        match ev {
+            AgentEvent::SessionStarted { session_id, .. } => {
+                self.session_id = Some(session_id.clone())
+            }
+            AgentEvent::Usage { usage } => self.usage.add(usage),
+            AgentEvent::Finished {
+                ok, summary, usage, ..
+            } => {
+                self.finished_ok = Some(*ok);
+                self.summary = summary.clone();
+                if let Some(u) = usage {
+                    self.usage = u.clone();
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn succeeded(&self) -> bool {
         !self.stopped
             && !self.timed_out
@@ -167,18 +186,37 @@ pub fn inherits_env(
     let (config, credentials): (&[&str], &[&str]) = match kind {
         AgentKind::ClaudeCode => (&["CLAUDE_"], &["ANTHROPIC_"]),
         AgentKind::Codex => (&["CODEX_"], &["OPENAI_"]),
+        AgentKind::OpenCode => (
+            &["OPENCODE_"],
+            &["ANTHROPIC_", "OPENAI_", "GEMINI_", "GOOGLE_"],
+        ),
+        AgentKind::Gemini => (&["GEMINI_CLI_"], &["GEMINI_", "GOOGLE_"]),
+        AgentKind::Aider => (
+            &["AIDER_"],
+            &[
+                "ANTHROPIC_",
+                "OPENAI_",
+                "GEMINI_",
+                "DEEPSEEK_",
+                "OPENROUTER_",
+            ],
+        ),
         AgentKind::Mock => (&["TIDEWATCH_MOCK_"], &[]),
     };
     if config.iter().any(|p| name.starts_with(p)) {
         return true;
     }
     // 只注入了模型名之类的覆盖项不算：这时登录凭据仍然来自环境
-    let provider_injected = injected.iter().any(|(k, _)| {
+    let provider_injected = injected.iter().any(|(k, v)| {
         let k = k.to_ascii_uppercase();
         k == crate::provider::CODEX_KEY_ENV
+            // OpenCode 的内联配置每次都有（权限、MCP）；里面带了 Provider 才算注入
+            || (k == crate::agent::opencode::CONFIG_ENV
+                && crate::agent::opencode::config_has_provider(v))
             || credentials.iter().any(|p| {
-                k.strip_prefix(p)
-                    .is_some_and(|rest| matches!(rest, "API_KEY" | "AUTH_TOKEN" | "BASE_URL"))
+                k.strip_prefix(p).is_some_and(|rest| {
+                    matches!(rest, "API_KEY" | "AUTH_TOKEN" | "BASE_URL" | "API_BASE")
+                })
             })
     });
     !provider_injected && credentials.iter().any(|p| name.starts_with(p))
@@ -206,6 +244,7 @@ pub fn run_agent(
     opts: &RunOptions,
     on_event: &mut dyn FnMut(RunnerEvent),
 ) -> Result<RunOutcome> {
+    adapter.prepare(spec)?;
     let command = adapter.build_command(spec)?;
     let mut parser = adapter.parser();
     let started = Instant::now();
@@ -296,22 +335,7 @@ pub fn run_agent(
                     }
                 }
                 for ev in parser.parse_line(&line) {
-                    match &ev {
-                        AgentEvent::SessionStarted { session_id, .. } => {
-                            outcome.session_id = Some(session_id.clone())
-                        }
-                        AgentEvent::Usage { usage } => outcome.usage.add(usage),
-                        AgentEvent::Finished {
-                            ok, summary, usage, ..
-                        } => {
-                            outcome.finished_ok = Some(*ok);
-                            outcome.summary = summary.clone();
-                            if let Some(u) = usage {
-                                outcome.usage = u.clone();
-                            }
-                        }
-                        _ => {}
-                    }
+                    outcome.absorb(&ev);
                     on_event(RunnerEvent::Agent(ev));
                 }
             }
@@ -369,6 +393,10 @@ pub fn run_agent(
         }
     }
 
+    for ev in parser.finish() {
+        outcome.absorb(&ev);
+        on_event(RunnerEvent::Agent(ev));
+    }
     let n = stderr_lines.len();
     outcome.stderr_tail = stderr_lines[n.saturating_sub(20)..].join("\n");
     outcome.duration_ms = started.elapsed().as_millis() as u64;

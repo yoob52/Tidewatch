@@ -34,7 +34,7 @@ struct AgentOpts {
     /// 自定义 Provider 的 Base URL（如中转站）；密钥同样从 --api-key-env 读取
     #[arg(long, conflicts_with = "deepseek")]
     base_url: Option<String>,
-    /// 自定义 Provider 的协议：anthropic / openai_responses / openai_chat；默认按 Agent 选
+    /// 自定义 Provider 的协议：anthropic / openai_responses / openai_chat / gemini；默认按 Agent 选
     #[arg(long, requires = "base_url")]
     protocol: Option<String>,
     /// 存放 API Key 的环境变量名
@@ -57,7 +57,7 @@ enum Cmd {
     Doctor,
     /// 在指定目录运行一次 Agent，实时打印事件；Ctrl-C 停止整棵进程树
     Run {
-        /// claude_code / codex / mock
+        /// claude_code / codex / opencode / gemini / aider / mock
         #[arg(long)]
         agent: String,
         #[arg(long, default_value = ".")]
@@ -91,7 +91,7 @@ enum Cmd {
         /// 目标仓库
         #[arg(long)]
         repo: PathBuf,
-        /// 逗号分隔：claude_code,codex,mock
+        /// 逗号分隔：claude_code,codex,opencode,gemini,aider,mock
         #[arg(long, default_value = "claude_code,codex")]
         agents: String,
         /// 演示结束后保留 worktree 与分支
@@ -185,7 +185,10 @@ fn build_spec(
             name: "自定义".into(),
             protocol: match (&o.protocol, agent) {
                 (Some(p), _) => provider::Protocol::parse(p)?,
-                (None, AgentKind::Codex) => provider::Protocol::OpenaiResponses,
+                (None, AgentKind::Codex | AgentKind::OpenCode | AgentKind::Aider) => {
+                    provider::Protocol::OpenaiResponses
+                }
+                (None, AgentKind::Gemini) => provider::Protocol::Gemini,
                 (None, _) => provider::Protocol::Anthropic,
             },
             base_url: Some(url.clone()),
@@ -343,7 +346,7 @@ fn dispatch(cmd: Cmd) -> AnyResult<i32> {
                 "git        {}",
                 git::version().unwrap_or_else(|| "未安装".into())
             );
-            for kind in [AgentKind::ClaudeCode, AgentKind::Codex] {
+            for kind in AgentKind::REAL {
                 let d = adapter(kind).detect();
                 match (d.installed, d.path, d.version) {
                     (true, Some(p), v) => println!(

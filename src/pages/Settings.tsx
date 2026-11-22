@@ -1,12 +1,12 @@
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type BackupFile, type Detection, type Settings, type SystemInfo, type TemplateInfo, type UpdateInfo } from '../lib/api';
+import { api, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type Stage, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type UpdateInfo, type Workflow, type WorkflowInput } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
-import { AGENTS, Modal, PERMISSIONS, Seg, Switch, useUi } from '../lib/ui';
+import { AGENTS, Field, Modal, PERMISSIONS, Seg, Switch, TYPES, useUi } from '../lib/ui';
 
-const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '本机环境'];
+const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '接口与成员', '外部同步', '工作流', '本机环境'];
 
 /** 编辑一个 Prompt 模板：左边改，右边看用示例数据填出来的效果。 */
 function TemplateEditor({ tpl, onClose, onSaved }: { tpl: TemplateInfo; onClose: () => void; onSaved: (list: TemplateInfo[]) => void }) {
@@ -137,6 +137,656 @@ function PromptTemplates() {
     </div>
   );
 }
+const ROLE_HINT: Record<Member['role'], string> = {
+  owner: '全部操作，含合并和以 full_auto 开始',
+  member: '建单、评论、开始 / 停止、验收、回答问题',
+  viewer: '只读',
+};
+
+/** 本地 HTTP / MCP 接口的开关，以及能带令牌访问它的成员。 */
+function ApiSection({ settings, save }: { settings: Settings; save: (patch: Partial<Settings>) => Promise<void> }) {
+  const ui = useUi();
+  const [status, setStatus] = useState<ApiStatus | null>(null);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [port, setPort] = useState(String(settings.api_port));
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<Member['role']>('member');
+  const [shown, setShown] = useState<{ name: string; token: string } | null>(null);
+
+  const refresh = () => {
+    api.apiStatus().then(setStatus, () => undefined);
+    api.memberList().then(setMembers, () => undefined);
+  };
+  useEffect(refresh, [settings.api_enabled, settings.api_port, settings.api_remote]);
+  useEffect(() => setPort(String(settings.api_port)), [settings.api_port]);
+
+  const base = status?.running ? `http://127.0.0.1:${status.port}` : null;
+  const savePort = () => {
+    const n = Number(port);
+    if (n === settings.api_port) return;
+    if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+      ui.toast('端口要在 1024 到 65535 之间');
+      setPort(String(settings.api_port));
+      return;
+    }
+    void save({ api_port: n });
+  };
+  const setRemote = async (on: boolean) => {
+    if (
+      on &&
+      !(await ui.confirm(
+        '允许局域网里的其他设备访问？',
+        '打开后接口监听这台机器的所有网卡：同一网络里的人只要有成员令牌，就能读工单、开始运行。接口是明文 HTTP，令牌在网络上不加密，只在你信任的网络里打开。',
+        '打开',
+      ))
+    )
+      return;
+    await save({ api_remote: on });
+  };
+  const create = async () => {
+    const made = await ui.attempt(api.memberCreate(name, role));
+    if (!made) return;
+    setName('');
+    setShown({ name: made.member.name, token: made.token });
+    refresh();
+  };
+  const update = async (m: Member) => {
+    await ui.attempt(api.memberUpdate(m));
+    refresh();
+  };
+  const reset = async (m: Member) => {
+    if (!(await ui.confirm(`重置「${m.name}」的令牌？`, '旧令牌立刻失效，正在用它的脚本和网页要换成新的。', '重置'))) return;
+    const made = await ui.attempt(api.memberResetToken(m.id));
+    if (made) setShown({ name: m.name, token: made.token });
+    refresh();
+  };
+  const remove = async (m: Member) => {
+    if (!(await ui.confirm(`删除成员「${m.name}」？`, '它的令牌立刻失效；指派给它的工单变成未指派。', '删除'))) return;
+    await ui.attempt(api.memberDelete(m.id));
+    refresh();
+  };
+
+  return (
+    <div className="card">
+      <div className="srow">
+        <div>
+          <b>本地接口（HTTP / MCP）</b>
+          <p>
+            打开后，脚本可以经 REST 读写工单；运行中的 Claude Code、Codex、OpenCode 会自动接上观澜的 MCP 服务，可以读当前工单、把只读任务委派给另一个 Agent、把拿不准的问题挂给你。默认关闭。
+          </p>
+          {settings.api_enabled && status?.running && (
+            <p className="mono">
+              {base}/api/v1 · {base}/mcp · 看板页 {base}/
+            </p>
+          )}
+          {settings.api_enabled && status?.error && <p style={{ color: 'var(--cinnabar)' }}>{status.error}</p>}
+        </div>
+        <div className="sctl">
+          <Switch on={settings.api_enabled} onChange={(v) => void save({ api_enabled: v })} label="本地接口" />
+        </div>
+      </div>
+      <div className="srow">
+        <div>
+          <b>端口</b>
+          <p>改端口后，已经在跑的 Agent 仍然连着旧地址，要到下一轮才用新的。</p>
+        </div>
+        <div className="sctl">
+          <input className="input mono" style={{ width: 90 }} value={port} onChange={(e) => setPort(e.target.value)} onBlur={savePort} inputMode="numeric" aria-label="接口端口" />
+        </div>
+      </div>
+      <div className="srow">
+        <div>
+          <b>允许局域网访问</b>
+          <p>关着时只有这台机器能连。打开后同一网络里的人可以带成员令牌访问接口和看板页；明文 HTTP，不要在不信任的网络里打开。</p>
+          {status?.remote && status.lan_urls.length > 0 && <p className="mono">{status.lan_urls.join(' · ')}</p>}
+        </div>
+        <div className="sctl">
+          <Switch on={settings.api_remote} onChange={(v) => void setRemote(v)} label="允许局域网访问" />
+        </div>
+      </div>
+      {members.map((m) => (
+        <div className="srow" key={m.id}>
+          <div>
+            <b>{m.name}</b>
+            <p>
+              {ROLE_HINT[m.role]}
+              {m.token_hint && <span className="mono"> · 令牌 …{m.token_hint}</span>}
+              {m.last_seen_at ? ` · 最近访问 ${m.last_seen_at.slice(0, 16).replace('T', ' ')}` : ' · 还没用过'}
+            </p>
+          </div>
+          <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {m.disabled && <span className="tag amber">已停用</span>}
+            <select className="input" style={{ width: 100 }} value={m.role} onChange={(e) => void update({ ...m, role: e.target.value as Member['role'] })} aria-label={`${m.name} 的角色`}>
+              <option value="owner">owner</option>
+              <option value="member">member</option>
+              <option value="viewer">viewer</option>
+            </select>
+            <button className="btn sm" onClick={() => void update({ ...m, disabled: !m.disabled })}>
+              {m.disabled ? '启用' : '停用'}
+            </button>
+            <button className="btn sm" onClick={() => void reset(m)}>
+              重置令牌
+            </button>
+            <button className="btn sm ghost" onClick={() => void remove(m)} aria-label={`删除 ${m.name}`}>
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className="srow">
+        <div>
+          <b>添加成员</b>
+          <p>每个成员一个令牌，用于 REST、MCP 和看板页。令牌只显示一次，数据库里只存它的摘要。运行中的 Agent 用的是每一轮单独签发的临时令牌，不需要在这里建成员。</p>
+        </div>
+        <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input className="input" style={{ width: 130 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="名字" aria-label="成员名" />
+          <select className="input" style={{ width: 100 }} value={role} onChange={(e) => setRole(e.target.value as Member['role'])} aria-label="角色">
+            <option value="owner">owner</option>
+            <option value="member">member</option>
+            <option value="viewer">viewer</option>
+          </select>
+          <button className="btn sm" disabled={!name.trim()} onClick={() => void create()}>
+            添加
+          </button>
+        </div>
+      </div>
+      {shown && (
+        <Modal
+          title={`「${shown.name}」的令牌`}
+          hint="只显示这一次。关掉之后看不到了，丢了只能重置。"
+          width={620}
+          onClose={() => setShown(null)}
+          footer={
+            <>
+              <span className="grow" />
+              <button
+                className="btn"
+                onClick={() => {
+                  void navigator.clipboard.writeText(shown.token).then(() => ui.toast('已复制'));
+                }}
+              >
+                复制
+              </button>
+              <button className="btn primary" onClick={() => setShown(null)}>
+                我已保存
+              </button>
+            </>
+          }
+        >
+          <pre className="plain boxed mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }} aria-label="令牌">
+            {shown.token}
+          </pre>
+          <p className="dim" style={{ marginTop: 8 }}>
+            用法：请求头带上 <span className="mono">Authorization: Bearer {'<令牌>'}</span>。
+          </p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const GATE_NAME: Record<Stage['gate'], string> = { finalized: '定稿之前', done: '完成之前' };
+
+/** 新建 / 编辑一个工作流。 */
+function WorkflowEditor({ current, onClose, onSaved }: { current: Workflow | null; onClose: () => void; onSaved: () => void }) {
+  const ui = useUi();
+  const [f, setF] = useState<WorkflowInput>(
+    current
+      ? { name: current.name, config: current.config, enabled: current.enabled }
+      : { name: '', config: { ticket_types: ['feature_mixed'], stages: [{ id: '', name: '', gate: 'finalized', hint: '' }], auto_done: true }, enabled: true },
+  );
+  const cfg = (patch: Partial<WorkflowInput['config']>) => setF((x) => ({ ...x, config: { ...x.config, ...patch } }));
+  const stage = (i: number, patch: Partial<Stage>) => cfg({ stages: f.config.stages.map((s, k) => (k === i ? { ...s, ...patch } : s)) });
+  const move = (i: number, by: number) => {
+    const next = [...f.config.stages];
+    const [s] = next.splice(i, 1);
+    next.splice(i + by, 0, s);
+    cfg({ stages: next });
+  };
+  const toggleType = (t: TicketType) =>
+    cfg({ ticket_types: f.config.ticket_types.includes(t) ? f.config.ticket_types.filter((x) => x !== t) : [...f.config.ticket_types, t] });
+  const submit = async () => {
+    const saved = await ui.attempt(api.workflowSave(current?.id ?? null, f), '已保存');
+    if (saved) onSaved();
+  };
+  const onlyBug = f.config.ticket_types.length > 0 && f.config.ticket_types.every((t) => t === 'bug');
+  return (
+    <Modal
+      title={current ? `编辑「${current.name}」` : '添加工作流'}
+      hint="内置的状态（草稿、预审、人工审核、已定稿、开发中、验收中、已完成）不变。这里给某几类工单加上自己的环节：每个环节要有人点「通过」，工单才能往下走。"
+      width={720}
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button className="btn primary" disabled={!f.name.trim() || !f.config.ticket_types.length} onClick={() => void submit()}>
+            保存
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        <Field label="名称">
+          <input className="input" value={f.name} onChange={(e) => setF((x) => ({ ...x, name: e.target.value }))} placeholder="例如：带设计评审的需求流程" />
+        </Field>
+        <Field label="适用的工单类型" hint="一种类型同一时间只能有一个启用的工作流">
+          <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
+            {(Object.keys(TYPES) as TicketType[]).map((t) => (
+              <label key={t} className="row">
+                <input type="checkbox" checked={f.config.ticket_types.includes(t)} onChange={() => toggleType(t)} />
+                {TYPES[t].name}
+              </label>
+            ))}
+          </div>
+        </Field>
+        <Field label="环节" hint="按顺序逐个通过。工单退回前面的状态（比如发起变更、打回返工）后要重新过">
+          {f.config.stages.map((s, i) => (
+            <div key={i} className="row" style={{ gap: 6, marginBottom: 6, alignItems: 'center' }}>
+              <input className="input" style={{ width: 150 }} value={s.name} onChange={(e) => stage(i, { name: e.target.value })} placeholder="环节名称" aria-label={`环节 ${i + 1} 名称`} />
+              <select className="input" style={{ width: 110 }} value={s.gate} onChange={(e) => stage(i, { gate: e.target.value as Stage['gate'] })} aria-label={`环节 ${i + 1} 位置`}>
+                <option value="finalized">{GATE_NAME.finalized}</option>
+                <option value="done">{GATE_NAME.done}</option>
+              </select>
+              <input className="input" style={{ flex: 1 }} value={s.hint} onChange={(e) => stage(i, { hint: e.target.value })} placeholder="要检查什么（可选）" aria-label={`环节 ${i + 1} 说明`} />
+              <button className="btn sm ghost" disabled={i === 0} onClick={() => move(i, -1)} aria-label="上移">
+                ↑
+              </button>
+              <button className="btn sm ghost" disabled={i === f.config.stages.length - 1} onClick={() => move(i, 1)} aria-label="下移">
+                ↓
+              </button>
+              <button className="btn sm ghost" onClick={() => cfg({ stages: f.config.stages.filter((_, k) => k !== i) })} aria-label={`删除环节 ${i + 1}`}>
+                <Icon name="x" size={13} />
+              </button>
+            </div>
+          ))}
+          <button className="btn sm" onClick={() => cfg({ stages: [...f.config.stages, { id: '', name: '', gate: 'done', hint: '' }] })}>
+            加一个环节
+          </button>
+          {onlyBug && f.config.stages.some((s) => s.gate === 'finalized') && (
+            <p className="dim" style={{ marginTop: 6 }}>
+              Bug 走快速通道、不经过定稿，「定稿之前」的环节对它不起作用。
+            </p>
+          )}
+        </Field>
+        <label className="row">
+          <input type="checkbox" checked={f.config.auto_done} onChange={(e) => cfg({ auto_done: e.target.checked })} />
+          子任务全部合并、环节都通过后，自动完成工单（关掉后要手动把工单拖到「已完成」）
+        </label>
+      </div>
+    </Modal>
+  );
+}
+
+/** 自定义工作流：在内置流程上加自己的环节。 */
+function WorkflowSection() {
+  const ui = useUi();
+  const { reload } = useData();
+  const [list, setList] = useState<Workflow[]>([]);
+  const [editing, setEditing] = useState<Workflow | 'new' | null>(null);
+  const refresh = () => {
+    void api.workflowList().then(setList, () => undefined);
+    // 看板上的「待：环节」跟着变
+    void reload();
+  };
+  useEffect(() => void api.workflowList().then(setList, () => undefined), []);
+  const toggle = async (w: Workflow) => {
+    await ui.attempt(api.workflowSave(w.id, { name: w.name, config: w.config, enabled: !w.enabled }));
+    refresh();
+  };
+  const remove = async (w: Workflow) => {
+    if (!(await ui.confirm(`删除工作流「${w.name}」？`, '这几类工单回到内置流程；已经通过的环节记录一并删除，时间线里的记录留着。', '删除', true))) return;
+    await ui.attempt(api.workflowDelete(w.id));
+    refresh();
+  };
+  return (
+    <div className="card">
+      {list.length === 0 && (
+        <div className="srow">
+          <div>
+            <b>现在用的是内置流程</b>
+            <p>可以给某几类工单加上自己的环节，比如定稿前的「设计评审」、完成前的「QA 验证」。环节由人点通过，没通过之前工单不能定稿 / 完成。</p>
+          </div>
+        </div>
+      )}
+      {list.map((w) => (
+        <div className="srow" key={w.id}>
+          <div>
+            <b>{w.name}</b>
+            <p>
+              {w.config.ticket_types.map((t) => TYPES[t]?.name ?? t).join('、')}
+              {w.config.stages.length > 0 ? ` · ${w.config.stages.map((s) => `${s.name}（${GATE_NAME[s.gate]}）`).join(' → ')}` : ' · 没有环节'}
+              {!w.config.auto_done && ' · 手动完成'}
+            </p>
+          </div>
+          <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {!w.enabled && <span className="tag amber">已停用</span>}
+            <button className="btn sm" onClick={() => setEditing(w)}>
+              编辑
+            </button>
+            <button className="btn sm" onClick={() => void toggle(w)}>
+              {w.enabled ? '停用' : '启用'}
+            </button>
+            <button className="btn sm ghost" onClick={() => void remove(w)} aria-label={`删除 ${w.name}`}>
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className="srow">
+        <div>
+          <b>添加工作流</b>
+          <p>改动立刻对进行中的工单生效：新加的环节要补过，删掉的环节不再卡。</p>
+        </div>
+        <div className="sctl">
+          <button className="btn sm" onClick={() => setEditing('new')}>
+            添加…
+          </button>
+        </div>
+      </div>
+      {editing && (
+        <WorkflowEditor
+          current={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            refresh();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+const BLANK_SOURCE: SourceConfig = {
+  repo: '',
+  labels: [],
+  write_back: false,
+  app_id: '',
+  api_base: null,
+  project_id: null,
+  ticket_type: 'feature_mixed',
+};
+
+function reportText(r: SyncReport): string {
+  const parts = [
+    r.created.length ? `新建 ${r.created.length} 张工单（${r.created.join('、')}）` : '',
+    r.changed.length ? `${r.changed.length} 张工单的来源有更新（${r.changed.join('、')}）` : '',
+    r.comments ? `${r.comments} 条新评论` : '',
+    r.written_back.length ? `回写并关闭 ${r.written_back.length} 个 Issue` : '',
+  ].filter(Boolean);
+  const head = parts.length ? parts.join('；') : '没有新的内容';
+  return r.warnings.length ? `${head}。注意：${r.warnings.join('；')}` : head;
+}
+
+/** 新建 / 编辑一个同步来源。 */
+function SourceEditor({ current, onClose, onSaved }: { current: SyncSource | null; onClose: () => void; onSaved: () => void }) {
+  const ui = useUi();
+  const { projects } = useData();
+  const [f, setF] = useState<SourceInput>(
+    current ? { kind: current.kind, name: current.name, config: current.config, enabled: current.enabled } : { kind: 'github', name: '', config: BLANK_SOURCE, enabled: true },
+  );
+  const [secret, setSecret] = useState('');
+  const [clear, setClear] = useState(false);
+  const cfg = (patch: Partial<SourceConfig>) => setF((x) => ({ ...x, config: { ...x.config, ...patch } }));
+  const github = f.kind === 'github';
+  const ready = f.name.trim() && (github ? f.config.repo.trim() : f.config.app_id.trim());
+  const submit = async () => {
+    const saved = await ui.attempt(api.syncSourceSave(current?.id ?? null, f, secret.trim() ? secret.trim() : clear ? '' : undefined), '已保存');
+    if (saved) onSaved();
+  };
+  return (
+    <Modal
+      title={current ? `编辑「${current.name}」` : '添加同步来源'}
+      hint={
+        github
+          ? '把一个 GitHub 仓库的 Issue 拉成草稿工单。外部改了内容只会提示「源已变更」，要不要导入由你决定。'
+          : '用飞书自建应用按链接导入新版文档。这部分按开放平台文档写成，还没有对着真实的飞书验证过。'
+      }
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button className="btn primary" disabled={!ready} onClick={() => void submit()}>
+            保存
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        {!current && (
+          <Field label="类型">
+            <Seg
+              value={f.kind}
+              onChange={(k) => setF((x) => ({ ...x, kind: k }))}
+              options={[
+                ['github', 'GitHub Issues'],
+                ['feishu', '飞书文档'],
+              ]}
+            />
+          </Field>
+        )}
+        <Field label="名称">
+          <input className="input" value={f.name} onChange={(e) => setF((x) => ({ ...x, name: e.target.value }))} placeholder={github ? '例如：商城仓库' : '例如：产品文档'} />
+        </Field>
+        {github ? (
+          <>
+            <Field label="仓库" hint="owner/name，或者仓库地址">
+              <input className="input mono" value={f.config.repo} onChange={(e) => cfg({ repo: e.target.value })} placeholder="acme/shop" />
+            </Field>
+            <Field label="只拉带这些 label 的 Issue" hint="逗号分隔，全部都要有；留空拉全部">
+              <input
+                className="input mono"
+                value={f.config.labels.join(', ')}
+                onChange={(e) => cfg({ labels: e.target.value.split(/[,，]+/).map((l) => l.trimStart()) })}
+                placeholder="tidewatch"
+              />
+            </Field>
+            <Field
+              label="访问令牌"
+              hint={current?.has_secret ? '已保存；留空不改' : '留空时用本机 gh 登录的账号；公开仓库不填也能拉，但回写需要令牌'}
+            >
+              <input className="input mono" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" aria-label="访问令牌" />
+            </Field>
+          </>
+        ) : (
+          <>
+            <Field label="App ID" hint="飞书开放平台里自建应用的凭证">
+              <input className="input mono" value={f.config.app_id} onChange={(e) => cfg({ app_id: e.target.value })} placeholder="cli_xxxxxxxx" />
+            </Field>
+            <Field label="App Secret" hint={current?.has_secret ? '已保存；留空不改' : '只存进系统凭据管理器'}>
+              <input className="input mono" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" aria-label="App Secret" />
+            </Field>
+            <p className="dim" style={{ margin: 0 }}>
+              应用要开通「查看新版文档」权限（知识库里的文档还要「查看知识库」），并把要导入的文档分享给这个应用。
+            </p>
+          </>
+        )}
+        {current?.has_secret && (
+          <label className="row">
+            <input type="checkbox" checked={clear} onChange={(e) => setClear(e.target.checked)} />
+            清除已保存的{github ? '令牌' : ' App Secret'}
+          </label>
+        )}
+        <div className="form-grid">
+          <Field label="新工单的类型" hint={github ? '带 bug label 的 Issue 总是建成 Bug' : undefined}>
+            <select className="input" value={f.config.ticket_type} onChange={(e) => cfg({ ticket_type: e.target.value as TicketType })}>
+              {Object.entries(TYPES).map(([k, t]) => (
+                <option key={k} value={k}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="新工单绑定的项目" hint="可选">
+            <select className="input" value={f.config.project_id ?? ''} onChange={(e) => cfg({ project_id: e.target.value || null })}>
+              <option value="">不绑定</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <Field label="接口地址" hint={github ? '可选；GitHub Enterprise 填 https://<域名>/api/v3' : '可选；私有化部署或 Lark 国际版（https://open.larksuite.com）时填'}>
+          <input className="input mono" value={f.config.api_base ?? ''} onChange={(e) => cfg({ api_base: e.target.value || null })} placeholder={github ? 'https://api.github.com' : 'https://open.feishu.cn'} />
+        </Field>
+        {github && (
+          <label className="row">
+            <input type="checkbox" checked={f.config.write_back} onChange={(e) => cfg({ write_back: e.target.checked })} />
+            工单完成后，在 Issue 下评论一条并关闭它（下次同步时执行）
+          </label>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/** 外部同步：GitHub Issues 拉成工单，飞书文档按链接导入。都只在点「同步」/「导入」时联网。 */
+function SyncSection() {
+  const ui = useUi();
+  const [sources, setSources] = useState<SyncSource[]>([]);
+  const [editing, setEditing] = useState<SyncSource | 'new' | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [importing, setImporting] = useState<SyncSource | null>(null);
+  const [url, setUrl] = useState('');
+
+  const refresh = () => void api.syncSourceList().then(setSources, () => undefined);
+  useEffect(refresh, []);
+
+  const run = async (s: SyncSource) => {
+    setBusy(s.id);
+    const r = await ui.attempt(api.syncRun(s.id));
+    setBusy(null);
+    if (r) ui.toast(reportText(r));
+    refresh();
+  };
+  const toggle = async (s: SyncSource) => {
+    await ui.attempt(api.syncSourceSave(s.id, { kind: s.kind, name: s.name, config: s.config, enabled: !s.enabled }));
+    refresh();
+  };
+  const remove = async (s: SyncSource) => {
+    if (!(await ui.confirm(`删除同步来源「${s.name}」？`, '已经建好的工单会留着，只是不再和外部关联；保存的令牌一并清除。', '删除', true))) return;
+    await ui.attempt(api.syncSourceDelete(s.id));
+    refresh();
+  };
+  const importDoc = async () => {
+    if (!importing) return;
+    setBusy(importing.id);
+    const done = await ui.attempt(api.syncFeishuImport(importing.id, url));
+    setBusy(null);
+    if (!done) return;
+    setImporting(null);
+    setUrl('');
+    ui.toast(done.warnings.length ? `已导入为 ${done.ticket.key}。注意：${done.warnings.join('；')}` : `已导入为 ${done.ticket.key}`);
+    window.location.hash = `#/ticket/${done.ticket.key}`;
+  };
+
+  return (
+    <div className="card">
+      {sources.length === 0 && (
+        <div className="srow">
+          <div>
+            <b>还没有同步来源</b>
+            <p>可以把 GitHub 仓库的 Issue 拉成草稿工单，或者按链接导入飞书文档。只在你点「同步」或「导入」时联网，不会在后台自动拉。</p>
+          </div>
+        </div>
+      )}
+      {sources.map((s) => (
+        <div className="srow" key={s.id}>
+          <div>
+            <b>{s.name}</b>
+            <p>
+              {s.kind === 'github' ? (
+                <>
+                  GitHub Issues · <span className="mono">{s.config.repo}</span>
+                  {s.config.labels.length > 0 && ` · label：${s.config.labels.join('、')}`}
+                  {s.config.write_back && ' · 完成后回写'}
+                </>
+              ) : (
+                <>
+                  飞书文档 · <span className="mono">{s.config.app_id}</span> · 未对真实飞书验证
+                </>
+              )}
+              {s.last_synced_at ? ` · 上次同步 ${s.last_synced_at.slice(0, 16).replace('T', ' ')}` : ' · 还没同步过'}
+            </p>
+            {s.last_error && <p style={{ color: 'var(--cinnabar)' }}>上次失败：{s.last_error}</p>}
+            {s.kind === 'feishu' && !s.has_secret && <p style={{ color: 'var(--cinnabar)' }}>还没有填 App Secret。</p>}
+          </div>
+          <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {!s.enabled && <span className="tag amber">已停用</span>}
+            {s.kind === 'feishu' && (
+              <button className="btn sm" disabled={!s.enabled || busy === s.id} onClick={() => setImporting(s)}>
+                导入文档…
+              </button>
+            )}
+            <button className="btn sm" disabled={!s.enabled || busy === s.id} onClick={() => void run(s)}>
+              {busy === s.id ? '同步中…' : s.kind === 'feishu' ? '检查更新' : '同步'}
+            </button>
+            <button className="btn sm" onClick={() => setEditing(s)}>
+              编辑
+            </button>
+            <button className="btn sm" onClick={() => void toggle(s)}>
+              {s.enabled ? '停用' : '启用'}
+            </button>
+            <button className="btn sm ghost" onClick={() => void remove(s)} aria-label={`删除 ${s.name}`}>
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className="srow">
+        <div>
+          <b>添加来源</b>
+          <p>令牌和 App Secret 只存进系统凭据管理器，不进数据库。</p>
+        </div>
+        <div className="sctl">
+          <button className="btn sm" onClick={() => setEditing('new')}>
+            添加…
+          </button>
+        </div>
+      </div>
+      {editing && (
+        <SourceEditor
+          current={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            refresh();
+          }}
+        />
+      )}
+      {importing && (
+        <Modal
+          title="按链接导入飞书文档"
+          hint="支持新版文档（/docx/）和知识库（/wiki/）里的新版文档。导入后是一张草稿工单，图片作为参考图附上。"
+          width={620}
+          onClose={() => setImporting(null)}
+          footer={
+            <>
+              <span className="grow" />
+              <button className="btn" onClick={() => setImporting(null)}>
+                取消
+              </button>
+              <button className="btn primary" disabled={!url.trim() || busy === importing.id} onClick={() => void importDoc()}>
+                {busy === importing.id ? '导入中…' : '导入'}
+              </button>
+            </>
+          }
+        >
+          <input className="input mono" style={{ width: '100%' }} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://<企业>.feishu.cn/docx/…" aria-label="飞书文档链接" autoFocus />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 const PERMISSION_HINT: Record<string, string> = {
   read_only: '只读，不改文件',
   workspace_write: '可改 worktree 内的文件',
@@ -491,6 +1141,15 @@ export function SettingsPage({
         </div>
 
         <h3 id="set-6">{SECTIONS[6]}</h3>
+        <ApiSection settings={settings} save={save} />
+
+        <h3 id="set-7">{SECTIONS[7]}</h3>
+        <SyncSection />
+
+        <h3 id="set-8">{SECTIONS[8]}</h3>
+        <WorkflowSection />
+
+        <h3 id="set-9">{SECTIONS[9]}</h3>
         <div className="card">
           <div className="srow">
             <div>

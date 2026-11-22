@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>观澜 · 看板</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --line:#e3e6ea; --text:#1c2430; --dim:#6b7684; --accent:#1f6feb; --warn:#b45309; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1318; --card:#181d24; --line:#2a313b; --text:#e6e9ee; --dim:#8b96a5; --accent:#5b9dff; --warn:#f0b35a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; }
+  header h1 { font-size:15px; margin:0; flex:1; }
+  header .who { color:var(--dim); }
+  button, input, textarea { font:inherit; color:inherit; }
+  button { border:1px solid var(--line); background:var(--card); border-radius:6px; padding:4px 10px; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  input, textarea { border:1px solid var(--line); background:var(--bg); border-radius:6px; padding:6px 8px; width:100%; }
+  main { padding:16px; }
+  .login { max-width:420px; margin:12vh auto; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  .login p { color:var(--dim); margin:4px 0 12px; }
+  .cols { display:flex; gap:12px; overflow-x:auto; align-items:flex-start; }
+  .col { flex:0 0 240px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:8px; }
+  .col h2 { font-size:12px; margin:2px 4px 8px; color:var(--dim); font-weight:600; }
+  .tk { border:1px solid var(--line); border-radius:8px; padding:8px; margin-bottom:8px; cursor:pointer; background:var(--bg); }
+  .tk .key { color:var(--dim); font-size:12px; }
+  .tk .meta { color:var(--dim); font-size:12px; margin-top:4px; display:flex; gap:8px; }
+  .tk .q { color:var(--warn); }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .panel h2 { margin:0 0 8px; font-size:15px; }
+  .q-item { border-top:1px solid var(--line); padding:10px 0; }
+  .q-item .opts { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
+  .row { display:flex; gap:8px; margin-top:6px; }
+  pre { white-space:pre-wrap; word-break:break-word; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px; max-height:40vh; overflow:auto; }
+  table { border-collapse:collapse; width:100%; }
+  td, th { text-align:left; padding:4px 8px; border-top:1px solid var(--line); vertical-align:top; }
+  .dim { color:var(--dim); }
+  .err { color:#d1242f; margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>观澜 · 看板</h1>
+  <span class="who" id="who"></span>
+  <button id="logout" hidden>退出</button>
+</header>
+<main id="main"></main>
+<script>
+(() => {
+  const KEY = 'tidewatch.token';
+  const STATUS = [
+    ['draft', '草稿'], ['ai_review', 'AI 预审'], ['human_review', '人工审核'], ['finalized', '已定稿'],
+    ['developing', '开发中'], ['acceptance', '验收中'], ['done', '已完成'], ['cancelled', '已取消'],
+  ];
+  const main = document.getElementById('main');
+  let me = null;
+
+  // 所有内容都经 textContent 写入，不拼 HTML
+  function el(tag, props = {}, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'on') for (const [ev, fn] of Object.entries(v)) n.addEventListener(ev, fn);
+      else if (k === 'class') n.className = v;
+      else if (v !== undefined && v !== null && v !== false) n[k] = v;
+    }
+    for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) n.append(kid);
+    return n;
+  }
+
+  async function api(path, opts = {}) {
+    const res = await fetch('/api/v1' + path, {
+      method: opts.method || 'GET',
+      headers: { Authorization: 'Bearer ' + (sessionStorage.getItem(KEY) || ''), 'Content-Type': 'application/json' },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error || ('HTTP ' + res.status)), { status: res.status });
+    return data;
+  }
+
+  function showLogin(message) {
+    me = null;
+    document.getElementById('who').textContent = '';
+    document.getElementById('logout').hidden = true;
+    const input = el('input', { type: 'password', placeholder: 'tw_…', autocomplete: 'off' });
+    const err = el('div', { class: 'err' }, message || '');
+    const go = async () => {
+      sessionStorage.setItem(KEY, input.value.trim());
+      try { await start(); } catch (e) { sessionStorage.removeItem(KEY); err.textContent = e.message; }
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    main.replaceChildren(el('div', { class: 'login' },
+      el('h2', {}, '输入成员令牌'),
+      el('p', {}, '令牌在观澜桌面应用的「设置 → 接口与成员」里创建。只保存在这个标签页里，关掉就没了。'),
+      input, el('div', { class: 'row' }, el('button', { class: 'primary', on: { click: go } }, '进入')), err));
+    input.focus();
+  }
+
+  async function start() {
+    me = await api('/me');
+    document.getElementById('who').textContent = me.name + '（' + me.role + '）';
+    document.getElementById('logout').hidden = false;
+    await showBoard();
+  }
+
+  async function showBoard() {
+    const [list, questions] = await Promise.all([api('/tickets'), api('/questions')]);
+    const canWrite = me.role !== 'viewer';
+    const nodes = [];
+    if (questions.length) {
+      nodes.push(el('div', { class: 'panel' }, el('h2', {}, '需要你（' + questions.length + '）'),
+        questions.map((q) => questionItem(q, list, canWrite))));
+    }
+    nodes.push(el('div', { class: 'cols' }, STATUS.map(([status, label]) => {
+      const items = list.filter((t) => t.status === status);
+      return el('div', { class: 'col' }, el('h2', {}, label + ' · ' + items.length),
+        items.map((t) => el('div', { class: 'tk', on: { click: () => showTicket(t.id) } },
+          el('div', { class: 'key' }, t.key), el('div', {}, t.title),
+          el('div', { class: 'meta' }, el('span', {}, t.assignee || '未指派'),
+            t.open_questions ? el('span', { class: 'q' }, '待回答 ' + t.open_questions) : null))));
+    })));
+    main.replaceChildren(...nodes);
+  }
+
+  function questionItem(q, list, canWrite) {
+    const ticket = list.find((t) => t.id === q.ticket_id);
+    const input = el('input', { placeholder: '回答…' });
+    const err = el('div', { class: 'err' });
+    const send = async (answer) => {
+      if (!answer.trim()) return;
+      try { await api('/questions/' + q.id + '/answer', { method: 'POST', body: { answer } }); await showBoard(); }
+      catch (e) { err.textContent = e.message; }
+    };
+    return el('div', { class: 'q-item' },
+      el('div', { class: 'dim' }, ticket ? ticket.key + ' · ' + ticket.title : q.ticket_id),
+      el('div', {}, q.body),
+      canWrite && el('div', { class: 'opts' }, q.options.map((o) => el('button', { on: { click: () => send(o) } }, o))),
+      canWrite && el('div', { class: 'row' }, input, el('button', { class: 'primary', on: { click: () => send(input.value) } }, '回答')),
+      err);
+  }
+
+  async function showTicket(id) {
+    const t = await api('/tickets/' + id);
+    const canWrite = me.role !== 'viewer';
+    const comment = el('textarea', { rows: 2, placeholder: '写一条评论…' });
+    const err = el('div', { class: 'err' });
+    const post = async () => {
+      try { await api('/tickets/' + t.id + '/comments', { method: 'POST', body: { body: comment.value } }); await showTicket(id); }
+      catch (e) { err.textContent = e.message; }
+    };
+    main.replaceChildren(
+      el('div', { class: 'row' }, el('button', { on: { click: showBoard } }, '← 返回看板')),
+      el('div', { class: 'panel' },
+        el('div', { class: 'dim' }, t.key + ' · ' + t.status + ' · ' + (t.assignee || '未指派')),
+        el('h2', {}, t.title),
+        el('pre', {}, t.prd_md || '（还没有 PRD 正文）')),
+      el('div', { class: 'panel' }, el('h2', {}, '子任务'),
+        t.tasks.length ? el('table', {}, t.tasks.map((k) => el('tr', {},
+          el('td', {}, k.title), el('td', { class: 'dim' }, k.kind), el('td', {}, k.status), el('td', { class: 'dim' }, k.agent || ''))))
+          : el('div', { class: 'dim' }, '还没有拆分。')),
+      el('div', { class: 'panel' }, el('h2', {}, '时间线'),
+        el('table', {}, t.timeline.slice(-60).reverse().map((e) => el('tr', {},
+          el('td', { class: 'dim' }, (e.ts || '').replace('T', ' ').slice(0, 19)),
+          el('td', {}, e.type), el('td', { class: 'dim' }, e.actor || ''),
+          el('td', {}, e.payload && (e.payload.body || e.payload.answer || e.payload.note) || '')))),
+        canWrite && el('div', { class: 'row' }, comment, el('button', { class: 'primary', on: { click: post } }, '评论')), err));
+  }
+
+  document.getElementById('logout').addEventListener('click', () => { sessionStorage.removeItem(KEY); showLogin(); });
+  if (sessionStorage.getItem(KEY)) start().catch((e) => showLogin(e.status === 401 ? '' : e.message));
+  else showLogin();
+})();
+</script>
+</body>
+</html>

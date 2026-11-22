@@ -168,12 +168,24 @@ pub fn list_recent(conn: &Connection, limit: u32) -> Result<Vec<Run>> {
     )
 }
 
+/// 占并发名额的运行数；委派出去的不算。
 pub fn count_running(conn: &Connection) -> Result<u32> {
     Ok(conn.query_row(
-        "SELECT COUNT(*) FROM run WHERE status IN ('starting', 'running', 'finalizing', 'stopping')",
+        "SELECT COUNT(*) FROM run WHERE status IN ('starting', 'running', 'finalizing', 'stopping')
+         AND COALESCE(purpose, '') != 'delegate'",
         [],
         |r| r.get(0),
     )?)
+}
+
+/// 排队中的委派运行（不受并发上限限制）。
+pub fn next_queued_delegate(conn: &Connection) -> Result<Option<Run>> {
+    let runs = query(
+        conn,
+        "WHERE status = 'queued' AND purpose = 'delegate' ORDER BY queued_at, id LIMIT 1",
+        &[],
+    )?;
+    Ok(runs.into_iter().next())
 }
 
 /// 队首：工单优先级高的先，其次先入队的先；同一子任务已有 Run 在跑则跳过。

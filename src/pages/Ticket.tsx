@@ -17,6 +17,7 @@ import {
 } from '../lib/images';
 import type { IconName } from '../lib/icons';
 import {
+  AGENTS,
   AgentTag,
   Empty,
   KindStamp,
@@ -291,16 +292,178 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
       return ['file', 'Agent', `${name}写出了接口文档 ${p.path}${(p.unblocked as string[] | undefined)?.length ? '，等它的子任务已解锁' : ''}`];
     case 'task_merged':
       return ['merge', '系统', `${name}已合并（${String(p.commit ?? '').slice(0, 8)}）${p.note ? `；${p.note}` : ''}`];
+    case 'compare_started':
+      return ['branch', '你', `发起多 Agent 对比：${name}另外交给 ${(p.candidates as string[] | undefined)?.length ?? 0} 个 Agent 各做一遍`];
+    case 'compare_start_failed':
+      return ['alert', '系统', `对比候选「${p.title ?? ''}」没有入队：${p.error ?? ''}`];
+    case 'compare_adopted':
+      return ['check', '你', `采用了${name}的结果，其余 ${(p.dropped as string[] | undefined)?.length ?? 0} 个候选已取消`];
     case 'task_cancelled':
       return ['x', '你', `取消${name}`];
+    case 'question_asked':
+      return ['info', 'Agent', `提了一个问题：${p.body ?? ''}`];
+    case 'question_answered':
+      return ['check', '你', `回答了「${p.body ?? ''}」：${p.answer ?? ''}`];
+    case 'delegate_finished':
+      return [p.error ? 'alert' : 'spark', 'Agent', `委派给 ${AGENTS[p.agent as string]?.name ?? p.agent} 的只读检查${p.error ? `没有完成：${p.error}` : '完成'}`];
+    case 'comment':
+      return ['edit', '你', `评论：${p.body ?? ''}`];
+    case 'stage_passed':
+      return ['check', '你', `通过了环节「${p.stage ?? ''}」${p.note ? `：${p.note}` : ''}`];
+    case 'source_linked':
+      return ['upload', '系统', `从${p.kind === 'github' ? ' GitHub Issue ' : '飞书文档'}导入（${p.source ?? ''}）`];
+    case 'source_comment':
+      return ['edit', `${p.author ?? '有人'}（GitHub）`, `评论：${p.body ?? ''}`];
+    case 'source_changed':
+      return ['info', '系统', '外部来源的内容变了，等你决定要不要导入'];
+    case 'source_applied':
+      return ['check', '你', p.version ? `把外部来源的新内容导入为 PRD v${p.version}` : '同步了外部来源的新标题'];
+    case 'source_dismissed':
+      return ['x', '你', '忽略了外部来源的这次变更'];
+    case 'source_written_back':
+      return ['check', '系统', `已在 GitHub Issue #${p.number ?? ''} 下评论并关闭`];
+    case 'assigned':
+      return ['info', '你', p.assignee ? `指派给 ${p.assignee}` : '取消了指派'];
     default:
       return ['info', '系统', e.type];
   }
 }
 
+/** 自定义工作流：现在轮到的环节，由人点通过。 */
+function StageGate({ d }: { d: TicketDetail }) {
+  const ui = useUi();
+  const [note, setNote] = useState('');
+  const cur = d.stages.find((s) => s.current);
+  if (!cur) return null;
+  const same = d.stages.filter((s) => s.gate === cur.gate);
+  const pass = async () => {
+    const done = await ui.attempt(api.ticketStagePass(d.ticket.id, cur.id, note), `「${cur.name}」已通过`);
+    if (done) setNote('');
+  };
+  return (
+    <div className="callout tide">
+      <Icon name="info" size={15} />
+      <div style={{ flex: 1 }}>
+        <b>
+          等待环节：{cur.name}（{same.indexOf(cur) + 1}/{same.length}）
+        </b>{' '}
+        通过之后才能{cur.gate === 'finalized' ? '定稿' : '完成这张工单'}。
+        {cur.hint && <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{cur.hint}</div>}
+        <div className="row" style={{ gap: 6, marginTop: 8 }}>
+          <input className="input" style={{ flex: 1, minWidth: 180 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="备注（可选）" aria-label="环节备注" />
+          <button className="btn sm primary" onClick={() => void pass()}>
+            通过
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 源已变更：外部的 Issue / 文档有一版还没导入。 */
+function SourceChanged({ d }: { d: TicketDetail }) {
+  const ui = useUi();
+  const [open, setOpen] = useState(false);
+  const src = d.source;
+  if (!src?.pending_rev) return null;
+  const t = d.ticket;
+  const what = src.kind === 'github' ? 'GitHub Issue' : '飞书文档';
+  const locked = !(['draft', 'human_review'].includes(t.status) || (t.type === 'bug' && ['developing', 'acceptance'].includes(t.status)));
+  const apply = async () => {
+    if (
+      locked &&
+      !(await ui.confirm(
+        '导入会先发起变更',
+        '这张工单的需求已经定稿。导入外部的新内容会让它回到人工审核，正在跑的子任务会跑完当前这一轮；之后要重新定稿。',
+        '发起变更并导入',
+      ))
+    )
+      return;
+    await ui.attempt(api.syncApply(t.id), '已导入为新的 PRD 版本');
+  };
+  const titleChanged = src.pending_title && src.pending_title !== t.title;
+  return (
+    <div className="callout cin">
+      <Icon name="info" size={15} />
+      <div style={{ flex: 1 }}>
+        <b>源已变更：</b>
+        {what}在导入之后有改动{titleChanged ? `（标题改成了「${src.pending_title}」）` : ''}。现在的 PRD 没有动。
+        <div className="row" style={{ gap: 6, marginTop: 8 }}>
+          <button className="btn sm primary" onClick={() => void apply()}>
+            导入为新版本
+          </button>
+          <button className="btn sm" onClick={() => setOpen((x) => !x)}>
+            {open ? '收起' : '看新内容'}
+          </button>
+          <button className="btn sm ghost" onClick={() => void ui.attempt(api.syncDismiss(t.id), '已忽略这次变更')}>
+            忽略
+          </button>
+        </div>
+        {open && (
+          <pre className="plain boxed" style={{ whiteSpace: 'pre-wrap', marginTop: 8, maxHeight: 320, overflow: 'auto' }}>
+            {src.pending_md}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Agent 经 MCP 提的、还没回答的问题。回答会写进对应子任务下一轮的 Prompt。 */
+function Questions({ d }: { d: TicketDetail }) {
+  const ui = useUi();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const open = d.questions.filter((q) => q.status === 'open');
+  if (!open.length) return null;
+  // 回答 / 忽略之后，引擎的变更事件会让工单重新加载
+  const answer = (id: string, text: string) => void ui.attempt(api.questionAnswer(id, text), '已回答，下一轮运行会带上');
+  return (
+    <>
+      {open.map((q) => {
+        const task = d.tasks.find((k) => k.id === q.task_id);
+        const draft = drafts[q.id] ?? '';
+        return (
+          <div className="callout cin" key={q.id}>
+            <Icon name="info" size={15} />
+            <div style={{ flex: 1 }}>
+              <b>Agent 有个问题要你回答{task ? `（${task.title}）` : ''}：</b>
+              <div style={{ whiteSpace: 'pre-wrap', margin: '4px 0 8px' }}>{q.body}</div>
+              <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+                {q.options.map((o) => (
+                  <button key={o} className="btn sm" onClick={() => answer(q.id, o)}>
+                    {o}
+                  </button>
+                ))}
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 180 }}
+                  value={draft}
+                  onChange={(e) => setDrafts((x) => ({ ...x, [q.id]: e.target.value }))}
+                  placeholder="写下回答…"
+                  aria-label="回答"
+                />
+                <button className="btn sm primary" disabled={!draft.trim()} onClick={() => answer(q.id, draft)}>
+                  回答
+                </button>
+                <button className="btn sm ghost" onClick={() => void ui.attempt(api.questionDismiss(q.id))}>
+                  忽略
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function OverviewTab({ d }: { d: TicketDetail }) {
+  const ui = useUi();
   const { projects, providers, settings } = useData();
   const t = d.ticket;
+  const { data: members } = useLoad(() => api.memberList(), []);
+  // 停用的成员不能再指派，但已经是负责人的还要显示出来
+  const assignable = (members ?? []).filter((m) => !m.disabled || m.id === t.assignee_id);
   const live = d.tasks.filter((k) => k.status !== 'cancelled');
   const wait = live.filter((k) => k.status === 'review');
   const openIssues = d.issues.filter((i) => i.resolution === 'open' || i.resolution === 'pending_confirm');
@@ -314,6 +477,9 @@ function OverviewTab({ d }: { d: TicketDetail }) {
   return (
     <div className="page ov">
       <div className="ov-main">
+        <Questions d={d} />
+        <SourceChanged d={d} />
+        <StageGate d={d} />
         {t.status === 'ai_review' && (
           <div className="callout tide">
             <Icon name="spark" size={15} />
@@ -407,7 +573,8 @@ function OverviewTab({ d }: { d: TicketDetail }) {
                   <Icon name={icon} size={12} />
                 </i>
                 <div>
-                  <b>{who}</b> {what}
+                  {/* 经接口操作的显示成员名 */}
+                  <b>{who === '你' && e.actor ? e.actor : who}</b> {what}
                 </div>
                 <time>{fmtAgo(e.ts)}</time>
               </li>
@@ -417,10 +584,54 @@ function OverviewTab({ d }: { d: TicketDetail }) {
       </div>
       <aside className="ov-side">
         <dl className="props">
+          {(d.assignee || assignable.length > 0) && (
+            <>
+              <dt>负责人</dt>
+              <dd>
+                <select
+                  className="input"
+                  aria-label="负责人"
+                  value={t.assignee_id ?? ''}
+                  onChange={(e) => void ui.attempt(api.ticketAssign(t.id, e.target.value || null))}
+                >
+                  <option value="">未指派</option>
+                  {assignable.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </dd>
+            </>
+          )}
           <dt>类型</dt>
           <dd>
             <Stamp type={t.type} /> {TYPES[t.type]?.name}
           </dd>
+          {d.stages.length > 0 && (
+            <>
+              <dt>环节</dt>
+              <dd>
+                {d.stages.map((s) => (
+                  <div key={s.id} className={s.passed_at ? '' : 'dim'} title={s.note ?? undefined}>
+                    {s.passed_at ? '✓' : s.current ? '→' : '·'} {s.name}
+                  </div>
+                ))}
+              </dd>
+            </>
+          )}
+          {d.source && (
+            <>
+              <dt>来源</dt>
+              <dd>
+                {d.source.kind === 'github' ? `GitHub Issue #${d.source.external_id}` : '飞书文档'}
+                {d.source.remote_state === 'closed' && '（已关闭）'}
+                <div className="mono dim" style={{ wordBreak: 'break-all', userSelect: 'text' }}>
+                  {d.source.url}
+                </div>
+              </dd>
+            </>
+          )}
           <dt>绑定项目</dt>
           <dd>
             {t.projects.length ? (

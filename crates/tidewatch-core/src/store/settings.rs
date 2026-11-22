@@ -42,6 +42,11 @@ pub struct Settings {
     pub stop_on_danger: bool,
     /// 开发阶段也把已被取代的参考图发给 Agent（默认不发，减少误导）。
     pub send_superseded_images: bool,
+    /// 开启本地 HTTP / MCP 接口。默认关。
+    pub api_enabled: bool,
+    pub api_port: u16,
+    /// 接口监听所有网卡（局域网里的其他人可以用令牌访问）；否则只监听 127.0.0.1。
+    pub api_remote: bool,
 }
 
 impl Settings {
@@ -82,6 +87,9 @@ impl Default for Settings {
             stuck_action: "notify".into(),
             stop_on_danger: false,
             send_superseded_images: false,
+            api_enabled: false,
+            api_port: 47600,
+            api_remote: false,
         }
     }
 }
@@ -124,6 +132,9 @@ pub fn save(conn: &Connection, s: &Settings) -> Result<Settings> {
     }
     if !(s.budget_usd_per_run >= 0.0 && s.budget_usd_per_run.is_finite()) {
         return Err(Error::invalid("花费上限不能是负数。"));
+    }
+    if s.api_port < 1024 {
+        return Err(Error::invalid("接口端口要在 1024 到 65535 之间。"));
     }
     conn.execute(
         "INSERT INTO setting (key, value_json) VALUES (?1, ?2)

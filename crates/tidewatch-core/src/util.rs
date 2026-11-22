@@ -10,6 +10,22 @@ pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+/// 随机令牌：`prefix` + 64 位十六进制（256 位随机数）。
+pub fn new_token(prefix: &str) -> String {
+    let mut buf = [0u8; 32];
+    getrandom::fill(&mut buf).expect("系统随机数不可用");
+    format!("{prefix}{}", hex(&buf))
+}
+
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    hex(&sha2::Sha256::digest(data))
+}
+
 /// 密钥脱敏：`sk-****abcd`。
 pub fn mask_secret(s: &str) -> String {
     let n = s.chars().count();
