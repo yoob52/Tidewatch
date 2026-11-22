@@ -314,6 +314,11 @@ impl Engine {
         Ok(q)
     }
 
+    /// 接口直接改了工单（建单、评论、指派）：让桌面界面跟着刷新。
+    pub fn ticket_changed(&self, ticket_id: &str) {
+        self.inner.changed(Some(ticket_id.into()), None, None);
+    }
+
     pub fn answer_question(&self, id: &str, answer: &str, by: Option<&str>) -> Result<Question> {
         let q = questions::answer(&lock(&self.inner.db), id, answer, by)?;
         self.inner

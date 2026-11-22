@@ -126,7 +126,10 @@ pub(super) fn create_ticket(engine: &Engine, m: &Member, body: &Value) -> ApiRes
         source_kind: Some("api".into()),
         ..Default::default()
     };
-    Ok(with_actor(&m.name, || tickets::create(&mut conn, input))?)
+    let t = with_actor(&m.name, || tickets::create(&mut conn, input))?;
+    drop(conn);
+    engine.ticket_changed(&t.id);
+    Ok(t)
 }
 
 fn ticket_summary(t: &Ticket, names: &[Member], open_questions: usize) -> Value {
@@ -222,12 +225,15 @@ pub(super) fn handle(
         ("POST", ["tickets", id, "comments"]) => {
             writer(m)?;
             let text = text(&body, "body").ok_or_else(|| ApiError::new(400, "缺少 body。"))?;
-            tickets::add_comment(&lock(engine.db()), id, text)?;
+            let id = tickets::get(&lock(engine.db()), id)?.id;
+            tickets::add_comment(&lock(engine.db()), &id, text)?;
+            engine.ticket_changed(&id);
             Ok((201, json!({ "ok": true })))
         }
         ("POST", ["tickets", id, "assign"]) => {
             writer(m)?;
             let t = tickets::set_assignee(&lock(engine.db()), id, text(&body, "member_id"))?;
+            engine.ticket_changed(&t.id);
             ok(json!({ "id": t.id, "assignee_id": t.assignee_id }))
         }
         // 自定义工作流的环节：通过的人记在环节上

@@ -297,6 +297,16 @@ fn tokens_and_roles_gate_every_route() {
         200
     );
     let (_, detail) = f.http("GET", &path, Some(&f.viewer), None);
+    // 建单、评论、指派各通知一次，桌面界面才会跟着刷新
+    let id = detail["id"].as_str().unwrap();
+    let changed = f
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e, EngineEvent::Changed { ticket_id: Some(t), .. } if t == id))
+        .count();
+    assert_eq!(changed, 3);
     assert_eq!(detail["assignee"], "小王");
     assert_eq!(detail["prd_md"], "列表为空时崩溃");
     let timeline = detail["timeline"].as_array().unwrap();
