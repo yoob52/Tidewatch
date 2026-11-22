@@ -24,6 +24,16 @@ pub struct Settings {
     pub auto_develop: bool,
     /// 依赖满足（对方完成，或接口文档已产出）的子任务自动入队。
     pub auto_start_unblocked: bool,
+    /// 单次 Run 的花费上限（美元）；0 表示不限。超过即停止。
+    pub budget_usd_per_run: f64,
+    /// 单次 Run 的 Token 上限（输入 + 输出）；0 表示不限。
+    pub budget_tokens_per_run: u64,
+    /// Agent 连续这么多分钟没有任何输出算卡住；0 表示不检测。
+    pub stuck_minutes: u32,
+    /// 卡住时：`notify` 只提醒，`stop` 直接停止这一轮。
+    pub stuck_action: String,
+    /// 发现危险命令时停止这一轮（只能在 Agent 报出命令后停，拦不住已经开始执行的那一条）。
+    pub stop_on_danger: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +51,11 @@ impl Default for Settings {
             run_timeout_minutes: 60,
             auto_develop: false,
             auto_start_unblocked: true,
+            budget_usd_per_run: 0.0,
+            budget_tokens_per_run: 0,
+            stuck_minutes: 10,
+            stuck_action: "notify".into(),
+            stop_on_danger: false,
         }
     }
 }
@@ -77,6 +92,12 @@ pub fn save(conn: &Connection, s: &Settings) -> Result<Settings> {
     }
     if !matches!(s.merge_mode.as_str(), "merge" | "squash") {
         return Err(Error::invalid("合并方式只能是 merge 或 squash。"));
+    }
+    if !matches!(s.stuck_action.as_str(), "notify" | "stop") {
+        return Err(Error::invalid("卡住时的处理只能是 notify 或 stop。"));
+    }
+    if !(s.budget_usd_per_run >= 0.0 && s.budget_usd_per_run.is_finite()) {
+        return Err(Error::invalid("花费上限不能是负数。"));
     }
     conn.execute(
         "INSERT INTO setting (key, value_json) VALUES (?1, ?2)

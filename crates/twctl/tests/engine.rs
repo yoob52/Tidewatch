@@ -1600,3 +1600,73 @@ fn dependents_that_already_ran_wait_for_a_rejected_prerequisite() {
     f.wait_done(&rework.id);
     assert_eq!(f.wait_done(&r3.id).status, "succeeded");
 }
+
+#[test]
+fn guards_flag_dangerous_commands_and_stop_runs_over_budget() {
+    let f = fixture(2, None);
+    // 默认只标出来，不停
+    let (_, task) = f.bug(
+        "危险命令",
+        "x [mock:danger] [mock:steps=1] [mock:delay=30]",
+        "medium",
+    );
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "succeeded", "{:?}", r.error);
+    let events = runs::events(&lock(f.db()), &r.id, 0).unwrap();
+    let flagged = events
+        .iter()
+        .find(|e| e.kind == "tool_call" && e.payload.get("danger").is_some())
+        .expect("工具调用带上危险原因");
+    assert!(flagged.payload["danger"]
+        .as_str()
+        .unwrap()
+        .contains("rm -r"));
+    assert!(events
+        .iter()
+        .any(|e| e.kind == "guard" && e.payload["kind"] == "danger"));
+    f.wait_for("危险命令提醒", || {
+        f.events.lock().unwrap().iter().any(|e| matches!(e,
+            EngineEvent::Guard { run_id, kind, stopped, .. } if *run_id == r.id && kind == "danger" && !stopped))
+    });
+
+    // 打开"发现即停止"
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.stop_on_danger = true;
+        settings::save(&conn, &st).unwrap();
+    }
+    let (_, task) = f.bug(
+        "危险命令 2",
+        "x [mock:danger] [mock:steps=3] [mock:delay=200]",
+        "medium",
+    );
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "failed");
+    assert!(
+        r.error.as_deref().unwrap_or("").contains("危险命令"),
+        "{:?}",
+        r.error
+    );
+    assert_eq!(f.task(&task).status, "failed");
+
+    // Token 上限
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.stop_on_danger = false;
+        st.budget_tokens_per_run = 1;
+        settings::save(&conn, &st).unwrap();
+    }
+    let (_, task) = f.bug("超预算", "x [mock:steps=2] [mock:delay=30]", "medium");
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    let r = f.wait_done(&r.id);
+    assert_eq!(r.status, "failed");
+    assert!(
+        r.error.as_deref().unwrap_or("").contains("超过上限"),
+        "{:?}",
+        r.error
+    );
+}

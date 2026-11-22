@@ -37,6 +37,14 @@ export interface Settings {
   auto_develop: boolean;
   /** 依赖满足（比如接口文档出来）后，等它的子任务自动入队。 */
   auto_start_unblocked: boolean;
+  /** 单次 Run 的花费上限（美元）；0 不限。 */
+  budget_usd_per_run: number;
+  /** 单次 Run 的 Token 上限（输入 + 输出）；0 不限。 */
+  budget_tokens_per_run: number;
+  /** Agent 连续多少分钟没输出算卡住；0 不检测。 */
+  stuck_minutes: number;
+  stuck_action: 'notify' | 'stop';
+  stop_on_danger: boolean;
 }
 
 export interface Commands {

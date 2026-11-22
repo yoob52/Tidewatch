@@ -711,6 +711,19 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
             "接口文档已产出",
             format!("{ticket_key} {task_title}：{unblocked} 个等文档的子任务可以开始了"),
         ),
+        EngineEvent::Guard {
+            ticket_key,
+            kind,
+            message,
+            ..
+        } => (
+            match kind.as_str() {
+                "stuck" => "Agent 可能卡住了",
+                "budget" => "超出预算，已停止",
+                _ => "危险命令",
+            },
+            format!("{ticket_key} {message}"),
+        ),
         _ => return,
     };
     if !settings::get(&lock(db))

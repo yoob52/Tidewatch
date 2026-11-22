@@ -4,6 +4,7 @@ pub mod db;
 pub mod engine;
 pub mod error;
 pub mod git;
+pub mod guard;
 pub mod process;
 pub mod prompt;
 pub mod provider;

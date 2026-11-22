@@ -833,6 +833,8 @@ impl Inner {
         if !outcome.succeeded() {
             let detail = if outcome.timed_out {
                 "运行超时".to_string()
+            } else if let Some(reason) = &outcome.abort_reason {
+                reason.clone()
             } else if !outcome.summary.trim().is_empty() {
                 outcome.summary.trim().to_string()
             } else {

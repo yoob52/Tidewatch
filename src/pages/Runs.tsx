@@ -64,11 +64,13 @@ function LogItem({ e, start, raw }: { e: RunEvent; start: number | null; raw: bo
     case 'thinking':
       return tool('思考', '', str(p.text));
     case 'tool_call':
-      return tool(str(p.name) || '工具', str(p.input).slice(0, 120), JSON.stringify(p.input, null, 2));
+      return tool(str(p.name) || '工具', str(p.input).slice(0, 120), JSON.stringify(p.input, null, 2), !!p.danger, p.danger ? `危险：${str(p.danger)}` : undefined);
+    case 'guard':
+      return sys(str(p.message), true);
     case 'tool_result':
       return tool('工具结果', '', str(p.output), p.is_error === true, p.is_error === true ? '出错' : undefined);
     case 'command':
-      if (p.done !== true) return tool('运行', str(p.command), '');
+      if (p.done !== true) return tool('运行', str(p.command), p.danger ? str(p.command) : '', !!p.danger, p.danger ? `危险：${str(p.danger)}` : undefined);
       return tool('运行', str(p.command), str(p.output), p.exit_code !== 0 && p.exit_code != null, p.exit_code == null ? undefined : `退出码 ${str(p.exit_code)}`);
     case 'file_change':
       return tool({ add: '新建', delete: '删除' }[str(p.kind)] ?? '修改', str(p.path), '');

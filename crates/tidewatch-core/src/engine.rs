@@ -64,6 +64,16 @@ pub enum EngineEvent {
         kind: String,
         error: Option<String>,
     },
+    /// 护栏提醒：Agent 长时间没输出、超出预算、执行了危险命令。
+    Guard {
+        run_id: String,
+        ticket_key: String,
+        /// stuck | budget | danger
+        kind: String,
+        message: String,
+        /// 这一轮是否因此被停掉。
+        stopped: bool,
+    },
     /// 后端子任务产出了接口文档，等它的子任务解锁。
     ApiDocReady {
         ticket_key: String,
@@ -1282,6 +1292,16 @@ impl Inner {
                     st.run_timeout_minutes
                 )),
             )
+        } else if outcome.aborted {
+            (
+                "failed",
+                Some(
+                    outcome
+                        .abort_reason
+                        .clone()
+                        .unwrap_or_else(|| "被护栏停止。".into()),
+                ),
+            )
         } else if !agent_ok {
             let detail = [outcome.summary.trim(), outcome.stderr_tail.trim()]
                 .into_iter()
@@ -1472,6 +1492,37 @@ impl Inner {
                 .unwrap_or_default(),
             timeout: (st.run_timeout_minutes > 0)
                 .then(|| Duration::from_secs(st.run_timeout_minutes as u64 * 60)),
+            abort: Arc::new(AtomicBool::new(false)),
+        };
+        let abort = opts.abort.clone();
+        // 护栏：预算、卡住、危险命令。停下时的原因留给收尾写进 Run
+        let pricing = provider.as_ref().and_then(|p| p.pricing.clone());
+        let mut spent = crate::agent::Usage::default();
+        let mut aborted: Option<String> = None;
+        let mut stuck_reported = false;
+        let ticket_key = run
+            .ticket_id
+            .as_deref()
+            .and_then(|id| tickets::get(&lock(&self.db), id).ok())
+            .map(|t| t.key)
+            .unwrap_or_default();
+        let guard = |kind: &str, message: String, stop: bool, aborted: &mut Option<String>| {
+            self.log(
+                &run.id,
+                "guard",
+                json!({ "kind": kind, "message": message, "stopped": stop }),
+            );
+            self.emit(EngineEvent::Guard {
+                run_id: run.id.clone(),
+                ticket_key: ticket_key.clone(),
+                kind: kind.into(),
+                message: message.clone(),
+                stopped: stop,
+            });
+            if stop && aborted.is_none() {
+                *aborted = Some(message);
+                abort.store(true, Ordering::SeqCst);
+            }
         };
         let outcome = run_agent(adapter(kind).as_ref(), &spec, &opts, &mut |ev| match ev {
             RunnerEvent::Spawned { pid, command } => {
@@ -1494,8 +1545,70 @@ impl Inner {
                     Some(run.id.clone()),
                 );
             }
+            RunnerEvent::Idle(idle) => {
+                let limit = Duration::from_secs(st.stuck_minutes as u64 * 60);
+                if st.stuck_minutes > 0 && idle >= limit && !stuck_reported {
+                    stuck_reported = true;
+                    let stop = st.stuck_action == "stop";
+                    guard(
+                        "stuck",
+                        format!(
+                            "Agent 已经 {} 分钟没有任何输出，可能卡住了{}。",
+                            st.stuck_minutes,
+                            if stop { "，已停止这一轮" } else { "" }
+                        ),
+                        stop,
+                        &mut aborted,
+                    );
+                }
+            }
             RunnerEvent::Agent(ev) => {
                 on_event();
+                stuck_reported = false;
+                match &ev {
+                    AgentEvent::Usage { usage } => spent.add(usage),
+                    AgentEvent::Finished { usage: Some(u), .. } => spent = u.clone(),
+                    _ => {}
+                }
+                if aborted.is_none() {
+                    let tokens = spent.input_tokens + spent.output_tokens;
+                    let cost = spent
+                        .cost_usd
+                        .filter(|c| *c > 0.0)
+                        .or_else(|| pricing.as_ref().map(|p| p.estimate(&spent)));
+                    if st.budget_tokens_per_run > 0 && tokens > st.budget_tokens_per_run {
+                        guard(
+                            "budget",
+                            format!(
+                                "这一轮已用 {tokens} Token，超过上限 {}，已停止。",
+                                st.budget_tokens_per_run
+                            ),
+                            true,
+                            &mut aborted,
+                        );
+                    } else if let Some(c) =
+                        cost.filter(|c| st.budget_usd_per_run > 0.0 && *c > st.budget_usd_per_run)
+                    {
+                        guard(
+                            "budget",
+                            format!(
+                                "这一轮已花费约 ${c:.2}，超过上限 ${:.2}，已停止。",
+                                st.budget_usd_per_run
+                            ),
+                            true,
+                            &mut aborted,
+                        );
+                    }
+                }
+                let command = match &ev {
+                    AgentEvent::ToolCall { name, input, .. } => {
+                        crate::guard::command_of(name, input)
+                    }
+                    // 只在命令开始时报一次
+                    AgentEvent::Command { command, done, .. } if !*done => Some(command.clone()),
+                    _ => None,
+                };
+                let danger = command.as_deref().and_then(crate::guard::danger);
                 if let AgentEvent::SessionStarted { session_id, .. } = &ev {
                     // 立刻记下会话 id：即使观澜中途退出，下一轮也能续接
                     let _ = runs::set_fields(
@@ -1504,13 +1617,29 @@ impl Inner {
                         &[("agent_session_id", session_id)],
                     );
                 }
-                let payload = serde_json::to_value(&ev).unwrap_or_default();
+                let mut payload = serde_json::to_value(&ev).unwrap_or_default();
+                if let (Some(reason), Some(obj)) = (danger, payload.as_object_mut()) {
+                    obj.insert("danger".into(), json!(reason));
+                }
                 let kind = payload
                     .get("type")
                     .and_then(|t| t.as_str())
                     .unwrap_or("raw")
                     .to_string();
                 self.log(&run.id, &kind, payload);
+                if let Some(reason) = danger {
+                    let stop = st.stop_on_danger;
+                    guard(
+                        "danger",
+                        format!(
+                            "危险命令：{reason}{}\n{}",
+                            if stop { "，已停止这一轮" } else { "" },
+                            command.unwrap_or_default()
+                        ),
+                        stop,
+                        &mut aborted,
+                    );
+                }
             }
             RunnerEvent::Stderr(line) => self.log(&run.id, "stderr", json!({ "text": line })),
         });
@@ -1523,6 +1652,10 @@ impl Inner {
         };
 
         // 3. 收尾：Agent 进程结束 ≠ Run 结束
+        let mut outcome = outcome;
+        if outcome.aborted {
+            outcome.abort_reason = aborted;
+        }
         let agent_ok = outcome.succeeded();
         let cost = match (
             outcome.usage.cost_usd,

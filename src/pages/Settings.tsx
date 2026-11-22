@@ -229,6 +229,42 @@ export function SettingsPage({
             </div>
             <div className="sctl">{stepper(settings.run_timeout_minutes, 10, 480, 10, (n) => void save({ run_timeout_minutes: n }))}</div>
           </div>
+          <div className="srow">
+            <div>
+              <b>单次运行花费上限</b>
+              <p>这一轮的花费（Agent 上报，或按 Provider 单价估算）超过它就停止并记为失败。单位：美元，0 表示不限。</p>
+            </div>
+            <div className="sctl">{stepper(settings.budget_usd_per_run, 0, 100, 1, (n) => void save({ budget_usd_per_run: n }))}</div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>单次运行 Token 上限</b>
+              <p>输入加输出 Token 超过它就停止。单位：万 Token，0 表示不限。</p>
+            </div>
+            <div className="sctl">{stepper(Math.round(settings.budget_tokens_per_run / 10000), 0, 5000, 50, (n) => void save({ budget_tokens_per_run: n * 10000 }))}</div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>卡住检测</b>
+              <p>Agent 连续这么多分钟没有任何输出就提醒你，或直接停止这一轮。单位：分钟，0 表示不检测。</p>
+            </div>
+            <div className="sctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {stepper(settings.stuck_minutes, 0, 120, 5, (n) => void save({ stuck_minutes: n }))}
+              <select className="input" style={{ width: 110 }} value={settings.stuck_action} onChange={(e) => void save({ stuck_action: e.target.value as 'notify' | 'stop' })} aria-label="卡住时">
+                <option value="notify">只提醒</option>
+                <option value="stop">停止运行</option>
+              </select>
+            </div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>发现危险命令就停止</b>
+              <p>rm -r、git push、git reset --hard、sudo 等命令在运行日志里总会标红并提醒；打开后还会停掉这一轮。只能在 Agent 报出命令之后停，已经开始执行的那一条拦不住。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.stop_on_danger} onChange={(v) => void save({ stop_on_danger: v })} label="发现危险命令就停止" />
+            </div>
+          </div>
         </div>
 
         <h3 id="set-1">{SECTIONS[1]}</h3>

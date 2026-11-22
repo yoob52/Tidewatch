@@ -175,6 +175,17 @@ pub fn run(mut args: MockArgs) -> i32 {
         json!({"type":"text","text":format!("{verb}：{first_line}")}),
     );
 
+    // 演示护栏：报一条危险命令（只是报出来，不执行）
+    if prompt.contains("[mock:danger]") {
+        assistant(
+            &session,
+            json!({"type":"tool_use","id":"toolu_danger","name":"Bash","input":{"command":"rm -rf ./build"}}),
+        );
+        emit(
+            json!({"type":"user","session_id":session,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_danger","content":"（演示：没有真的执行）"}]}}),
+        );
+        pause();
+    }
     let read_only = args.permission == "read_only";
     if !read_only && args.resume.is_none() {
         if let Some(rel) = api_doc_path(&prompt) {

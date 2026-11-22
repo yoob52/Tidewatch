@@ -17,13 +17,20 @@ pub struct RunOptions {
     /// 置为 true 即停止整棵进程树。
     pub cancel: Arc<AtomicBool>,
     pub timeout: Option<Duration>,
+    /// 护栏（预算、卡住、危险命令）置为 true：停掉进程树，结果记为被护栏中止而不是用户停止。
+    pub abort: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
 pub enum RunnerEvent {
-    Spawned { pid: u32, command: String },
+    Spawned {
+        pid: u32,
+        command: String,
+    },
     Agent(AgentEvent),
     Stderr(String),
+    /// Agent 已经这么久没有任何输出（每 10 秒报一次）。
+    Idle(Duration),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -33,6 +40,10 @@ pub struct RunOutcome {
     /// 被用户停止。
     pub stopped: bool,
     pub timed_out: bool,
+    /// 被护栏中止。
+    pub aborted: bool,
+    /// 护栏中止的原因（引擎填）。
+    pub abort_reason: Option<String>,
     /// Agent 自己报告的结果；没收到结束事件为 `None`。
     pub finished_ok: Option<bool>,
     pub summary: String,
@@ -47,6 +58,7 @@ impl RunOutcome {
     pub fn succeeded(&self) -> bool {
         !self.stopped
             && !self.timed_out
+            && !self.aborted
             && self.exit_code == Some(0)
             && self.finished_ok != Some(false)
     }
@@ -263,11 +275,16 @@ pub fn run_agent(
     let mut exited_at: Option<Instant> = None;
 
     let mut last_msg = Instant::now();
+    let mut last_idle = Instant::now();
 
     loop {
         let msg = rx.recv_timeout(Duration::from_millis(50));
         if msg.is_ok() {
             last_msg = Instant::now();
+            last_idle = last_msg;
+        } else if exited_at.is_none() && last_idle.elapsed() >= Duration::from_secs(10) {
+            last_idle = Instant::now();
+            on_event(RunnerEvent::Idle(last_msg.elapsed()));
         }
         match msg {
             Ok(Msg::Out(line)) => {
@@ -322,6 +339,13 @@ pub fn run_agent(
             && !outcome.stopped
         {
             outcome.timed_out = true;
+            tree.kill_tree(Duration::from_secs(2))?;
+        } else if opts.abort.load(Ordering::SeqCst)
+            && !outcome.aborted
+            && !outcome.timed_out
+            && !outcome.stopped
+        {
+            outcome.aborted = true;
             tree.kill_tree(Duration::from_secs(2))?;
         }
 
