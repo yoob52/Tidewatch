@@ -412,6 +412,28 @@ fn full_auto_tasks_need_the_owner_to_confirm_over_the_api() {
     );
     assert_eq!(status, 200, "{run}");
     f.wait_done(run["id"].as_str().unwrap());
+
+    // 打回并立刻重跑也算开始：member 不行，owner 也要确认
+    let path = format!("/api/v1/tasks/{task}/reject");
+    let rerun = json!({"note":"再改一下","rerun":true});
+    assert_eq!(
+        f.http("POST", &path, Some(&f.member), Some(rerun.clone()))
+            .0,
+        403
+    );
+    assert_eq!(f.http("POST", &path, Some(&f.owner), Some(rerun)).0, 403);
+    assert_eq!(
+        tasks::get(&lock(f.engine.db()), &task).unwrap().status,
+        "review",
+        "被拒绝的请求不应该改动子任务"
+    );
+    let (status, t) = f.http(
+        "POST",
+        &path,
+        Some(&f.owner),
+        Some(json!({"note":"再改一下","rerun":true,"confirm_full_auto":true})),
+    );
+    assert_eq!(status, 200, "{t}");
 }
 
 #[test]

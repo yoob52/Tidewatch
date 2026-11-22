@@ -46,7 +46,7 @@
 | `POST /tickets/{id}/start` | member | 开始开发 |
 | `GET /tasks/{id}`、`GET /tasks/{id}/diff` | 任意 | 子任务及其运行、Diff |
 | `POST /tasks/{id}/start` | member | 开始子任务；`full_auto` 的只有 owner 能开始，并且要带 `"confirm_full_auto": true` |
-| `POST /tasks/{id}/accept`、`/reject` | member | 验收通过 / 打回（`note`，可带 `rerun`） |
+| `POST /tasks/{id}/accept`、`/reject` | member | 验收通过 / 打回（`note`，可带 `rerun`）。`full_auto` 的子任务带 `rerun` 时和开始一样：只有 owner，并且要带 `"confirm_full_auto": true` |
 | `POST /tasks/{id}/merge` | owner | 合并 |
 | `GET /runs/{id}`、`GET /runs/{id}/events?after=` | 任意 | 运行与事件 |
 | `POST /runs/{id}/stop` | member | 停止运行 |

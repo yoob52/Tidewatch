@@ -59,6 +59,25 @@ fn writer(m: &Member) -> ApiResult<()> {
     }
 }
 
+/// full_auto 的 Agent 不受沙箱限制：只有 owner 能经接口让它开始，并且要明确确认。
+fn confirm_full_auto(
+    engine: &Engine,
+    m: &Member,
+    task_id: &str,
+    opts: &StartOptions,
+    body: &Value,
+) -> ApiResult<()> {
+    if engine.plan(task_id, opts)?.permission == "full_auto"
+        && !(m.is_owner() && body.get("confirm_full_auto") == Some(&json!(true)))
+    {
+        return Err(ApiError::new(
+            403,
+            "这个子任务会以 full_auto 运行：只有 owner 能开始，并且要带上 \"confirm_full_auto\": true。",
+        ));
+    }
+    Ok(())
+}
+
 fn owner(m: &Member) -> ApiResult<()> {
     if m.is_owner() {
         Ok(())
@@ -243,15 +262,7 @@ pub(super) fn handle(
                 command_id: text(&body, "command_id").map(String::from),
                 ..Default::default()
             };
-            // full_auto 的 Agent 不受沙箱限制：只有 owner 能经接口开始，并且要明确确认
-            if engine.plan(id, &opts)?.permission == "full_auto"
-                && !(m.is_owner() && body.get("confirm_full_auto") == Some(&json!(true)))
-            {
-                return Err(ApiError::new(
-                    403,
-                    "这个子任务会以 full_auto 运行：只有 owner 能开始，并且要带上 \"confirm_full_auto\": true。",
-                ));
-            }
+            confirm_full_auto(engine, m, id, &opts, &body)?;
             ok(run_json(&engine.start_task(id, opts)?))
         }
         ("POST", ["tasks", id, "accept"]) => {
@@ -261,12 +272,17 @@ pub(super) fn handle(
         ("POST", ["tasks", id, "reject"]) => {
             writer(m)?;
             let note = text(&body, "note").ok_or_else(|| ApiError::new(400, "缺少 note。"))?;
+            let rerun = body.get("rerun") == Some(&json!(true));
+            if rerun {
+                // 打回后立刻重跑也是一次开始，打回意见就是给 Agent 的指令
+                confirm_full_auto(engine, m, id, &StartOptions::default(), &body)?;
+            }
             ok(json!(engine.reject_task_with(
                 id,
                 RejectInput {
                     note: note.to_string(),
                     comments: vec![],
-                    rerun: body.get("rerun") == Some(&json!(true)),
+                    rerun,
                 }
             )?))
         }
