@@ -391,8 +391,17 @@ export interface Task extends TaskInput {
   pushed_commit: string | null;
   /** 用户手动开的 PR。 */
   pr_url: string | null;
+  /** 多 Agent 同题对比的候选：被对比的那个子任务的 id。 */
+  compare_of: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** 同题对比的一个候选：用哪个 Agent / Provider / 模型。 */
+export interface CompareOption {
+  agent: string;
+  provider_id: string | null;
+  model: string | null;
 }
 
 export interface FileStat {
@@ -851,6 +860,8 @@ export const api = {
   taskReject: (id: string, input: RejectInput) => invoke<Task>('task_reject', { id, input }),
   taskMerge: (id: string) => invoke<Task>('task_merge', { id }),
   taskCancel: (id: string) => invoke<Task>('task_cancel', { id }),
+  taskCompare: (id: string, options: CompareOption[]) => invoke<Task[]>('task_compare', { id, options }),
+  taskAdopt: (id: string) => invoke<Task>('task_adopt', { id }),
   taskDiff: (id: string) => invoke<TaskDiff>('task_diff', { id }),
   /** 把子任务的分支推到远程。只在用户点了之后调用。 */
   taskPush: (id: string) => invoke<Task>('task_push', { id }),

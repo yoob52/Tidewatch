@@ -1057,6 +1057,22 @@ async fn task_cancel(state: State<'_>, id: String) -> CmdResult<tasks::Task> {
     blocking(state, move |e| e.cancel_task(&id)).await
 }
 
+/// 多 Agent 同题对比：给这个子任务另建几个候选，一起入队。
+#[tauri::command]
+async fn task_compare(
+    state: State<'_>,
+    id: String,
+    options: Vec<tasks::CompareOption>,
+) -> CmdResult<Vec<tasks::Task>> {
+    blocking(state, move |e| e.compare_task(&id, options)).await
+}
+
+/// 采用这个候选的结果，同组其余的取消。
+#[tauri::command]
+async fn task_adopt(state: State<'_>, id: String) -> CmdResult<tasks::Task> {
+    blocking(state, move |e| e.adopt_candidate(&id)).await
+}
+
 #[tauri::command]
 async fn task_diff(state: State<'_>, id: String) -> CmdResult<TaskDiff> {
     blocking(state, move |e| e.task_diff(&id)).await
@@ -1420,6 +1436,8 @@ pub fn run() {
             task_pr_create,
             task_merge,
             task_cancel,
+            task_compare,
+            task_adopt,
             task_diff,
             run_list,
             run_get,

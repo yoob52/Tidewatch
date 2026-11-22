@@ -292,6 +292,12 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
       return ['file', 'Agent', `${name}写出了接口文档 ${p.path}${(p.unblocked as string[] | undefined)?.length ? '，等它的子任务已解锁' : ''}`];
     case 'task_merged':
       return ['merge', '系统', `${name}已合并（${String(p.commit ?? '').slice(0, 8)}）${p.note ? `；${p.note}` : ''}`];
+    case 'compare_started':
+      return ['branch', '你', `发起多 Agent 对比：${name}另外交给 ${(p.candidates as string[] | undefined)?.length ?? 0} 个 Agent 各做一遍`];
+    case 'compare_start_failed':
+      return ['alert', '系统', `对比候选「${p.title ?? ''}」没有入队：${p.error ?? ''}`];
+    case 'compare_adopted':
+      return ['check', '你', `采用了${name}的结果，其余 ${(p.dropped as string[] | undefined)?.length ?? 0} 个候选已取消`];
     case 'task_cancelled':
       return ['x', '你', `取消${name}`];
     case 'question_asked':
