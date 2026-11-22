@@ -2204,3 +2204,50 @@ fn compare_runs_the_same_task_with_several_agents_and_adopts_one() {
     assert!(kinds.contains(&"compare_started".to_string()));
     assert!(kinds.contains(&"compare_adopted".to_string()));
 }
+
+#[test]
+fn smart_analysis_prefills_the_draft_without_creating_anything() {
+    let f = fixture(1, None);
+    let web = projects::create(
+        &lock(f.db()),
+        projects::ProjectInput {
+            name: "shop-web".into(),
+            kind: "frontend".into(),
+            local_path: f.repo.display().to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let a = f
+        .engine
+        .smart_analyze("订单页面点「导出」按钮后报错 500\n\n复现：打开订单页，点导出。")
+        .unwrap();
+    assert_eq!(a.agent, "mock");
+    assert_eq!(a.draft.kind, "bug");
+    assert_eq!(a.draft.priority, "high");
+    assert!(a.draft.title.ends_with("（AI 整理）"), "{}", a.draft.title);
+    assert_eq!(a.draft.project_ids, vec![web.id.clone()]);
+    assert_eq!(a.draft.labels, vec!["演示分析".to_string()]);
+    assert_eq!(a.draft.bug_info.as_ref().unwrap()["actual"], "报错");
+    assert!(a.draft.reasons.iter().any(|r| r.contains("Bug")));
+
+    // 不是 Bug：不带三要素，项目换成后端的那个
+    let a = f.engine.smart_analyze("给订单接口加分页参数").unwrap();
+    assert_eq!(a.draft.kind, "feature_backend");
+    assert_eq!(a.draft.project_ids, vec![f.project_id.clone()]);
+    assert!(a.draft.bug_info.is_none());
+
+    assert!(f.engine.smart_analyze("  \n").is_err());
+
+    // 只是预填：没有工单、没有运行，临时目录也收掉了
+    let conn = lock(f.db());
+    let count = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(count("ticket"), 0);
+    assert_eq!(count("run"), 0);
+    let tmp = f._dir.path().join("data/tmp");
+    assert!(!tmp.exists() || std::fs::read_dir(&tmp).unwrap().next().is_none());
+}

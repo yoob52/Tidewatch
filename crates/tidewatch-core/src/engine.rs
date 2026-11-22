@@ -1061,7 +1061,10 @@ pub use ticket_flow::{CodeReviewOptions, Finalized};
 mod api_flow;
 #[path = "engine_compare.rs"]
 mod compare_flow;
+#[path = "engine_smart.rs"]
+mod smart_flow;
 pub use api_flow::{ApiEndpoint, DelegateInput, RUN_TOKEN_ENV};
+pub use smart_flow::{apply_analysis, SmartAnalysis};
 
 struct Finished {
     status: &'static str,

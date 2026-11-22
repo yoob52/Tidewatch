@@ -115,6 +115,50 @@ fn split_json(prompt: &str) -> Value {
     json!({ "tasks": tasks })
 }
 
+/// 演示用的智能创建分析：标题取正文第一行，提到报错 / 崩溃就当 Bug，项目选清单里和类型对得上的第一个。
+fn smart_json(prompt: &str) -> Value {
+    let body = prompt
+        .split("## 正文")
+        .nth(1)
+        .and_then(|b| b.split("<!-- tw:purpose=").next())
+        .unwrap_or("");
+    let title: String = body
+        .lines()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("未命名")
+        .chars()
+        .take(40)
+        .collect();
+    let bug = ["报错", "崩溃", "bug", "Bug", "500"]
+        .iter()
+        .any(|k| body.contains(k));
+    let frontend = ["页面", "按钮", "界面"].iter().any(|k| body.contains(k));
+    let projects: Vec<(String, String)> = table_lines(prompt)
+        .into_iter()
+        .filter(|c| c.len() >= 3 && c[2].starts_with("kind="))
+        .map(|c| (c[0].clone(), c[2]["kind=".len()..].to_string()))
+        .collect();
+    let want = if frontend { "frontend" } else { "backend" };
+    let project = projects
+        .iter()
+        .find(|(_, k)| k == want)
+        .or(projects.first())
+        .map(|(id, _)| id.clone());
+    json!({
+        "title": format!("{title}（AI 整理）"),
+        "type": if bug { "bug" } else if frontend { "feature_frontend" } else { "feature_backend" },
+        "project_ids": project.into_iter().collect::<Vec<_>>(),
+        "priority": if bug { "high" } else { "medium" },
+        "labels": ["演示分析"],
+        "bug": if bug { json!({"steps":"按正文里的操作再做一遍","expected":"不报错","actual":"报错"}) } else { json!({}) },
+        "reasons": [
+            if bug { "类型：正文在描述一个报错，按 Bug 处理" } else { "类型：正文在描述一个新功能" },
+            "项目：演示 Agent 选了清单里类型对得上的第一个项目",
+        ],
+    })
+}
+
 /// 演示用的影响分析：后端子任务需要追加工作，其它不受影响。
 fn impact_json(prompt: &str) -> Value {
     let tasks: Vec<Value> = table_lines(prompt)
@@ -369,6 +413,7 @@ pub fn run(mut args: MockArgs) -> i32 {
         Some("review") => Some(review_json(&prompt)),
         Some("split") => Some(split_json(&prompt)),
         Some("impact") => Some(impact_json(&prompt)),
+        Some("smart") => Some(smart_json(&prompt)),
         Some("code_review") => Some(code_review_json(&prompt, &cwd)),
         _ => None,
     };

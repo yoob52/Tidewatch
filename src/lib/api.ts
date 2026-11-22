@@ -612,6 +612,13 @@ export interface TicketDraft {
   reasons: string[];
 }
 
+/** AI 分析的结果：在 TicketDraft 上多了是谁分析的。 */
+export interface SmartAnalysis extends TicketDraft {
+  agent: string;
+  provider: string | null;
+  model: string | null;
+}
+
 export interface UpdateInfo {
   current: string;
   /** 还没有任何发布时为 null。 */
@@ -816,6 +823,9 @@ export const api = {
   ticketTransition: (id: string, to: TicketStatus) => invoke<Ticket>('ticket_transition', { id, to }),
   /** 智能创建：本机规则识别出的预填内容，reasons 说明每一项的依据。 */
   ticketDraft: (markdown: string) => invoke<TicketDraft>('ticket_draft', { markdown }),
+  /** 让默认 Agent 只读地分析正文；失败时界面保留本机规则的结果。 */
+  ticketAnalyze: (markdown: string) => invoke<SmartAnalysis>('ticket_analyze', { markdown }),
+  ticketAnalyzeCancel: () => invoke<void>('ticket_analyze_cancel'),
   readTextFile: (path: string) => invoke<string>('read_text_file', { path }),
   importDocument: (path: string) => invoke<Imported>('import_document', { path }),
 

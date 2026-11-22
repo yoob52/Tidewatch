@@ -927,6 +927,20 @@ fn ticket_draft(state: State, markdown: String) -> CmdResult<tickets::Draft> {
     Ok(tickets::smart_draft(&markdown, &all))
 }
 
+/// 智能创建的 AI 分析：让默认 Agent 只读地看一遍正文，结果只用来预填表单。
+#[tauri::command]
+async fn ticket_analyze(
+    state: State<'_>,
+    markdown: String,
+) -> CmdResult<tidewatch_core::engine::SmartAnalysis> {
+    blocking(state, move |e| e.smart_analyze(&markdown)).await
+}
+
+#[tauri::command]
+fn ticket_analyze_cancel(state: State) {
+    state.engine.cancel_smart_analysis();
+}
+
 /// 读取用户在文件对话框里选中的 Markdown / 文本文件。
 #[tauri::command]
 fn read_text_file(path: String) -> CmdResult<String> {
@@ -1417,6 +1431,8 @@ pub fn run() {
             prompt_preview,
             prompt_save,
             ticket_draft,
+            ticket_analyze,
+            ticket_analyze_cancel,
             read_text_file,
             attachment_add,
             attachment_list,
