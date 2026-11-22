@@ -119,3 +119,17 @@ DeepSeek 不作为独立 Agent，而是作为 **Provider** 接入：
 ## 8. 扩展其他 Agent（P2）
 
 新增 Agent = 实现一个 `AgentAdapter`。候选：Gemini CLI、Aider、OpenCode、Qwen Code。适配器以配置 + 少量代码描述，未来可考虑声明式适配（命令模板 + JSON 路径映射）。
+
+已实现（M4）：
+
+| Agent | 调用方式 | 续接 | 只读模式 | Provider 协议 | 验证情况 |
+|---|---|---|---|---|---|
+| OpenCode | `opencode run --format json`，Prompt 走 stdin；Provider 通过 `OPENCODE_CONFIG_CONTENT` 内联注入，不改用户配置文件 | `-s <会话 id>` | 权限 `edit` / `bash` 设为 deny | Anthropic、OpenAI Responses、OpenAI Chat | 真实跑通：改动、停止续接、预审与拆分（OpenAI 兼容端点）。Anthropic 协议未验证 |
+| Gemini CLI | `gemini -o stream-json`，Prompt 走 stdin | `-r <会话 id>` | `--approval-mode plan` | Gemini | 只验证了无效 key 的报错路径；成功路径按文档实现，**未用真实账号验证** |
+| Aider | `aider --message-file`，纯文本输出，按行识别改动、用量和报错 | `--restore-chat-history`（对话记录在 worktree 里，没有会话 id） | `--dry-run` | Anthropic、OpenAI Responses、OpenAI Chat | 真实跑通：改动、预审与拆分（OpenAI 兼容端点）。Anthropic 协议未验证 |
+
+Aider 的限制：
+- 它不会自己读文件，只看得到仓库地图；Prompt 里没点名的已有文件，它可能改不到。
+- 模型调用失败时退出码仍是 0，成败从输出里的 `litellm.*Error` 判断。
+- 它在工作目录生成 `.aider*` 文件；运行前写进 `.git/info/exclude`，不进提交。
+- 不是终端时按 80 列折行，会断开 JSON；适配器把 `COLUMNS` 设大来避免。

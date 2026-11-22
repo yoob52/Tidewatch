@@ -7,9 +7,10 @@ import { Empty, Field, Md, Modal, Switch, go, useUi } from '../lib/ui';
 
 const PROTOCOLS: [ProviderInput['protocol'], string, string][] = [
   ['native', '本机登录态', '不注入任何变量，用 Agent 自己登录的账号'],
-  ['anthropic', 'Anthropic 兼容', '给 Claude Code 用：注入 ANTHROPIC_BASE_URL 和密钥'],
-  ['openai_responses', 'OpenAI Responses', '给 Codex 用：Responses 接口'],
-  ['openai_chat', 'OpenAI Chat', '给 Codex 用：Chat Completions 接口'],
+  ['anthropic', 'Anthropic 兼容', '给 Claude Code、OpenCode、Aider 用：注入 Base URL 和密钥'],
+  ['openai_responses', 'OpenAI Responses', '给 Codex、OpenCode、Aider 用：Responses 接口'],
+  ['openai_chat', 'OpenAI Chat', '给 Codex、OpenCode、Aider 用：Chat Completions 接口'],
+  ['gemini', 'Gemini', '给 Gemini CLI 用：注入 GEMINI_API_KEY'],
 ];
 
 const TEMPLATES: [string, Partial<ProviderInput>][] = [

@@ -1,0 +1,1 @@
+{"type":"error","timestamp":1795346851887,"sessionID":"ses_dfcfd1f20ffeK0gRuuWzJLmzu6","error":{"name":"APIError","data":{"message":"Unauthorized: Invalid API key","statusCode":401,"isRetryable":false}}}

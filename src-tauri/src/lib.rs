@@ -77,8 +77,9 @@ fn system_info(state: State) -> CmdResult<SystemInfo> {
 #[tauri::command]
 async fn detect_agents() -> CmdResult<Vec<Detection>> {
     tauri::async_runtime::spawn_blocking(|| {
-        [AgentKind::ClaudeCode, AgentKind::Codex, AgentKind::Mock]
+        AgentKind::REAL
             .into_iter()
+            .chain([AgentKind::Mock])
             .map(|k| {
                 let mut d = adapter(k).detect();
                 if k == AgentKind::Mock {

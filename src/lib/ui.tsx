@@ -55,6 +55,9 @@ export const PRIO: Record<Priority, string> = { urgent: '紧急', high: '高', m
 export const AGENTS: Record<string, { name: string; g: string; short: string }> = {
   claude_code: { name: 'Claude Code', g: 'cc', short: 'CC' },
   codex: { name: 'Codex', g: 'cx', short: 'CX' },
+  opencode: { name: 'OpenCode', g: 'oc', short: 'OC' },
+  gemini: { name: 'Gemini CLI', g: 'gm', short: 'GM' },
+  aider: { name: 'Aider', g: 'ad', short: 'AD' },
   mock: { name: '演示 Agent', g: 'ds', short: '演' },
 };
 

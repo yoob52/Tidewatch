@@ -8,7 +8,9 @@ fn replay(kind: AgentKind, fixture: &str) -> Vec<AgentEvent> {
     ))
     .unwrap();
     let mut parser = adapter(kind).parser();
-    text.lines().flat_map(|l| parser.parse_line(l)).collect()
+    let mut ev: Vec<AgentEvent> = text.lines().flat_map(|l| parser.parse_line(l)).collect();
+    ev.extend(parser.finish());
+    ev
 }
 
 #[test]
@@ -284,6 +286,256 @@ fn command_lines() {
             "-"
         ]
     );
+}
+
+#[test]
+fn opencode_real_edit_stream() {
+    let ev = replay(AgentKind::OpenCode, "opencode_edit.jsonl");
+    assert!(
+        matches!(&ev[0], AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_dfcfe32b5ffeMjdNqSS8saqeUr")
+    );
+    // 会话 id 每行都有，只报一次
+    let starts = ev
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::SessionStarted { .. }))
+        .count();
+    assert_eq!(starts, 1);
+    assert!(ev.contains(&AgentEvent::FileChange {
+        path: "/repo/b.txt".into(),
+        kind: "add".into()
+    }));
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::Command { command, exit_code: Some(1), done: true, .. } if command.starts_with("git diff"))));
+    // 中间几步以 tool-calls 结束，不算完成；只有最后一步算
+    let done: Vec<_> = ev
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Finished {
+                ok,
+                summary,
+                usage,
+                num_turns,
+                ..
+            } => Some((*ok, summary.clone(), usage.clone().unwrap(), *num_turns)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done.len(), 1);
+    let (ok, summary, usage, turns) = &done[0];
+    assert!(ok);
+    assert_eq!(summary, "done");
+    assert_eq!(turns, &Some(5));
+    assert_eq!(
+        (usage.input_tokens, usage.output_tokens, usage.cached_tokens),
+        (41712, 303, 10752)
+    );
+    assert_eq!(usage.cost_usd, None);
+}
+
+#[test]
+fn opencode_real_resume_and_error() {
+    let ev = replay(AgentKind::OpenCode, "opencode_resume_readonly.jsonl");
+    assert!(
+        matches!(&ev[0], AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_dfcfe32b5ffeMjdNqSS8saqeUr")
+    );
+    assert!(
+        matches!(ev.last(), Some(AgentEvent::Finished { ok: true, summary, .. }) if summary.contains("b.txt"))
+    );
+    assert!(!ev
+        .iter()
+        .any(|e| matches!(e, AgentEvent::FileChange { .. })));
+
+    let ev = replay(AgentKind::OpenCode, "opencode_error.jsonl");
+    assert!(ev.contains(&AgentEvent::Error {
+        message: "Unauthorized: Invalid API key".into()
+    }));
+    assert!(matches!(
+        ev.last(),
+        Some(AgentEvent::Finished { ok: false, .. })
+    ));
+}
+
+#[test]
+fn gemini_real_bad_key() {
+    let ev = replay(AgentKind::Gemini, "gemini_bad_key.jsonl");
+    assert!(
+        matches!(&ev[0], AgentEvent::SessionStarted { model, .. } if model.as_deref() == Some("auto"))
+    );
+    assert!(
+        matches!(ev.last(), Some(AgentEvent::Finished { ok: false, summary, .. }) if summary.contains("API key not valid"))
+    );
+}
+
+#[test]
+fn gemini_documented_success_stream() {
+    let ev = replay(AgentKind::Gemini, "gemini_success.jsonl");
+    assert!(ev.contains(&AgentEvent::FileChange {
+        path: "b.txt".into(),
+        kind: "write_file".into()
+    }));
+    assert!(ev.contains(&AgentEvent::ToolResult {
+        id: "t1".into(),
+        output: "ok".into(),
+        is_error: false
+    }));
+    let done = ev.last().unwrap();
+    assert!(
+        matches!(done, AgentEvent::Finished { ok: true, summary, usage: Some(u), duration_ms: Some(1200), .. }
+            if summary == "写好了。" && u.input_tokens == 120 && u.output_tokens == 30 && u.cached_tokens == 20)
+    );
+}
+
+#[test]
+fn aider_real_edit_output() {
+    let ev = replay(AgentKind::Aider, "aider_edit.txt");
+    assert!(ev.contains(&AgentEvent::FileChange {
+        path: "b.txt".into(),
+        kind: "edit".into()
+    }));
+    let usage = tidewatch_core::agent::Usage {
+        input_tokens: 5200,
+        output_tokens: 33,
+        cached_tokens: 0,
+        cost_usd: Some(0.01),
+    };
+    assert!(ev.contains(&AgentEvent::Usage {
+        usage: usage.clone()
+    }));
+    // 没有真的会话 id：占位 id 让引擎在续接时带上 --restore-chat-history
+    assert!(ev.iter().any(
+        |e| matches!(e, AgentEvent::SessionStarted { session_id, model: Some(m) }
+            if session_id == "aider-chat-history" && m.starts_with("openai/"))
+    ));
+    // 启动说明不算回复
+    assert!(
+        matches!(ev.last(), Some(AgentEvent::Finished { ok: true, summary, usage: Some(u), num_turns: Some(1), .. })
+            if summary.starts_with("Add `b.txt`") && summary.contains("world") && !summary.contains("Aider v") && u == &usage)
+    );
+}
+
+#[test]
+fn aider_real_bad_key_exits_zero_but_fails() {
+    let ev = replay(AgentKind::Aider, "aider_bad_key.txt");
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Error { message } if message.starts_with("litellm.AuthenticationError"))));
+    assert!(matches!(
+        ev.last(),
+        Some(AgentEvent::Finished { ok: false, .. })
+    ));
+}
+
+#[test]
+fn new_agent_command_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec = |resume: Option<&str>, permission| RunSpec {
+        prompt: "改一下".into(),
+        cwd: dir.path().to_path_buf(),
+        model: Some("m1".into()),
+        permission,
+        resume_session: resume.map(String::from),
+        binary: Some("/bin/x".into()),
+        images: vec!["/data/img/a.png".into()],
+        ..Default::default()
+    };
+    let env_of = |c: &tidewatch_core::agent::CommandSpec, k: &str| {
+        c.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
+    };
+
+    // OpenCode：权限进内联配置；注入了 Provider 时模型带上 Provider 前缀
+    let oc = adapter(AgentKind::OpenCode);
+    let c = oc
+        .build_command(&spec(Some("ses_1"), PermissionMode::ReadOnly))
+        .unwrap();
+    assert_eq!(
+        c.args,
+        [
+            "run",
+            "--format",
+            "json",
+            "-m",
+            "m1",
+            "-s",
+            "ses_1",
+            "-f",
+            "/data/img/a.png"
+        ]
+    );
+    assert_eq!(c.stdin, "改一下");
+    let cfg: serde_json::Value =
+        serde_json::from_str(&env_of(&c, "OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
+    assert_eq!(cfg["permission"]["edit"], "deny");
+    assert_eq!(cfg["permission"]["bash"], "deny");
+    let mut s = spec(None, PermissionMode::FullAuto);
+    s.env = vec![(
+        "OPENCODE_CONFIG_CONTENT".into(),
+        r#"{"provider":{"tidewatch":{"npm":"@ai-sdk/openai"}}}"#.into(),
+    )];
+    let c = oc.build_command(&s).unwrap();
+    assert!(c.args.contains(&"tidewatch/m1".to_string()) && c.args.contains(&"--auto".to_string()));
+    let cfg: serde_json::Value =
+        serde_json::from_str(&env_of(&c, "OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
+    assert_eq!(cfg["permission"]["edit"], "allow");
+    assert_eq!(cfg["provider"]["tidewatch"]["npm"], "@ai-sdk/openai");
+    assert_eq!(c.env.len(), 1);
+
+    // Gemini CLI
+    let c = adapter(AgentKind::Gemini)
+        .build_command(&spec(Some("sid"), PermissionMode::WorkspaceWrite))
+        .unwrap();
+    assert_eq!(
+        c.args,
+        [
+            "-o",
+            "stream-json",
+            "--approval-mode",
+            "auto_edit",
+            "--skip-trust",
+            "-m",
+            "m1",
+            "-r",
+            "sid",
+            "-p",
+            " ",
+            "--include-directories",
+            "/data/img"
+        ]
+    );
+    assert!(c.stdin.starts_with("改一下") && c.stdin.contains("@/data/img/a.png"));
+
+    // Aider：提示词落成文件；模型前缀来自 Provider，不传给子进程
+    let aider = adapter(AgentKind::Aider);
+    let mut s = spec(Some("x"), PermissionMode::ReadOnly);
+    s.env = vec![
+        ("OPENAI_API_KEY".into(), "k".into()),
+        ("TIDEWATCH_AIDER_MODEL_PREFIX".into(), "openai/".into()),
+    ];
+    aider.prepare(&s).unwrap();
+    assert!(
+        std::fs::read_to_string(dir.path().join(".aider.tidewatch-prompt.md"))
+            .unwrap()
+            .ends_with("\n\n改一下")
+    );
+    let c = aider.build_command(&s).unwrap();
+    assert!(c.args.windows(2).any(|w| w == ["--model", "openai/m1"]));
+    assert!(c.args.contains(&"--dry-run".to_string()));
+    assert!(c.args.contains(&"--restore-chat-history".to_string()));
+    assert!(c
+        .args
+        .windows(2)
+        .any(|w| w == ["--read", "/data/img/a.png"]));
+    assert!(c.args.ends_with(&[
+        "--message-file".to_string(),
+        ".aider.tidewatch-prompt.md".to_string()
+    ]));
+    // 模型前缀只给适配器看；COLUMNS 防止 JSON 被按 80 列折行
+    assert_eq!(
+        c.env,
+        [
+            ("OPENAI_API_KEY".to_string(), "k".to_string()),
+            ("COLUMNS".to_string(), "10000".to_string())
+        ]
+    );
+    assert!(c.stdin.is_empty());
 }
 
 #[test]

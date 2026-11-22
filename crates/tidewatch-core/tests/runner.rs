@@ -352,3 +352,98 @@ env > env.txt"#,
     std::env::remove_var("TIDEWATCH_MOCK_STEPS");
     std::env::remove_var("ANTHROPIC_API_KEY");
 }
+
+/// 新接入的 Agent 也按白名单继承：各自的配置变量放行，Provider 注入之后环境里现成的同类密钥不再继承。
+#[test]
+fn new_agents_follow_the_env_allowlist() {
+    use tidewatch_core::runner::inherits_env;
+    let none: Vec<(String, String)> = vec![];
+    let pair = |k: &str| vec![(k.to_string(), "v".to_string())];
+
+    for kind in [AgentKind::OpenCode, AgentKind::Gemini, AgentKind::Aider] {
+        assert!(inherits_env(kind, "PATH", &none, &[]));
+        assert!(!inherits_env(kind, "AWS_SECRET_ACCESS_KEY", &none, &[]));
+        assert!(!inherits_env(kind, "CLAUDE_CODE_OAUTH_TOKEN", &none, &[]));
+    }
+    assert!(inherits_env(
+        AgentKind::OpenCode,
+        "OPENCODE_CONFIG",
+        &none,
+        &[]
+    ));
+    assert!(inherits_env(
+        AgentKind::OpenCode,
+        "OPENAI_API_KEY",
+        &none,
+        &[]
+    ));
+    for injected in [
+        pair("OPENCODE_CONFIG_CONTENT"),
+        pair("TIDEWATCH_PROVIDER_KEY"),
+    ] {
+        assert!(!inherits_env(
+            AgentKind::OpenCode,
+            "OPENAI_API_KEY",
+            &injected,
+            &[]
+        ));
+        assert!(!inherits_env(
+            AgentKind::OpenCode,
+            "ANTHROPIC_API_KEY",
+            &injected,
+            &[]
+        ));
+    }
+
+    assert!(inherits_env(
+        AgentKind::Gemini,
+        "GEMINI_API_KEY",
+        &none,
+        &[]
+    ));
+    assert!(inherits_env(
+        AgentKind::Gemini,
+        "GOOGLE_CLOUD_PROJECT",
+        &none,
+        &[]
+    ));
+    assert!(!inherits_env(
+        AgentKind::Gemini,
+        "OPENAI_API_KEY",
+        &none,
+        &[]
+    ));
+    assert!(!inherits_env(
+        AgentKind::Gemini,
+        "GOOGLE_API_KEY",
+        &pair("GEMINI_API_KEY"),
+        &[]
+    ));
+
+    assert!(inherits_env(
+        AgentKind::Aider,
+        "AIDER_EDIT_FORMAT",
+        &none,
+        &[]
+    ));
+    assert!(inherits_env(
+        AgentKind::Aider,
+        "DEEPSEEK_API_KEY",
+        &none,
+        &[]
+    ));
+    for injected in [pair("OPENAI_API_KEY"), pair("ANTHROPIC_API_BASE")] {
+        assert!(!inherits_env(
+            AgentKind::Aider,
+            "OPENAI_API_KEY",
+            &injected,
+            &[]
+        ));
+        assert!(!inherits_env(
+            AgentKind::Aider,
+            "DEEPSEEK_API_KEY",
+            &injected,
+            &[]
+        ));
+    }
+}

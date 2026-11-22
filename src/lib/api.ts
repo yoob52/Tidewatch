@@ -13,7 +13,7 @@ export interface SystemInfo {
   secret_store: string;
 }
 
-export type AgentKind = 'claude_code' | 'codex' | 'mock';
+export type AgentKind = 'claude_code' | 'codex' | 'opencode' | 'gemini' | 'aider' | 'mock';
 
 export interface Detection {
   kind: AgentKind;
@@ -91,7 +91,7 @@ export interface Pricing {
 
 export interface ProviderInput {
   name: string;
-  protocol: 'native' | 'anthropic' | 'openai_responses' | 'openai_chat';
+  protocol: 'native' | 'anthropic' | 'openai_responses' | 'openai_chat' | 'gemini';
   base_url: string | null;
   models: string[];
   default_model: string | null;

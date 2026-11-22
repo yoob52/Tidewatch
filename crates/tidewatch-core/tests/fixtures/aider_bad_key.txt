@@ -1,0 +1,10 @@
+
+Aider v0.86.2
+Model: openai/gpt-6.1-sol with whole edit format
+Git repo: .git with 2 files
+Repo-map: using 4096 tokens, auto refresh
+
+litellm.AuthenticationError: AuthenticationError: OpenAIException - Invalid API 
+key
+The API provider is not able to authenticate you. Check your API key.
+

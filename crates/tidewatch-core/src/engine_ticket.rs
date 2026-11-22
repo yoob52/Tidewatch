@@ -236,8 +236,8 @@ fn plan_code_review(
         Some(a) => AgentKind::parse(&a)?,
         None => match author_kind {
             Some(AgentKind::ClaudeCode) => AgentKind::Codex,
-            Some(AgentKind::Codex) => AgentKind::ClaudeCode,
-            _ => AgentKind::Mock,
+            Some(AgentKind::Mock) | None => AgentKind::Mock,
+            Some(_) => AgentKind::ClaudeCode,
         },
     };
     let provider = match crate::store::clean(opts.provider_id.clone()) {
