@@ -9,8 +9,10 @@ base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
 dunce = "1.0.5"
 encoding_rs = "0.8.44"
+flate2 = "1.1"
 imagesize = "0.15.0"
 pdf-extract = "0.12.1"
+png = "0.18"
 roxmltree = "0.21.2"
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

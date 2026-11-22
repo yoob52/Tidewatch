@@ -521,48 +521,61 @@ fn pdf(bytes: &[u8]) -> Result<Parsed> {
         out.warnings
             .push("PDF 里没有可提取的文字（可能是扫描件），只导入了图片。".into());
     }
-    // 内嵌图片：只取 JPEG（DCTDecode，可以原样取出）；其它编码的位图要重新编码，这里不做
+    // 内嵌图片：JPEG 原样取出；无损位图（截图多半是这种）转成 PNG；其它编码的不导入
     let owned = bytes.to_vec();
-    let (jpegs, skipped) = std::panic::catch_unwind(move || {
-        let mut jpegs: Vec<Vec<u8>> = vec![];
+    let (images, skipped) = std::panic::catch_unwind(move || {
+        let mut images: Vec<(&'static str, Vec<u8>)> = vec![];
         let mut skipped = 0usize;
+        let mut used = 0usize;
         if let Ok(doc) = pdf_extract::Document::load_mem(&owned) {
-            for obj in doc.objects.values() {
-                let pdf_extract::Object::Stream(s) = obj else {
-                    continue;
-                };
-                let is_image = s
-                    .dict
+            let is_image = |s: &pdf_extract::Stream| {
+                s.dict
                     .get(b"Subtype")
                     .ok()
                     .and_then(|o| o.as_name().ok())
-                    .is_some_and(|n| n == b"Image");
-                if !is_image {
+                    .is_some_and(|n| n == b"Image")
+            };
+            // 透明度蒙版也是图片对象，但它只是另一张图的一部分
+            let masks: std::collections::HashSet<pdf_extract::ObjectId> = doc
+                .objects
+                .values()
+                .filter_map(|o| o.as_stream().ok())
+                .filter(|s| is_image(s))
+                .flat_map(|s| [s.dict.get(b"SMask"), s.dict.get(b"Mask")])
+                .filter_map(|m| m.ok().and_then(|m| m.as_reference().ok()))
+                .collect();
+            for (id, obj) in &doc.objects {
+                let pdf_extract::Object::Stream(s) = obj else {
+                    continue;
+                };
+                if !is_image(s) || masks.contains(id) {
                     continue;
                 }
-                let dct = match s.dict.get(b"Filter") {
-                    Ok(pdf_extract::Object::Name(n)) => n == b"DCTDecode",
-                    Ok(pdf_extract::Object::Array(a)) => {
-                        a.len() == 1 && a[0].as_name().is_ok_and(|n| n == b"DCTDecode")
-                    }
-                    _ => false,
-                };
-                if dct && s.content.starts_with(b"\xff\xd8") {
-                    jpegs.push(s.content.clone());
+                let room = MAX_IMAGES_TOTAL_BYTES.saturating_sub(used);
+                let filter = pdf_filter(s);
+                let image = if filter == Some(b"DCTDecode") && s.content.starts_with(b"\xff\xd8") {
+                    Some(("jpg", s.content.clone()))
                 } else {
-                    skipped += 1;
+                    pdf_bitmap_png(&doc, s).map(|b| ("png", b))
+                };
+                match image.filter(|(_, b)| b.len() <= attachments::MAX_IMAGE_BYTES.min(room)) {
+                    Some(img) => {
+                        used += img.1.len();
+                        images.push(img);
+                    }
+                    None => skipped += 1,
                 }
             }
         }
-        (jpegs, skipped)
+        (images, skipped)
     })
     .unwrap_or_default();
-    if !jpegs.is_empty() {
+    if !images.is_empty() {
         md.push_str("\n## 文档里的图片\n\n");
-        for (i, bytes) in jpegs.into_iter().enumerate() {
+        for (i, (ext, bytes)) in images.into_iter().enumerate() {
             md.push_str(&format!("![原 PDF 图 {}](import:{i})\n\n", i + 1));
             out.images.push(ParsedImage {
-                file_name: format!("pdf-image-{}.jpg", i + 1),
+                file_name: format!("pdf-image-{}.{ext}", i + 1),
                 bytes,
             });
         }
@@ -573,11 +586,189 @@ fn pdf(bytes: &[u8]) -> Result<Parsed> {
     }
     if skipped > 0 {
         out.warnings.push(format!(
-            "PDF 里有 {skipped} 张图片不是 JPEG 编码，没有导入；需要的话请截图后贴进来。"
+            "PDF 里有 {skipped} 张图片的编码不支持（能导入的是 JPEG 和常见的无损位图），没有导入；需要的话请截图后贴进来。"
         ));
     }
     out.markdown = md;
     Ok(out)
+}
+
+/// 流只用了一种编码时返回它的名字；没有编码返回空串；多种编码叠在一起的不处理。
+fn pdf_filter(s: &pdf_extract::Stream) -> Option<&[u8]> {
+    match s.dict.get(b"Filter") {
+        Err(_) => Some(b""),
+        Ok(pdf_extract::Object::Name(n)) => Some(n),
+        Ok(pdf_extract::Object::Array(a)) if a.len() == 1 => a[0].as_name().ok(),
+        Ok(_) => None,
+    }
+}
+
+/// 解压后的像素数据上限。
+const MAX_PDF_BITMAP_BYTES: u64 = 128 * 1024 * 1024;
+
+/// 流的内容：没压缩的原样返回，Flate 的解压（有上限），其它编码不处理。
+fn pdf_stream_bytes(s: &pdf_extract::Stream, limit: u64) -> Option<Vec<u8>> {
+    match pdf_filter(s)? {
+        b"" => (s.content.len() as u64 <= limit).then(|| s.content.clone()),
+        b"FlateDecode" => read_capped(flate2::read::ZlibDecoder::new(&s.content[..]), limit),
+        _ => None,
+    }
+}
+
+/// 颜色空间的分量数；调色板的话再给出 RGB 调色板。认不出的返回 `None`。
+fn pdf_color_space(
+    doc: &pdf_extract::Document,
+    cs: &pdf_extract::Object,
+) -> Option<(usize, Option<Vec<u8>>)> {
+    use pdf_extract::Object;
+    let (_, cs) = doc.dereference(cs).ok()?;
+    let by_name = |n: &[u8]| match n {
+        b"DeviceGray" | b"CalGray" | b"G" => Some(1),
+        b"DeviceRGB" | b"CalRGB" | b"RGB" => Some(3),
+        _ => None,
+    };
+    match cs {
+        Object::Name(n) => Some((by_name(n)?, None)),
+        Object::Array(a) => match a.first()?.as_name().ok()? {
+            b"ICCBased" => {
+                let (_, icc) = doc.dereference(a.get(1)?).ok()?;
+                let n = icc.as_stream().ok()?.dict.get(b"N").ok()?.as_i64().ok()?;
+                matches!(n, 1 | 3).then_some((n as usize, None))
+            }
+            b"Indexed" | b"I" => {
+                let (base, None) = pdf_color_space(doc, a.get(1)?)? else {
+                    return None;
+                };
+                let (_, lookup) = doc.dereference(a.get(3)?).ok()?;
+                let table = match lookup {
+                    Object::String(b, _) => b.clone(),
+                    Object::Stream(s) => pdf_stream_bytes(s, 256 * 4)?,
+                    _ => return None,
+                };
+                let rgb: Vec<u8> = match base {
+                    3 => table,
+                    _ => table.iter().flat_map(|g| [*g, *g, *g]).collect(),
+                };
+                let entries = (rgb.len() / 3).min(256);
+                (entries > 0).then(|| (1, Some(rgb[..entries * 3].to_vec())))
+            }
+            n => Some((by_name(n)?, None)),
+        },
+        _ => None,
+    }
+}
+
+/// 把 PDF 里一张无损位图转成 PNG。只处理常见的几种（灰度 / RGB / 调色板，没压缩或 Flate），
+/// 其它的（CMYK、JPEG 2000、传真编码、模板蒙版……）返回 `None`。
+fn pdf_bitmap_png(doc: &pdf_extract::Document, s: &pdf_extract::Stream) -> Option<Vec<u8>> {
+    let int = |key: &[u8]| -> Option<i64> { s.dict.get_deref(key, doc).ok()?.as_i64().ok() };
+    let (width, height) = (int(b"Width")?, int(b"Height")?);
+    if !(1..=30_000).contains(&width) || !(1..=30_000).contains(&height) {
+        return None;
+    }
+    let (width, height) = (width as usize, height as usize);
+    let bits = int(b"BitsPerComponent")? as usize;
+    let (comps, palette) = pdf_color_space(doc, s.dict.get(b"ColorSpace").ok()?)?;
+    let depth = match (comps, bits) {
+        (1, 1) => png::BitDepth::One,
+        (1, 2) => png::BitDepth::Two,
+        (1, 4) => png::BitDepth::Four,
+        (_, 8) => png::BitDepth::Eight,
+        _ => return None,
+    };
+    let row = (width * comps * bits).div_ceil(8);
+    let size = (row * height) as u64;
+    if size > MAX_PDF_BITMAP_BYTES {
+        return None;
+    }
+    // Flate 可以带 PNG 预测器：每行前面多一个字节，说明这一行是怎么编码的
+    let parms = s.dict.get_deref(b"DecodeParms", doc).ok();
+    let parms = match parms {
+        Some(pdf_extract::Object::Array(a)) if a.len() == 1 => {
+            doc.dereference(&a[0]).ok().map(|p| p.1)
+        }
+        other => other,
+    }
+    .and_then(|p| p.as_dict().ok());
+    let predictor = parms
+        .and_then(|p| p.get(b"Predictor").ok()?.as_i64().ok())
+        .unwrap_or(1);
+    let mut data = match predictor {
+        1 => pdf_stream_bytes(s, size)?,
+        10..=15 => {
+            let raw = pdf_stream_bytes(s, size + height as u64)?;
+            png_unfilter(&raw, row, (comps * bits).div_ceil(8))?
+        }
+        _ => return None,
+    };
+    if data.len() < row * height {
+        return None;
+    }
+    data.truncate(row * height);
+    let mut out = vec![];
+    let mut enc = png::Encoder::new(&mut out, width as u32, height as u32);
+    enc.set_depth(depth);
+    enc.set_color(match (comps, &palette) {
+        (_, Some(_)) => png::ColorType::Indexed,
+        (1, None) => png::ColorType::Grayscale,
+        _ => png::ColorType::Rgb,
+    });
+    if let Some(p) = palette {
+        enc.set_palette(p);
+    }
+    let mut w = enc.write_header().ok()?;
+    w.write_image_data(&data).ok()?;
+    w.finish().ok()?;
+    Some(out)
+}
+
+/// 还原 PNG 预测器编码的行：`row` 是一行像素的字节数，`bpp` 是一个像素占的字节数。
+fn png_unfilter(raw: &[u8], row: usize, bpp: usize) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::with_capacity(raw.len());
+    for line in raw.chunks(row + 1) {
+        let (kind, line) = line.split_first()?;
+        if line.len() != row {
+            break;
+        }
+        let start = out.len();
+        for (i, &x) in line.iter().enumerate() {
+            let a = if i >= bpp { out[start + i - bpp] } else { 0 };
+            let b = if start >= row {
+                out[start + i - row]
+            } else {
+                0
+            };
+            let c = if i >= bpp && start >= row {
+                out[start + i - row - bpp]
+            } else {
+                0
+            };
+            let pred = match kind {
+                0 => 0,
+                1 => a,
+                2 => b,
+                3 => ((a as u16 + b as u16) / 2) as u8,
+                4 => {
+                    let p = a as i16 + b as i16 - c as i16;
+                    let (pa, pb, pc) = (
+                        (p - a as i16).abs(),
+                        (p - b as i16).abs(),
+                        (p - c as i16).abs(),
+                    );
+                    if pa <= pb && pa <= pc {
+                        a
+                    } else if pb <= pc {
+                        b
+                    } else {
+                        c
+                    }
+                }
+                _ => return None,
+            };
+            out.push(x.wrapping_add(pred));
+        }
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -715,7 +906,7 @@ mod pdf_tests {
     use super::*;
 
     #[test]
-    fn pdf_text_is_extracted_and_unsupported_images_are_reported() {
+    fn pdf_text_and_lossless_images_are_imported() {
         let bytes = include_bytes!("../tests/fixtures/sample.pdf");
         let p = parse("需求.pdf", bytes, None).unwrap();
         assert!(
@@ -725,12 +916,117 @@ mod pdf_tests {
             p.markdown
         );
         assert!(p.markdown.contains("Rule 1: one coupon per order"));
-        assert!(p.images.is_empty());
-        assert!(
-            p.warnings.iter().any(|w| w.contains("不是 JPEG 编码")),
-            "{:?}",
-            p.warnings
+        // 里面那张无损位图转成了 PNG 带进来
+        assert_eq!(p.images.len(), 1, "{:?}", p.warnings);
+        assert_eq!(p.images[0].file_name, "pdf-image-1.png");
+        assert_eq!(
+            attachments::sniff(&p.images[0].bytes).map(|i| i.0),
+            Some("image/png")
         );
+        assert!(p.markdown.contains("![原 PDF 图 1](import:0)"));
+        assert!(!p.warnings.iter().any(|w| w.contains("编码不支持")));
         assert!(parse("坏的.pdf", b"not a pdf", None).is_err());
+    }
+
+    fn image(pairs: Vec<(&str, pdf_extract::Object)>, content: Vec<u8>) -> pdf_extract::Stream {
+        let mut dict = pdf_extract::Dictionary::new();
+        dict.set("Subtype", pdf_extract::Object::Name(b"Image".to_vec()));
+        for (k, v) in pairs {
+            dict.set(k, v);
+        }
+        pdf_extract::Stream::new(dict, content)
+    }
+
+    fn name(n: &str) -> pdf_extract::Object {
+        pdf_extract::Object::Name(n.as_bytes().to_vec())
+    }
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::ZlibEncoder::new(vec![], flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// 解出 PNG 的像素（调色板的展开成 RGB）。
+    fn pixels(png_bytes: &[u8]) -> (u32, u32, Vec<u8>) {
+        let mut d = png::Decoder::new(std::io::Cursor::new(png_bytes));
+        d.set_transformations(png::Transformations::EXPAND);
+        let mut r = d.read_info().unwrap();
+        let mut buf = vec![0; r.output_buffer_size().unwrap()];
+        let info = r.next_frame(&mut buf).unwrap();
+        buf.truncate(info.buffer_size());
+        (info.width, info.height, buf)
+    }
+
+    #[test]
+    fn lossless_pdf_bitmaps_become_png() {
+        use pdf_extract::Object;
+        let doc = pdf_extract::Document::with_version("1.5");
+        let rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 10, 20, 30];
+        let base = |cs: Object| {
+            vec![
+                ("Width", Object::Integer(2)),
+                ("Height", Object::Integer(2)),
+                ("BitsPerComponent", Object::Integer(8)),
+                ("ColorSpace", cs),
+            ]
+        };
+
+        // 没压缩的 RGB
+        let s = image(base(name("DeviceRGB")), rgb.to_vec());
+        assert_eq!(
+            pixels(&pdf_bitmap_png(&doc, &s).unwrap()),
+            (2, 2, rgb.to_vec())
+        );
+
+        // Flate + PNG 预测器（第一行 Sub，第二行 Up）
+        let filtered = [
+            1, 255, 0, 0, 1, 255, 0, // Sub：第二个像素存的是和左边的差
+            2, 1, 0, 255, 10, 21, 30, // Up：存的是和上一行的差
+        ];
+        let mut pairs = base(name("DeviceRGB"));
+        pairs.push(("Filter", name("FlateDecode")));
+        let mut parms = pdf_extract::Dictionary::new();
+        parms.set("Predictor", Object::Integer(15));
+        parms.set("Colors", Object::Integer(3));
+        parms.set("Columns", Object::Integer(2));
+        pairs.push(("DecodeParms", Object::Dictionary(parms)));
+        let s = image(pairs, zlib(&filtered));
+        assert_eq!(
+            pixels(&pdf_bitmap_png(&doc, &s).unwrap()),
+            (2, 2, rgb.to_vec())
+        );
+
+        // 调色板
+        let indexed = Object::Array(vec![
+            name("Indexed"),
+            name("DeviceRGB"),
+            Object::Integer(1),
+            Object::String(
+                vec![9, 8, 7, 1, 2, 3],
+                pdf_extract::StringFormat::Hexadecimal,
+            ),
+        ]);
+        let mut pairs = base(indexed);
+        pairs.push(("Filter", Object::Array(vec![name("FlateDecode")])));
+        let s = image(pairs, zlib(&[0, 1, 1, 0]));
+        assert_eq!(
+            pixels(&pdf_bitmap_png(&doc, &s).unwrap()),
+            (2, 2, vec![9, 8, 7, 1, 2, 3, 1, 2, 3, 9, 8, 7])
+        );
+
+        // 不认识的不硬转：CMYK、别的编码、数据不够、声明的尺寸大得离谱
+        let s = image(base(name("DeviceCMYK")), vec![0; 16]);
+        assert!(pdf_bitmap_png(&doc, &s).is_none());
+        let mut pairs = base(name("DeviceRGB"));
+        pairs.push(("Filter", name("JPXDecode")));
+        assert!(pdf_bitmap_png(&doc, &image(pairs, rgb.to_vec())).is_none());
+        assert!(pdf_bitmap_png(&doc, &image(base(name("DeviceRGB")), vec![0; 5])).is_none());
+        let mut pairs = base(name("DeviceRGB"));
+        pairs[0].1 = Object::Integer(30_000);
+        pairs[1].1 = Object::Integer(30_000);
+        pairs.push(("Filter", name("FlateDecode")));
+        assert!(pdf_bitmap_png(&doc, &image(pairs, zlib(&[0; 64]))).is_none());
     }
 }
