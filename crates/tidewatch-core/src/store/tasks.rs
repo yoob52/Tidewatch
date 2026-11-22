@@ -23,6 +23,12 @@ pub struct Task {
     pub worktree_path: Option<String>,
     pub base_commit: Option<String>,
     pub merged_commit: Option<String>,
+    /// 用户手动推送到远程时分支的提交。
+    #[serde(default)]
+    pub pushed_commit: Option<String>,
+    /// 用户手动开的 PR。
+    #[serde(default)]
+    pub pr_url: Option<String>,
     pub depends_on: Vec<String>,
     /// `depends_on` 里只等接口文档的那些：对方产出接口文档就解锁，不用等它做完。
     #[serde(default)]
@@ -61,7 +67,7 @@ pub struct TaskInput {
     pub api_doc_deps: Vec<String>,
 }
 
-const COLS: &str = "id, ticket_id, kind, project_id, title, spec_md, acceptance_criteria_json, status, agent, provider_id, model, permission_profile, branch, worktree_path, base_commit, merged_commit, created_at, updated_at";
+const COLS: &str = "id, ticket_id, kind, project_id, title, spec_md, acceptance_criteria_json, status, agent, provider_id, model, permission_profile, branch, worktree_path, base_commit, merged_commit, created_at, updated_at, pushed_commit, pr_url";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -85,6 +91,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         api_doc_deps: vec![],
         created_at: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
         updated_at: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
+        pushed_commit: r.get(18)?,
+        pr_url: r.get(19)?,
     })
 }
 
@@ -255,6 +263,22 @@ pub fn set_workspace(
     conn.execute(
         "UPDATE task SET branch = ?2, worktree_path = ?3, base_commit = ?4, updated_at = ?5 WHERE id = ?1",
         rusqlite::params![id, branch, worktree, base_commit, crate::util::now()],
+    )?;
+    Ok(())
+}
+
+pub fn set_pushed(conn: &Connection, id: &str, commit: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE task SET pushed_commit = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![id, commit, crate::util::now()],
+    )?;
+    Ok(())
+}
+
+pub fn set_pr_url(conn: &Connection, id: &str, url: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE task SET pr_url = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![id, url, crate::util::now()],
     )?;
     Ok(())
 }

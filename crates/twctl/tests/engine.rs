@@ -1868,3 +1868,80 @@ fn cross_review_reads_the_diff_and_leaves_findings_without_touching_the_task() {
             .is_some_and(|c| c.status == "done" && c.findings.is_empty())
     });
 }
+
+#[test]
+fn pushing_and_opening_a_pr_only_happen_when_the_user_asks() {
+    let f = fixture(1, None);
+    let (_, task) = f.bug("推送", "x [mock:steps=1] [mock:delay=30]", "medium");
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_done(&r.id);
+    let t = f.task(&task);
+    let repo = f.repo.clone();
+    let branch = t.branch.clone().unwrap();
+
+    // 没有远程：说清楚为什么推不了
+    let e = f.engine.push_task(&task).unwrap_err().to_string();
+    assert!(e.contains("远程"), "{e}");
+
+    let remote = repo.parent().unwrap().join("remote.git");
+    git::git(
+        repo.parent().unwrap(),
+        &["init", "--bare", "-q", &remote.display().to_string()],
+    )
+    .unwrap();
+    git::git(
+        &repo,
+        &["remote", "add", "origin", &remote.display().to_string()],
+    )
+    .unwrap();
+    // 跑完一轮之后观澜自己没有推过
+    assert!(git::git(&remote, &["branch", "--list"]).unwrap().is_empty());
+
+    let pushed = f.engine.push_task(&task).unwrap();
+    let head = git::rev_parse(&repo, &format!("refs/heads/{branch}")).unwrap();
+    assert_eq!(pushed.pushed_commit.as_deref(), Some(head.as_str()));
+    assert_eq!(
+        git::rev_parse(&remote, &format!("refs/heads/{branch}")).unwrap(),
+        head
+    );
+
+    let draft = f.engine.pr_draft(&task).unwrap();
+    assert!(draft.title.ends_with("推送"), "{}", draft.title);
+    assert!(draft.body.contains("改动说明"), "{}", draft.body);
+
+    // 用一个假的 gh 看观澜传了什么
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let gh = repo.parent().unwrap().join("fake-gh");
+        let log = repo.parent().unwrap().join("gh-args.txt");
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho 'https://github.com/acme/demo/pull/42'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("TIDEWATCH_GH_BIN", &gh);
+        let with_pr = f.engine.create_pr(&task, draft).unwrap();
+        std::env::remove_var("TIDEWATCH_GH_BIN");
+        assert_eq!(
+            with_pr.pr_url.as_deref(),
+            Some("https://github.com/acme/demo/pull/42")
+        );
+        let args = std::fs::read_to_string(&log).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        assert_eq!(
+            &args[..6],
+            ["pr", "create", "--head", branch.as_str(), "--base", "main"]
+        );
+        assert!(!args.contains(&"--draft"));
+    }
+
+    // 合并之后分支已经清理，不能再推
+    f.engine.accept_task(&task).unwrap();
+    f.engine.merge_task(&task).unwrap();
+    assert!(f.engine.push_task(&task).is_err());
+}

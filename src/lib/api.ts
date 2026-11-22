@@ -249,6 +249,10 @@ export interface Task extends TaskInput {
   worktree_path: string | null;
   base_commit: string | null;
   merged_commit: string | null;
+  /** 用户手动推送到远程时分支的提交。 */
+  pushed_commit: string | null;
+  /** 用户手动开的 PR。 */
+  pr_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -450,6 +454,12 @@ export interface TaskDiff {
   truncated: boolean;
 }
 
+export interface PrInput {
+  title: string;
+  body: string;
+  draft: boolean;
+}
+
 export interface CodeFinding {
   severity: 'blocker' | 'major' | 'minor';
   file: string | null;
@@ -612,6 +622,11 @@ export const api = {
   taskMerge: (id: string) => invoke<Task>('task_merge', { id }),
   taskCancel: (id: string) => invoke<Task>('task_cancel', { id }),
   taskDiff: (id: string) => invoke<TaskDiff>('task_diff', { id }),
+  /** 把子任务的分支推到远程。只在用户点了之后调用。 */
+  taskPush: (id: string) => invoke<Task>('task_push', { id }),
+  taskPrDraft: (id: string) => invoke<PrInput>('task_pr_draft', { id }),
+  /** 分支没推过（或推过后又有新提交）会先推送，再用 gh pr create 开 PR。 */
+  taskPrCreate: (id: string, input: PrInput) => invoke<Task>('task_pr_create', { id, input }),
   /** 不指定 agent 时换一个和写代码的不同的 Agent。 */
   codeReviewStart: (taskId: string, agent?: string | null, providerId?: string | null) =>
     invoke<Run>('code_review_start', { taskId, agent: agent ?? null, providerId: providerId ?? null }),

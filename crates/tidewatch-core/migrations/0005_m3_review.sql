@@ -16,3 +16,7 @@ CREATE TABLE code_review (
 );
 CREATE INDEX idx_code_review_task ON code_review(task_id, created_at);
 CREATE INDEX idx_code_review_run ON code_review(run_id);
+
+-- 用户手动推送分支 / 开 PR 的结果。观澜自己从不自动推送
+ALTER TABLE task ADD COLUMN pushed_commit TEXT;
+ALTER TABLE task ADD COLUMN pr_url TEXT;

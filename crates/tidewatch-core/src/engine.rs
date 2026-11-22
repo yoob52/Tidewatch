@@ -127,6 +127,35 @@ pub struct TaskDiff {
     pub truncated: bool,
 }
 
+/// 开 PR 时的标题和正文。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrInput {
+    pub title: String,
+    pub body: String,
+    pub draft: bool,
+}
+
+/// 子任务能不能推：要有分支和改动、不在运行中，项目要配了远程。返回（仓库目录，分支，远程名）。
+fn pushable(task: &Task, project: &Project) -> Result<(PathBuf, String, String)> {
+    if !matches!(task.status.as_str(), "review" | "accepted") {
+        return Err(Error::invalid(format!(
+            "子任务处于「{}」，待验收或已通过时才能推送。",
+            workflow::task_status_label(&task.status)
+        )));
+    }
+    let repo = PathBuf::from(&project.local_path);
+    let branch = task
+        .branch
+        .clone()
+        .filter(|b| git::branch_exists(&repo, b))
+        .ok_or_else(|| Error::invalid("子任务还没有分支。"))?;
+    let remote = git::default_remote(&repo)?.ok_or_else(|| {
+        Error::invalid("项目的仓库没有配置远程（git remote），没有地方可以推送。")
+    })?;
+    Ok((repo, branch, remote))
+}
+
 /// 一轮运行的执行方案：谁来跑、用什么模型、发什么 Prompt。
 #[derive(Debug, Clone, Serialize)]
 pub struct RunPlan {
@@ -578,6 +607,118 @@ impl Engine {
             files,
             patch,
             truncated,
+        })
+    }
+
+    /// 把子任务的分支推到远程。只在用户点了之后做，观澜自己从不推送。
+    pub fn push_task(&self, task_id: &str) -> Result<Task> {
+        let (task, _, project, _) = self.load(task_id)?;
+        let (repo, branch, remote) = pushable(&task, &project)?;
+        let head = git::rev_parse(&repo, &format!("refs/heads/{branch}"))?;
+        git::push_branch(&repo, &remote, &branch)?;
+        {
+            let conn = lock(&self.inner.db);
+            tasks::set_pushed(&conn, task_id, &head)?;
+            add_timeline(
+                &conn,
+                &task.ticket_id,
+                "task_pushed",
+                json!({ "task_id": task_id, "remote": remote, "branch": branch, "commit": head }),
+            )?;
+        }
+        self.inner
+            .changed(Some(task.ticket_id.clone()), Some(task_id.into()), None);
+        tasks::get(&lock(&self.inner.db), task_id)
+    }
+
+    /// 用 `gh pr create` 给子任务的分支开 PR；分支还没推（或推过之后又有新提交）就先推。
+    pub fn create_pr(&self, task_id: &str, input: PrInput) -> Result<Task> {
+        let (task, ticket, project, _) = self.load(task_id)?;
+        let (repo, branch, _) = pushable(&task, &project)?;
+        if git::gh_binary().is_none() {
+            return Err(Error::invalid(
+                "没有找到 GitHub CLI（gh）。安装并运行 gh auth login 之后再开 PR。",
+            ));
+        }
+        let head = git::rev_parse(&repo, &format!("refs/heads/{branch}"))?;
+        let task = if task.pushed_commit.as_deref() == Some(head.as_str()) {
+            task
+        } else {
+            self.push_task(task_id)?
+        };
+        let title = Some(input.title.trim())
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| format!("{} {}", ticket.key, task.title));
+        let url = git::gh_pr_create(
+            &repo,
+            &branch,
+            &project.default_branch,
+            &title,
+            input.body.trim(),
+            input.draft,
+        )?;
+        {
+            let conn = lock(&self.inner.db);
+            tasks::set_pr_url(&conn, task_id, &url)?;
+            add_timeline(
+                &conn,
+                &task.ticket_id,
+                "pr_created",
+                json!({ "task_id": task_id, "url": url }),
+            )?;
+        }
+        self.inner
+            .changed(Some(task.ticket_id.clone()), Some(task_id.into()), None);
+        tasks::get(&lock(&self.inner.db), task_id)
+    }
+
+    /// 开 PR 对话框里预填的标题和正文。
+    pub fn pr_draft(&self, task_id: &str) -> Result<PrInput> {
+        let (task, ticket, _, _) = self.load(task_id)?;
+        let conn = lock(&self.inner.db);
+        let last = runs::list_for_task(&conn, task_id)?.pop();
+        let criteria = if task.acceptance_criteria.is_empty() {
+            &ticket.acceptance_criteria
+        } else {
+            &task.acceptance_criteria
+        };
+        let mut body = format!("## {} {}\n\n", ticket.key, ticket.title);
+        if let Some(s) = last
+            .as_ref()
+            .and_then(|r| r.summary.as_deref())
+            .filter(|s| !s.trim().is_empty())
+        {
+            body.push_str(&format!("### 改动说明\n{}\n\n", s.trim()));
+        }
+        if !criteria.is_empty() {
+            body.push_str("### 验收标准\n");
+            for c in criteria {
+                body.push_str(&format!("- [x] {c}\n"));
+            }
+            body.push('\n');
+        }
+        if let Some(r) = &last {
+            let reports = runs::test_reports(&conn, &r.id)?;
+            if !reports.is_empty() {
+                body.push_str("### 自动检查\n");
+                for t in reports {
+                    body.push_str(&format!(
+                        "- `{}`：{}\n",
+                        t.command,
+                        if t.exit_code == Some(0) {
+                            "通过"
+                        } else {
+                            "没有通过"
+                        }
+                    ));
+                }
+            }
+        }
+        Ok(PrInput {
+            title: format!("{} {}", ticket.key, task.title),
+            body,
+            draft: false,
         })
     }
 

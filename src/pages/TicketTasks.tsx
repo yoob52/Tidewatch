@@ -912,6 +912,29 @@ export function AcceptTab({ d, reload }: TabProps) {
       })
       .join('\n');
 
+  const push = async () => {
+    if (!(await ui.confirm('推送分支到远程', `把分支 ${task.branch} 推到项目仓库的远程。观澜不会自己推送，只有你点了才推；不会强推。`, '推送'))) return;
+    if (await ui.attempt(api.taskPush(task.id), '已推送到远程')) await refresh();
+  };
+  const openPr = async () => {
+    const draft = await ui.attempt(api.taskPrDraft(task.id));
+    if (!draft) return;
+    const title = await ui.prompt(
+      '开 Pull Request',
+      `用 GitHub CLI（gh pr create）给分支 ${task.branch} 开 PR；分支还没推到远程的话会先推送。正文按工单、Agent 总结和检查结果自动生成，开好后可以在 GitHub 上改。`,
+      'PR 标题',
+      '推送并开 PR',
+      true,
+      draft.title,
+    );
+    if (!title) return;
+    const done = await ui.attempt(api.taskPrCreate(task.id, { ...draft, title }));
+    if (done) {
+      ui.toast(`PR 已创建：${done.pr_url}`);
+      await refresh();
+    }
+  };
+
   const merge = async () => {
     if (!(await ui.confirm('合并到主分支', '把这个子任务的分支合并进项目的默认分支，然后清理 worktree。不会推送到远程。', '合并'))) return;
     if (await ui.attempt(api.taskMerge(task.id), '已合并，worktree 已清理')) await refresh();
@@ -1171,6 +1194,39 @@ export function AcceptTab({ d, reload }: TabProps) {
               </div>
             )}
           </div>
+          {['review', 'accepted'].includes(task.status) && (
+            <>
+              <div className="sec-title" style={{ marginTop: 18 }}>
+                远程
+              </div>
+              <div className="xrev">
+                <p className="dim">
+                  {task.pr_url ? (
+                    <>
+                      PR：<span className="mono">{task.pr_url}</span>
+                    </>
+                  ) : task.pushed_commit ? (
+                    <>
+                      分支已推送（<span className="mono">{task.pushed_commit.slice(0, 8)}</span>）
+                      {last?.end_commit && last.end_commit !== task.pushed_commit ? '，之后又有新提交' : ''}
+                    </>
+                  ) : (
+                    '分支只在本机。观澜不会自己推送。'
+                  )}
+                </p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn sm" onClick={() => void push()}>
+                    <Icon name="branch" size={13} />
+                    推送分支
+                  </button>
+                  <button className="btn sm" onClick={() => void openPr()}>
+                    <Icon name="merge" size={13} />
+                    {task.pr_url ? '重新开 PR' : '开 PR'}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
           <div className="sec-title" style={{ marginTop: 18 }}>
             Agent 总结
           </div>

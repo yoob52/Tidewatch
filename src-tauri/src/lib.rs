@@ -6,7 +6,7 @@ use tauri::{Emitter, Manager};
 use tidewatch_core::agent::{adapter, mock_process, AgentKind, Detection};
 use tidewatch_core::db::{self, lock};
 use tidewatch_core::engine::{
-    CodeReviewOptions, Engine, EngineConfig, EngineEvent, Finalized, RejectInput, RunPlan,
+    CodeReviewOptions, Engine, EngineConfig, EngineEvent, Finalized, PrInput, RejectInput, RunPlan,
     StartOptions, TaskDiff,
 };
 use tidewatch_core::git;
@@ -653,6 +653,24 @@ fn code_review_start(
         .map_err(err)
 }
 
+/// 把子任务的分支推到远程。只有用户点了才会调用。
+#[tauri::command]
+async fn task_push(state: State<'_>, id: String) -> CmdResult<tasks::Task> {
+    blocking(state, move |e| e.push_task(&id)).await
+}
+
+/// 开 PR 对话框里预填的标题和正文。
+#[tauri::command]
+fn task_pr_draft(state: State, id: String) -> CmdResult<PrInput> {
+    state.engine.pr_draft(&id).map_err(err)
+}
+
+/// 推送分支并用 `gh pr create` 开 PR。
+#[tauri::command]
+async fn task_pr_create(state: State<'_>, id: String, input: PrInput) -> CmdResult<tasks::Task> {
+    blocking(state, move |e| e.create_pr(&id, input)).await
+}
+
 #[tauri::command]
 async fn task_merge(state: State<'_>, id: String) -> CmdResult<tasks::Task> {
     blocking(state, move |e| e.merge_task(&id)).await
@@ -976,6 +994,9 @@ pub fn run() {
             task_accept,
             task_reject,
             code_review_start,
+            task_push,
+            task_pr_draft,
+            task_pr_create,
             task_merge,
             task_cancel,
             task_diff,

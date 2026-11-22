@@ -262,6 +262,10 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
       return p.error
         ? ['alert', 'AI', `${name}的交叉审查没有完成：${p.error}`]
         : ['spark', 'AI', `${name}的交叉审查完成，${p.findings ? `发现 ${p.findings} 个问题${p.blockers ? `，其中 ${p.blockers} 个阻塞` : ''}` : '没有发现问题'}`];
+    case 'task_pushed':
+      return ['branch', '你', `把${name}的分支 ${p.branch} 推到了 ${p.remote}（${String(p.commit ?? '').slice(0, 8)}）`];
+    case 'pr_created':
+      return ['merge', '你', `给${name}开了 PR：${p.url}`];
     case 'auto_fix':
       return ['undo', '系统', `${name}的自动检查没过，交回 Agent 自动修复（第 ${p.attempt} 次）`];
     case 'issue_resolved': {
