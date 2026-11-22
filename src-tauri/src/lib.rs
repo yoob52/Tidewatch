@@ -1,4 +1,6 @@
 //! Tauri 壳：把 tidewatch-core 暴露成命令，并把引擎事件转给界面。业务逻辑都在 core 里。
+mod updater;
+
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -927,6 +929,20 @@ fn ticket_draft(state: State, markdown: String) -> CmdResult<tickets::Draft> {
     Ok(tickets::smart_draft(&markdown, &all))
 }
 
+/// 智能创建的 AI 分析：让默认 Agent 只读地看一遍正文，结果只用来预填表单。
+#[tauri::command]
+async fn ticket_analyze(
+    state: State<'_>,
+    markdown: String,
+) -> CmdResult<tidewatch_core::engine::SmartAnalysis> {
+    blocking(state, move |e| e.smart_analyze(&markdown)).await
+}
+
+#[tauri::command]
+fn ticket_analyze_cancel(state: State) {
+    state.engine.cancel_smart_analysis();
+}
+
 /// 读取用户在文件对话框里选中的 Markdown / 文本文件。
 #[tauri::command]
 fn read_text_file(path: String) -> CmdResult<String> {
@@ -994,14 +1010,52 @@ fn code_review_start(
         .map_err(err)
 }
 
+#[derive(Serialize)]
+struct UpdateStatus {
+    #[serde(flatten)]
+    info: update::UpdateInfo,
+    /// 这个版本不能在应用内安装的原因；能装时为空。
+    install_blocked: Option<String>,
+}
+
 /// 联网看有没有新版本。只在用户点了「检查更新」或打开了启动时检查的开关时调用。
 #[tauri::command]
-async fn update_check() -> CmdResult<update::UpdateInfo> {
-    tauri::async_runtime::spawn_blocking(|| {
-        update::check(env!("CARGO_PKG_VERSION"), update::RELEASES_URL).map_err(err)
+async fn update_check(app: tauri::AppHandle) -> CmdResult<UpdateStatus> {
+    let info = tauri::async_runtime::spawn_blocking(|| {
+        // 自己分发的构建可以在编译时用 TIDEWATCH_RELEASES_URL 换成自己的发布源；运行时不能改
+        let url = option_env!("TIDEWATCH_RELEASES_URL").unwrap_or(update::RELEASES_URL);
+        update::check(env!("CARGO_PKG_VERSION"), url).map_err(err)
     })
     .await
-    .map_err(err)?
+    .map_err(err)??;
+    Ok(UpdateStatus {
+        info,
+        install_blocked: updater::blocked(&app),
+    })
+}
+
+/// 下载、校验并安装最新版本，然后重启。只在用户点了「下载并安装」并确认之后调用；
+/// 有运行在进行时不装，下载和安装期间也不开始新的运行，免得把 Agent 留成孤儿进程。
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle, state: State<'_>) -> CmdResult<()> {
+    if let Some(why) = updater::blocked(&app) {
+        return Err(why);
+    }
+    // 下载要几分钟：这期间不派发新的运行，装完进程就退出了
+    let hold = state.engine.hold().map_err(err)?;
+    let res = updater::install(&app).await;
+    drop(hold);
+    res
+}
+
+/// 用系统浏览器打开发布页一类的地址。只接受 https，免得页面内容借它打开本地文件或别的协议。
+#[tauri::command]
+fn open_url(app: tauri::AppHandle, url: String) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    if !url.starts_with("https://") {
+        return Err("只能打开 https 地址。".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(err)
 }
 
 #[tauri::command]
@@ -1320,6 +1374,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = match std::env::var_os("TIDEWATCH_DATA_DIR") {
                 Some(p) => PathBuf::from(p),
@@ -1417,6 +1473,8 @@ pub fn run() {
             prompt_preview,
             prompt_save,
             ticket_draft,
+            ticket_analyze,
+            ticket_analyze_cancel,
             read_text_file,
             attachment_add,
             attachment_list,
@@ -1431,6 +1489,8 @@ pub fn run() {
             task_reject,
             code_review_start,
             update_check,
+            update_install,
+            open_url,
             backup_list,
             backup_now,
             export_tickets,

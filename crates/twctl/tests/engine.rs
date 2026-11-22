@@ -475,6 +475,34 @@ fn queue_respects_concurrency_and_ticket_priority() {
     assert!(ra.finished_at <= rc.started_at, "A 结束后才轮到下一个");
 }
 
+/// 安装更新前的暂停：有运行时拒绝；暂停期间排队的运行不开始，放开后照常跑。
+#[test]
+fn hold_refuses_while_running_and_keeps_queued_runs_waiting() {
+    let f = fixture(2, None);
+    let (_, a) = f.bug("A", "x [mock:steps=2] [mock:delay=200]", "low");
+    let (_, b) = f.bug("B", "x", "low");
+    let ra = f.engine.start_task(&a, StartOptions::default()).unwrap();
+    f.wait_run(&ra.id, "A 开始运行", |r| r.status != "queued");
+    let e = f.engine.hold().err().expect("有运行时不能暂停");
+    assert!(e.to_string().contains("1 个运行"), "{e}");
+    f.wait_run(&ra.id, "A 结束", |r| r.status == "succeeded");
+
+    let hold = loop {
+        // 运行刚结束时它的取消标记可能还没摘掉
+        match f.engine.hold() {
+            Ok(h) => break h,
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    assert!(f.engine.hold().is_err(), "不能暂停两次");
+    assert!(f.engine.smart_analyze("登录页打开报错").is_err());
+    let rb = f.engine.start_task(&b, StartOptions::default()).unwrap();
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(f.run(&rb.id).status, "queued", "暂停期间不派发");
+    drop(hold);
+    f.wait_run(&rb.id, "放开后 B 跑完", |r| r.status == "succeeded");
+}
+
 #[test]
 fn queued_run_can_be_withdrawn_and_command_id_is_idempotent() {
     let f = fixture(1, None);
@@ -2203,4 +2231,51 @@ fn compare_runs_the_same_task_with_several_agents_and_adopts_one() {
         .collect();
     assert!(kinds.contains(&"compare_started".to_string()));
     assert!(kinds.contains(&"compare_adopted".to_string()));
+}
+
+#[test]
+fn smart_analysis_prefills_the_draft_without_creating_anything() {
+    let f = fixture(1, None);
+    let web = projects::create(
+        &lock(f.db()),
+        projects::ProjectInput {
+            name: "shop-web".into(),
+            kind: "frontend".into(),
+            local_path: f.repo.display().to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let a = f
+        .engine
+        .smart_analyze("订单页面点「导出」按钮后报错 500\n\n复现：打开订单页，点导出。")
+        .unwrap();
+    assert_eq!(a.agent, "mock");
+    assert_eq!(a.draft.kind, "bug");
+    assert_eq!(a.draft.priority, "high");
+    assert!(a.draft.title.ends_with("（AI 整理）"), "{}", a.draft.title);
+    assert_eq!(a.draft.project_ids, vec![web.id.clone()]);
+    assert_eq!(a.draft.labels, vec!["演示分析".to_string()]);
+    assert_eq!(a.draft.bug_info.as_ref().unwrap()["actual"], "报错");
+    assert!(a.draft.reasons.iter().any(|r| r.contains("Bug")));
+
+    // 不是 Bug：不带三要素，项目换成后端的那个
+    let a = f.engine.smart_analyze("给订单接口加分页参数").unwrap();
+    assert_eq!(a.draft.kind, "feature_backend");
+    assert_eq!(a.draft.project_ids, vec![f.project_id.clone()]);
+    assert!(a.draft.bug_info.is_none());
+
+    assert!(f.engine.smart_analyze("  \n").is_err());
+
+    // 只是预填：没有工单、没有运行，临时目录也收掉了
+    let conn = lock(f.db());
+    let count = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(count("ticket"), 0);
+    assert_eq!(count("run"), 0);
+    let tmp = f._dir.path().join("data/tmp");
+    assert!(!tmp.exists() || std::fs::read_dir(&tmp).unwrap().next().is_none());
 }

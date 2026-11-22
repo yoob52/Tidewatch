@@ -1,7 +1,8 @@
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type Stage, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type UpdateInfo, type Workflow, type WorkflowInput } from '../lib/api';
+import { api, type UpdateProgress, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type Stage, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type Workflow, type WorkflowInput } from '../lib/api';
+import { installUpdate as runInstall, setUpdateInfo, useUpdate } from '../lib/update';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { AGENTS, Field, Modal, PERMISSIONS, Seg, Switch, TYPES, useUi } from '../lib/ui';
@@ -793,6 +794,24 @@ const PERMISSION_HINT: Record<string, string> = {
   full_auto: '不经确认执行任意命令',
 };
 
+function UpdateProgressLine({ p }: { p: UpdateProgress }) {
+  if (p.phase !== 'downloading') {
+    return <p>{p.phase === 'checking' ? '正在查找安装包…' : p.phase === 'installing' ? '签名校验通过，正在安装…' : '安装完成，正在重启…'}</p>;
+  }
+  const mb = (n: number) => (n / 1048576).toFixed(1);
+  const pct = p.total ? Math.min(100, Math.round((p.downloaded / p.total) * 100)) : null;
+  return (
+    <>
+      <p>
+        正在下载 {mb(p.downloaded)} MB{p.total ? ` / ${mb(p.total)} MB（${pct}%）` : ''}
+      </p>
+      <div className="bar" style={{ maxWidth: 320 }}>
+        <i style={{ width: `${pct ?? 0}%` }} />
+      </div>
+    </>
+  );
+}
+
 export function SettingsPage({
   theme,
   setTheme,
@@ -824,10 +843,22 @@ export function SettingsPage({
     if (typeof dir === 'string') await save({ workspace_dir: dir });
   };
 
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const { info: update, progress, error: updateError } = useUpdate();
   const checkUpdate = async () => {
     const u = await ui.attempt(api.updateCheck());
-    if (u) setUpdate(u);
+    if (u) setUpdateInfo(u);
+  };
+  const installUpdate = async () => {
+    if (!update?.latest) return;
+    const ok = await ui.confirm(
+      `安装 ${update.latest}`,
+      <>
+        <p>观澜会下载安装包，校验签名通过后安装，然后自动重启。校验不过不会安装。</p>
+        <p>有运行在进行时不能安装；排队中的运行会在重启后继续。</p>
+      </>,
+      '下载并安装',
+    );
+    if (ok) await runInstall();
   };
   const backupNow = async () => {
     const list = await ui.attempt(api.backupNow(), '已备份数据库');
@@ -1157,15 +1188,45 @@ export function SettingsPage({
               <p>{info ? `${info.version} · ${info.os}` : '读取中…'}</p>
               {update &&
                 (update.newer ? (
-                  <p>
-                    有新版本 {update.latest}，到发布页下载：<span className="mono">{update.url}</span>
-                  </p>
+                  <>
+                    <p>
+                      有新版本 {update.latest}。
+                      {update.install_blocked
+                        ? `${update.install_blocked}请到发布页下载：`
+                        : '可以直接在这里安装，也可以到发布页下载：'}
+                      {update.url && (
+                        <a
+                          className="mono"
+                          href={update.url}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            void ui.attempt(api.openUrl(update.url ?? ''));
+                          }}
+                        >
+                          {update.url}
+                        </a>
+                      )}
+                    </p>
+                    {update.notes && (
+                      <details className="rec-why">
+                        <summary>这一版的更新说明</summary>
+                        <p style={{ whiteSpace: 'pre-wrap' }}>{update.notes}</p>
+                      </details>
+                    )}
+                    {progress && <UpdateProgressLine p={progress} />}
+                    {updateError && <p style={{ color: 'var(--cinnabar)' }}>{updateError}</p>}
+                  </>
                 ) : (
                   <p>{update.latest ? `已经是最新版本（最新发布 ${update.latest}）。` : '还没有发布过正式版本。'}</p>
                 ))}
             </div>
             <div className="sctl">
-              <button className="btn sm" onClick={() => void checkUpdate()}>
+              {update?.newer && !update.install_blocked && (
+                <button className="btn sm primary" disabled={!!progress} onClick={() => void installUpdate()}>
+                  {progress ? '正在更新…' : '下载并安装'}
+                </button>
+              )}
+              <button className="btn sm" disabled={!!progress} onClick={() => void checkUpdate()}>
                 检查更新
               </button>
             </div>
@@ -1173,7 +1234,7 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>启动时检查更新</b>
-              <p>打开后，每次启动联网读一次 GitHub 上的最新版本号，不发送任何本机数据，也不会自动下载或安装。默认关闭。</p>
+              <p>打开后，每次启动联网读一次 GitHub 上的最新版本号，不发送任何本机数据，也不会自动下载或安装（安装要你点「下载并安装」并确认）。默认关闭。</p>
             </div>
             <div className="sctl">
               <Switch on={settings.check_updates} onChange={(v) => void save({ check_updates: v })} label="启动时检查更新" />

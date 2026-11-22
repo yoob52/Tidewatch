@@ -1,0 +1,79 @@
+name: Release
+
+# 推送 v 开头的标签（如 v0.2.0）时：构建 Windows 安装包，发布到 GitHub Releases。
+# 配了仓库 Secret TAURI_SIGNING_PRIVATE_KEY（有密码时再加 TAURI_SIGNING_PRIVATE_KEY_PASSWORD）
+# 就给安装包签名，并附上应用内更新读的 latest.json；没配就只发安装包，用户从发布页下载。
+# 也可以在 Actions 页手动运行：只构建，安装包留在这次运行的 Artifacts 里，不发布。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  windows:
+    name: Windows 安装包
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 检查版本号，决定是否签名
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: bash scripts/release-plan.sh
+      - run: npm ci
+      - name: 构建
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ "$SIGNED" = true ]; then
+            npx tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          else
+            unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            npx tauri build
+          fi
+      - name: 整理要发布的文件
+        shell: bash
+        run: |
+          cd target/release/bundle/nsis
+          exe="Tidewatch_${VERSION}_x64-setup.exe"
+          test -f "$exe"
+          if [ "$SIGNED" = true ]; then
+            test -f "$exe.sig"
+            node "$GITHUB_WORKSPACE/scripts/latest-json.mjs" "$VERSION" windows-x86_64 "$exe.sig" \
+              "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$exe" > latest.json
+            echo "ASSETS=$exe $exe.sig latest.json" >> "$GITHUB_ENV"
+          else
+            echo "ASSETS=$exe" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tidewatch-windows-release
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.sig
+            target/release/bundle/nsis/latest.json
+          if-no-files-found: error
+      - name: 发布
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd target/release/bundle/nsis
+          # shellcheck disable=SC2086
+          gh release create "$GITHUB_REF_NAME" $ASSETS \
+            --repo "$GITHUB_REPOSITORY" --title "观澜 $VERSION" --generate-notes --verify-tag

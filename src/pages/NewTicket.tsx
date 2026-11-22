@@ -1,11 +1,11 @@
 // 新建工单：左边放原文，右边是预填的属性
 import { open } from '@tauri-apps/plugin-dialog';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, type Priority, type TicketDraft, type TicketStatus, type TicketType } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { imageFiles, imageMd, insertAt, parseImages, selectionOf, uploadImage } from '../lib/images';
-import { Field, Md, PRIO, Prio, STAGE_NAME, Seg, Stamp, TYPES, go, useUi } from '../lib/ui';
+import { AGENTS, Field, Md, PRIO, Prio, STAGE_NAME, Seg, Stamp, TYPES, go, useUi } from '../lib/ui';
 
 type Mode = 'paste' | 'file' | 'form';
 
@@ -29,13 +29,14 @@ export function NewTicketPage() {
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const [warnings, setWarnings] = useState<string[]>([]);
+  /** AI 分析过：是谁分析的。null = 当前结果来自本机规则。 */
+  const [analyzedBy, setAnalyzedBy] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
   const area = useRef<HTMLTextAreaElement | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
 
-  const recognize = async (text: string) => {
-    if (!text.trim()) return;
-    const d = await ui.attempt(api.ticketDraft(text));
-    if (!d) return;
+  const prefill = (d: TicketDraft) => {
     setTitle(d.title);
     setType(d.type);
     setPriority(d.priority);
@@ -45,6 +46,36 @@ export function NewTicketPage() {
     setReasons(d.reasons);
     setRecognized(true);
   };
+
+  const recognize = async (text: string) => {
+    if (!text.trim()) return;
+    const d = await ui.attempt(api.ticketDraft(text));
+    if (!d) return;
+    prefill(d);
+    setAnalyzedBy(null);
+    setAiError(null);
+  };
+
+  // AI 分析：可选的一步。失败或取消时右边保留已有的结果
+  const analyze = async () => {
+    if (!raw.trim() || analyzing) return;
+    if (!recognized) await recognize(raw);
+    setAnalyzing(true);
+    setAiError(null);
+    try {
+      const d = await api.ticketAnalyze(raw);
+      prefill(d);
+      setAnalyzedBy(
+        [AGENTS[d.agent]?.name ?? d.agent, d.provider, d.model].filter(Boolean).join(' · '),
+      );
+    } catch (e) {
+      setAiError(String(e));
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+  // 离开页面时不让分析在后台继续花钱
+  useEffect(() => () => void api.ticketAnalyzeCancel(), []);
 
   const pickFile = async () => {
     const path = await open({
@@ -194,6 +225,10 @@ export function NewTicketPage() {
                   <Icon name="spark" size={13} />
                   识别标题和类型
                 </button>
+                <button className="btn sm" disabled={!raw.trim() || analyzing} onClick={() => void analyze()}>
+                  <Icon name="spark" size={13} />
+                  {analyzing ? 'AI 正在分析…' : 'AI 分析'}
+                </button>
                 <button className="btn sm" onClick={() => fileInput.current?.click()}>
                   <Icon name="upload" size={13} />
                   添加图片
@@ -273,7 +308,9 @@ export function NewTicketPage() {
         </div>
         {mode !== 'form' && recognized && reasons.length > 0 && (
           <details className="rec-why">
-            <summary>识别依据（{reasons.length} 项，本机规则，没有调用 AI）</summary>
+            <summary>
+              识别依据（{reasons.length} 项，{analyzedBy ? `由 ${analyzedBy} 分析` : '本机规则，没有调用 AI'}）
+            </summary>
             <ul>
               {reasons.map((r) => (
                 <li key={r}>{r}</li>
@@ -287,6 +324,32 @@ export function NewTicketPage() {
               </ul>
             )}
           </details>
+        )}
+        {mode !== 'form' && recognized && (
+          <div className="rec-ai">
+            {analyzing ? (
+              <>
+                <span className="dim">AI 正在分析正文，通常不到一分钟；结果只用来预填，不会自动建单。</span>
+                <button className="btn sm" onClick={() => void api.ticketAnalyzeCancel()}>
+                  取消
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="dim">
+                  {aiError
+                    ? `${aiError} 下面仍是${analyzedBy ? '上一次分析' : '本机规则'}的结果。`
+                    : analyzedBy
+                      ? 'AI 的建议已填到下面，请确认或修改后再创建。'
+                      : '想让 AI 帮忙判断类型、项目、优先级和 Bug 三要素？会把正文发给默认 Agent。'}
+                </span>
+                <button className="btn sm" disabled={!raw.trim()} onClick={() => void analyze()}>
+                  <Icon name="spark" size={13} />
+                  {analyzedBy || aiError ? '重新分析' : 'AI 分析'}
+                </button>
+              </>
+            )}
+          </div>
         )}
         <div className="rec">
           {showProps ? (

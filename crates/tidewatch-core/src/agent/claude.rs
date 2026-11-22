@@ -38,6 +38,14 @@ impl AgentAdapter for ClaudeAdapter {
         if !allowed.is_empty() {
             args.extend(["--allowedTools".into(), allowed.join(",")]);
         }
+        if spec.no_tools {
+            // 内置工具一个不给；用户自己配的 MCP 服务也不加载
+            args.extend([
+                "--tools".into(),
+                String::new(),
+                "--strict-mcp-config".into(),
+            ]);
+        }
         if let Some(id) = &spec.resume_session {
             args.extend(["--resume".into(), id.clone()]);
         }

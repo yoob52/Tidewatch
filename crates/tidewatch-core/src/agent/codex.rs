@@ -33,6 +33,12 @@ impl AgentAdapter for CodexAdapter {
             args.extend(["-m".into(), m.clone()]);
         }
         args.extend(["-c".into(), format!("sandbox_mode={sandbox}")]);
+        if spec.no_tools {
+            // 只读沙箱里仍然能 cat 任意文件；把跑命令的工具整个关掉
+            for f in ["shell_tool", "unified_exec"] {
+                args.extend(["--disable".into(), f.into()]);
+            }
+        }
         if let Some(mcp) = &spec.mcp {
             let name = super::MCP_SERVER_NAME;
             args.extend([

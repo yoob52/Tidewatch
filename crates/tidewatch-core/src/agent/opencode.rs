@@ -55,7 +55,11 @@ impl AgentAdapter for OpenCodeAdapter {
         } else {
             "allow"
         };
-        config["permission"] = json!({ "edit": rule, "bash": rule });
+        config["permission"] = if spec.no_tools {
+            json!("deny")
+        } else {
+            json!({ "edit": rule, "bash": rule })
+        };
         if let Some(mcp) = &spec.mcp {
             config["mcp"][super::MCP_SERVER_NAME] = json!({
                 "type": "remote",

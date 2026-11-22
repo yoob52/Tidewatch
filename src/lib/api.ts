@@ -612,6 +612,13 @@ export interface TicketDraft {
   reasons: string[];
 }
 
+/** AI 分析的结果：在 TicketDraft 上多了是谁分析的。 */
+export interface SmartAnalysis extends TicketDraft {
+  agent: string;
+  provider: string | null;
+  model: string | null;
+}
+
 export interface UpdateInfo {
   current: string;
   /** 还没有任何发布时为 null。 */
@@ -619,7 +626,14 @@ export interface UpdateInfo {
   newer: boolean;
   url: string | null;
   notes: string | null;
+  /** 这个版本不能在应用内安装的原因；能装时为 null。 */
+  install_blocked: string | null;
 }
+
+/** 应用内更新的进度。 */
+export type UpdateProgress =
+  | { phase: 'checking' | 'installing' | 'restarting' }
+  | { phase: 'downloading'; downloaded: number; total: number | null };
 
 export interface ProviderCompat {
   agent: string;
@@ -757,6 +771,10 @@ export const api = {
     invoke<ProviderCompat[]>('provider_compat', { name, protocol, baseUrl, defaultModel }),
   /** 联网读 GitHub 上最新发布的版本号。 */
   updateCheck: () => invoke<UpdateInfo>('update_check'),
+  /** 下载、校验签名并安装，然后重启；成功时不会返回。 */
+  updateInstall: () => invoke<void>('update_install'),
+  /** 用系统浏览器打开一个 https 地址。 */
+  openUrl: (url: string) => invoke<void>('open_url', { url }),
   backupList: () => invoke<BackupFile[]>('backup_list'),
   backupNow: () => invoke<BackupFile[]>('backup_now'),
   /** 导出到 dest 下新建的一个目录。 */
@@ -816,6 +834,9 @@ export const api = {
   ticketTransition: (id: string, to: TicketStatus) => invoke<Ticket>('ticket_transition', { id, to }),
   /** 智能创建：本机规则识别出的预填内容，reasons 说明每一项的依据。 */
   ticketDraft: (markdown: string) => invoke<TicketDraft>('ticket_draft', { markdown }),
+  /** 让默认 Agent 只读地分析正文；失败时界面保留本机规则的结果。 */
+  ticketAnalyze: (markdown: string) => invoke<SmartAnalysis>('ticket_analyze', { markdown }),
+  ticketAnalyzeCancel: () => invoke<void>('ticket_analyze_cancel'),
   readTextFile: (path: string) => invoke<string>('read_text_file', { path }),
   importDocument: (path: string) => invoke<Imported>('import_document', { path }),
 
@@ -883,6 +904,14 @@ export const api = {
 /** 订阅引擎事件；返回取消订阅的函数。 */
 export function onEngine(handler: (ev: EngineEvent) => void): () => void {
   const pending = listen<EngineEvent>('tw://engine', (e) => handler(e.payload));
+  return () => {
+    void pending.then((off) => off());
+  };
+}
+
+/** 订阅应用内更新的进度；返回取消订阅的函数。 */
+export function onUpdateProgress(handler: (p: UpdateProgress) => void): () => void {
+  const pending = listen<UpdateProgress>('tw://update', (e) => handler(e.payload));
   return () => {
     void pending.then((off) => off());
   };

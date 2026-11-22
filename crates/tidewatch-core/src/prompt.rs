@@ -513,6 +513,62 @@ pub fn review_prompt(
     fill(text(ov, "review"), &vars) + REVIEW_OUTPUT
 }
 
+const SMART: &str = r#"你在帮用户把一段粘贴或导入的文字建成工单。只根据下面的正文和项目清单判断，不要读取或修改任何文件，不要运行命令。
+
+## 项目清单（每行：id | 名字 | 类型 | 上下文卡片摘要）
+{{projects}}
+
+## 正文
+{{body}}
+"#;
+
+const SMART_OUTPUT: &str = r#"
+<!-- tw:purpose=smart -->
+## 输出格式
+最后一条消息只输出一个 JSON 对象（可以放在 ```json 代码块里），不要有其它文字：
+{
+  "title": "一句话标题，不超过 40 个字",
+  "type": "feature_backend | feature_frontend | feature_mixed | bug | chore",
+  "project_ids": ["项目清单里相关项目的 id；都不相关就给空数组"],
+  "priority": "urgent | high | medium | low",
+  "labels": ["最多 5 个短标签"],
+  "bug": { "steps": "复现步骤", "expected": "期望结果", "actual": "实际结果" },
+  "reasons": ["每一项判断的依据，一句一条，用正文的语言"]
+}
+`bug` 只在 type 是 bug 时填，正文里没有的部分留空字符串，不要编造。
+"#;
+
+/// 智能创建的 AI 分析。输出格式和正文都由系统固定，不是可编辑模板。
+pub fn smart_prompt(body: &str, projects: &[Project]) -> String {
+    let lines: Vec<String> = projects
+        .iter()
+        .map(|p| {
+            let card: String = p
+                .context_md
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(300)
+                .collect();
+            format!(
+                "{} | {} | kind={} | {}",
+                p.id,
+                p.name,
+                p.kind,
+                or_placeholder(&card, "（没有写）")
+            )
+        })
+        .collect();
+    fill(
+        SMART,
+        &[
+            ("projects", bullets(&lines, "（还没有项目）")),
+            ("body", body.to_string()),
+        ],
+    ) + SMART_OUTPUT
+}
+
 /// 定稿后的拆分。`projects`：每个可用项目一行（名字、类型、在工单里的角色）。
 pub fn split_prompt(
     ov: &Overrides,
