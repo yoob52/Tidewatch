@@ -524,6 +524,13 @@ fn failures_and_failed_checks_are_reported() {
         "Agent 失败就不跑检查"
     );
 
+    // 关掉自动修复：检查没过直接交给人
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_fix_attempts = 0;
+        settings::save(&conn, &st).unwrap();
+    }
     let (ticket2, ok) = f.bug("测试不过", "x [mock:steps=1] [mock:delay=50]", "medium");
     let r = f.engine.start_task(&ok, StartOptions::default()).unwrap();
     let r = f.wait_done(&r.id);
@@ -1720,4 +1727,68 @@ fn prd_images_are_handed_to_the_agent_with_their_authority() {
     let a = attachments::get(&conn, &shot).unwrap();
     assert!(a.ticket_id.is_some());
     assert_eq!(attachments::read(&workspace, &a).unwrap(), PNG);
+}
+
+#[test]
+fn failed_checks_are_sent_back_to_the_agent_until_they_pass_or_attempts_run_out() {
+    // 修复 Prompt 的第一行带 "auto-fix"，演示 Agent 会把它写进文件：第一次自动修复后检查就过了
+    let f = fixture(1, Some("git grep -q auto-fix -- TIDEWATCH_DEMO.md"));
+    let (ticket, task) = f.bug(
+        "检查先失败后通过",
+        "x [mock:steps=1] [mock:delay=30]",
+        "medium",
+    );
+    let first = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_for("自动修复后进入待验收", || {
+        f.task(&task).status == "review"
+    });
+    let all = runs::list_for_task(&lock(f.db()), &task).unwrap();
+    assert_eq!(
+        all.iter().map(|r| r.purpose.as_str()).collect::<Vec<_>>(),
+        ["dev", "test_fix"]
+    );
+    assert_eq!(all[0].id, first.id);
+    assert!(all[1].prompt.contains("没通过的检查"), "{}", all[1].prompt);
+    assert!(
+        all[1].prompt.contains("git grep -q auto-fix"),
+        "{}",
+        all[1].prompt
+    );
+    assert_eq!(
+        all[1].resume_session_id, all[0].agent_session_id,
+        "续接原会话"
+    );
+    assert!(runs::events(&lock(f.db()), &first.id, 0)
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "auto_fix" && e.payload["attempt"] == 1));
+    assert_eq!(
+        runs::test_reports(&lock(f.db()), &all[1].id).unwrap()[0].exit_code,
+        Some(0)
+    );
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+
+    // 怎么修都不过：修满次数后交给人
+    let f = fixture(1, Some("git no-such-subcommand"));
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_fix_attempts = 1;
+        settings::save(&conn, &st).unwrap();
+    }
+    let (ticket, task) = f.bug("检查一直失败", "x [mock:steps=1] [mock:delay=30]", "medium");
+    f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_for("修满次数后进入待验收", || {
+        f.task(&task).status == "review"
+    });
+    let all = runs::list_for_task(&lock(f.db()), &task).unwrap();
+    assert_eq!(
+        all.iter().map(|r| r.purpose.as_str()).collect::<Vec<_>>(),
+        ["dev", "test_fix"]
+    );
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+    f.wait_for("最后一轮带上没过的检查", || {
+        f.events.lock().unwrap().iter().any(|e| matches!(e,
+            EngineEvent::RunFinished { run_id, failed_checks, .. } if *run_id == all[1].id && !failed_checks.is_empty()))
+    });
 }

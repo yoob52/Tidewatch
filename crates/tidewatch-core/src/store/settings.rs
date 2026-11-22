@@ -14,6 +14,8 @@ pub struct Settings {
     pub default_permission: String,
     /// Run 结束后自动跑项目的 lint / typecheck / test / build 命令。
     pub auto_test: bool,
+    /// 自动检查没过时，最多让 Agent 自己修几次；0 表示不自动修。
+    pub auto_fix_attempts: u32,
     /// `merge`（--no-ff）或 `squash`。
     pub merge_mode: String,
     pub delete_branch_after_merge: bool,
@@ -61,6 +63,7 @@ impl Default for Settings {
             default_provider_id: None,
             default_permission: "workspace_write".into(),
             auto_test: true,
+            auto_fix_attempts: 2,
             merge_mode: "merge".into(),
             delete_branch_after_merge: true,
             notifications: true,

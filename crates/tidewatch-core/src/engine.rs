@@ -103,6 +103,9 @@ pub struct StartOptions {
     pub prompt_override: Option<String>,
     /// 幂等键：同一个键重复提交只入队一次。
     pub command_id: Option<String>,
+    /// 引擎自己发起的"检查失败自动修复"：第几次。界面传不进来。
+    #[serde(skip)]
+    pub auto_fix: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -685,6 +688,9 @@ fn plan_run(
     };
     let prompt = match (&opts.prompt_override, &resume, instruction) {
         (Some(p), _, _) if !p.trim().is_empty() => p.clone(),
+        (_, Some(_), Some(i)) if opts.auto_fix.is_some() => {
+            crate::prompt::test_fix_prompt(&ov, &project, ticket, opts.auto_fix.unwrap_or(1), i)
+        }
         (_, Some(_), Some(i)) => crate::prompt::rework_prompt(&ov, &project, ticket, i),
         (_, Some(_), None) => {
             "请从上次停下的地方继续，把任务完成；最后用简短中文总结做了什么。".to_string()
@@ -845,6 +851,8 @@ struct Finished {
     status: &'static str,
     error: Option<String>,
     failed_checks: Vec<String>,
+    /// 没过的检查的说明（命令、退出码、输出末尾），自动修复时交给 Agent。
+    failures_md: String,
 }
 
 impl Inner {
@@ -899,7 +907,9 @@ impl Inner {
                 runs::NewRun {
                     task_id: Some(&task.id),
                     ticket_id: &ticket.id,
-                    purpose: if plan.resume.is_some()
+                    purpose: if opts.auto_fix.is_some() {
+                        "test_fix"
+                    } else if plan.resume.is_some()
                         || opts.instruction.is_some()
                         || task.status == "changes_requested"
                     {
@@ -1068,12 +1078,35 @@ impl Inner {
                 },
                 error: Some(e.to_string()),
                 failed_checks: vec![],
+                failures_md: String::new(),
             },
+        };
+        // 检查没过：还有自动修复的次数就不交给人，让 Agent 接着修
+        let auto_fix = if fin.status == "succeeded"
+            && !fin.failed_checks.is_empty()
+            && !cancel.load(Ordering::SeqCst)
+        {
+            let conn = lock(&self.db);
+            let limit = settings::get(&conn)
+                .map(|s| s.auto_fix_attempts)
+                .unwrap_or(0);
+            let done = runs::list_for_task(&conn, &task_id)
+                .map(|all| {
+                    all.iter()
+                        .rev()
+                        .take_while(|r| r.purpose == "test_fix")
+                        .count() as u32
+                })
+                .unwrap_or(u32::MAX);
+            (done < limit).then_some(done + 1)
+        } else {
+            None
         };
         if let Some(e) = &fin.error {
             self.log(&run.id, "error", json!({ "message": e }));
         }
         let task_status = match fin.status {
+            "succeeded" if auto_fix.is_some() => "changes_requested",
             "succeeded" => "review",
             "stopped" => "stopped",
             _ => "failed",
@@ -1130,6 +1163,34 @@ impl Inner {
             run.task_id.clone(),
             Some(run.id.clone()),
         );
+        if let Some(attempt) = auto_fix {
+            let started = self.enqueue_task(
+                &task_id,
+                StartOptions {
+                    instruction: Some(fin.failures_md.clone()),
+                    auto_fix: Some(attempt),
+                    ..Default::default()
+                },
+            );
+            match started {
+                Ok(next) => self.log(
+                    &run.id,
+                    "auto_fix",
+                    json!({ "attempt": attempt, "run_id": next.id, "failed_checks": fin.failed_checks }),
+                ),
+                Err(e) => {
+                    // 起不来就照常交给人验收
+                    self.log(&run.id, "error", json!({ "message": format!("没能发起自动修复：{e}") }));
+                    let conn = lock(&self.db);
+                    let _ = tasks::set_status(&conn, &task_id, "review");
+                    if let Some(t) = &run.ticket_id {
+                        unblocked = tasks::refresh_blocked(&conn, t).unwrap_or_default();
+                    }
+                    drop(conn);
+                    self.changed(run.ticket_id.clone(), run.task_id.clone(), Some(run.id.clone()));
+                }
+            }
+        }
         self.auto_start(&unblocked);
         if let Some(ticket_id) = &run.ticket_id {
             self.start_deferred(ticket_id);
@@ -1249,6 +1310,7 @@ impl Inner {
         )?;
 
         let mut failed_checks = vec![];
+        let mut failures_md = String::new();
         if agent_ok && st.auto_test {
             for (name, command) in project.commands.checks() {
                 if cancel.load(Ordering::SeqCst) {
@@ -1273,6 +1335,15 @@ impl Inner {
                 let ok = res.exit_code == Some(0);
                 if !ok && !res.cancelled {
                     failed_checks.push(name.to_string());
+                    failures_md.push_str(&format!(
+                        "### {name}：`{command}`（{}）\n```\n{}\n```\n\n",
+                        match (res.timed_out, res.exit_code) {
+                            (true, _) => "超时".to_string(),
+                            (_, Some(c)) => format!("退出码 {c}"),
+                            _ => "没有正常退出".to_string(),
+                        },
+                        res.tail.trim()
+                    ));
                 }
                 self.log(
                     &run.id,
@@ -1321,6 +1392,7 @@ impl Inner {
             status,
             error,
             failed_checks,
+            failures_md,
         })
     }
 

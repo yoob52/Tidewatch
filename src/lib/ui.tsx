@@ -97,6 +97,8 @@ export const PERMISSIONS = ['read_only', 'workspace_write', 'full_auto'] as cons
 export const PURPOSE: Record<string, string> = {
   dev: '开发',
   rework: '返工',
+  test_fix: '自动修复',
+  code_review: 'AI 交叉审查',
   review: 'AI 预审',
   split: '拆分子任务',
   impact: '变更影响分析',

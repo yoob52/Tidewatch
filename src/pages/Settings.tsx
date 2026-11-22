@@ -360,6 +360,13 @@ export function SettingsPage({
           </div>
           <div className="srow">
             <div>
+              <b>检查失败自动修复</b>
+              <p>自动检查没过时，把失败的命令和输出交回给同一个 Agent 接着修，最多修这么多次；还不过再交给你验收。0 表示不自动修。</p>
+            </div>
+            <div className="sctl">{stepper(settings.auto_fix_attempts, 0, 5, 1, (n) => void save({ auto_fix_attempts: n }))}</div>
+          </div>
+          <div className="srow">
+            <div>
               <b>合并方式</b>
               <p>merge 保留子任务分支上的每个提交；squash 压成一个提交。观澜不会自动推送到远程。</p>
             </div>

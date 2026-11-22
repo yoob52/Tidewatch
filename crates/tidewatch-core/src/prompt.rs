@@ -64,6 +64,35 @@ const BUG_FIX: &str = r#"请在当前目录（一个独立的 git worktree）中
 5. 最后用简短中文总结：根因是什么、怎么修的、改了哪些文件、还有什么需要人工确认。
 "#;
 
+const TEST_FIX: &str = r#"自动检查没有通过（auto-fix 第 {{attempt}} 次），请在当前 worktree 里修复。
+
+## 没通过的检查
+{{failures}}
+
+## 工作要求
+1. 先弄清失败原因再改；只修让检查失败的问题，不要改动无关内容。
+2. 不要为了让检查通过而删掉、跳过测试或放宽断言；确实是测试本身写错了，在总结里说明。
+3. 改完后重新运行上面的命令确认通过。
+4. 最后用简短中文总结：失败原因、怎么修的。
+"#;
+
+const CODE_REVIEW: &str = r#"你是代码评审者。请以只读方式评审工单 {{ticket.key}}「{{ticket.title}}」里子任务「{{task.title}}」的改动，不要修改任何文件。
+
+## 需求
+{{task.spec}}
+
+## 验收标准
+{{task.acceptance_criteria}}
+
+## 怎么看改动
+当前目录就是这个子任务的 worktree。运行 `git diff {{base}}..HEAD` 查看全部改动，需要时再读相关文件。
+
+## 评审要求
+1. 只报真实的问题：功能错误、没覆盖的验收标准、明显的安全或数据风险、会让测试失败的改动。不要报代码风格。
+2. 每个问题写清楚在哪个文件、哪一行附近、为什么是问题、建议怎么改。
+3. 没有问题就返回空列表。
+"#;
+
 const REWORK: &str = r#"上一轮的结果没有通过验收，请在当前 worktree 里继续修改。
 
 ## 需要处理的意见
@@ -253,6 +282,25 @@ pub const TEMPLATES: &[TemplateDef] = &[
         variables: &["instruction"],
     },
     TemplateDef {
+        name: "test_fix",
+        title: "检查失败自动修复",
+        description: "自动检查没过时，续接原会话发送的修复 Prompt",
+        default: TEST_FIX,
+        variables: &["attempt", "failures"],
+    },
+    TemplateDef {
+        name: "code_review",
+        title: "AI 交叉审查",
+        description: "另一个 Agent 只读审查子任务的 Diff；输出格式由系统固定追加",
+        default: CODE_REVIEW,
+        variables: &[
+            "task.title",
+            "task.spec",
+            "task.acceptance_criteria",
+            "base",
+        ],
+    },
+    TemplateDef {
         name: "review",
         title: "PRD 预审",
         description: "AI 预审；输出格式由系统固定追加",
@@ -411,6 +459,10 @@ pub fn preview(name: &str, content: &str) -> crate::Result<String> {
             "task.acceptance_criteria" => "- 两张券叠加后金额不为负\n- 结算页显示逐券抵扣明细",
             "api_doc" => "POST /api/checkout/price-preview：入参商品行与券 ID 列表，返回逐券抵扣明细与实付金额。",
             "instruction" => "边界值没处理：满减后金额为 0 时不应再打折。",
+            "attempt" => "1",
+            "failures" => "### test：`./gradlew test`（退出码 1）\n```\nCouponTest > stacking FAILED\n    expected: 0 but was: -100\n```",
+            "task.title" => "后端：优惠券叠加试算",
+            "base" => "3f2a9c1",
             "prd" | "prd.new" => "## 背景\n用户希望两张券可以叠加使用。\n\n## 规则\n先折扣、后满减。",
             "prd.old" => "## 背景\n用户希望两张券可以叠加使用。",
             "criteria.old" => "- 两张券叠加后金额不为负",
@@ -428,6 +480,7 @@ pub fn preview(name: &str, content: &str) -> crate::Result<String> {
         "review" => REVIEW_OUTPUT,
         "split" => SPLIT_OUTPUT,
         "impact" => IMPACT_OUTPUT,
+        "code_review" => CODE_REVIEW_FORMAT,
         _ => "",
     };
     Ok(fill(content, &vars) + suffix)
@@ -595,6 +648,64 @@ pub fn rework_prompt(
     let mut vars = common_vars(project, ticket);
     vars.push(("instruction", instruction.trim().to_string()));
     fill(text(ov, "rework"), &vars)
+}
+
+pub fn test_fix_prompt(
+    ov: &Overrides,
+    project: &Project,
+    ticket: &Ticket,
+    attempt: u32,
+    failures: &str,
+) -> String {
+    let mut vars = common_vars(project, ticket);
+    vars.push(("attempt", attempt.to_string()));
+    vars.push(("failures", failures.trim().to_string()));
+    fill(text(ov, "test_fix"), &vars)
+}
+
+/// 交叉审查的输出格式，固定追加在模板后面。
+pub const CODE_REVIEW_FORMAT: &str = r#"
+## 输出格式
+只输出一个 JSON 对象，不要任何其它文字，也不要用代码块包起来：
+{"summary": "一两句总体评价", "findings": [{"severity": "blocker | major | minor", "file": "相对路径", "line": 行号或 null, "title": "一句话问题", "detail": "为什么是问题", "suggestion": "建议怎么改"}]}
+"#;
+
+pub fn code_review_prompt(
+    ov: &Overrides,
+    project: &Project,
+    ticket: &Ticket,
+    task: &Task,
+    prd: &str,
+    base: &str,
+) -> String {
+    let criteria = if task.acceptance_criteria.is_empty() {
+        &ticket.acceptance_criteria
+    } else {
+        &task.acceptance_criteria
+    };
+    let criteria = if criteria.is_empty() {
+        "（未单独列出，以需求描述为准。）".to_string()
+    } else {
+        criteria
+            .iter()
+            .map(|c| format!("- {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let spec = match (task.spec_md.trim(), prd.trim()) {
+        ("", "") => task.title.clone(),
+        ("", prd) => prd.to_string(),
+        (spec, "") => spec.to_string(),
+        (spec, prd) => format!("{spec}\n\n### 工单正文（背景）\n{prd}"),
+    };
+    let mut vars = common_vars(project, ticket);
+    vars.push(("task.title", task.title.clone()));
+    vars.push(("task.spec", spec));
+    vars.push(("task.acceptance_criteria", criteria));
+    vars.push(("base", base.to_string()));
+    let mut p = fill(text(ov, "code_review"), &vars);
+    p.push_str(CODE_REVIEW_FORMAT);
+    p
 }
 
 #[cfg(test)]
