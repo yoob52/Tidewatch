@@ -454,6 +454,20 @@ export interface TaskDiff {
   truncated: boolean;
 }
 
+export interface BackupFile {
+  name: string;
+  path: string;
+  bytes: number;
+}
+
+export interface Exported {
+  dir: string;
+  tickets: number;
+  attachments: number;
+  /** 数据库里有记录、但文件已经不在的附件。 */
+  missing: string[];
+}
+
 export interface PrInput {
   title: string;
   body: string;
@@ -551,6 +565,10 @@ export type EngineEvent =
 
 export const api = {
   systemInfo: () => invoke<SystemInfo>('system_info'),
+  backupList: () => invoke<BackupFile[]>('backup_list'),
+  backupNow: () => invoke<BackupFile[]>('backup_now'),
+  /** 导出到 dest 下新建的一个目录。 */
+  exportTickets: (dest: string) => invoke<Exported>('export_tickets', { dest }),
   detectAgents: () => invoke<Detection[]>('detect_agents'),
 
   settingsGet: () => invoke<Settings>('settings_get'),

@@ -1,12 +1,12 @@
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type Detection, type Settings, type SystemInfo, type TemplateInfo } from '../lib/api';
+import { api, type BackupFile, type Detection, type Settings, type SystemInfo, type TemplateInfo } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { AGENTS, Modal, PERMISSIONS, Seg, Switch, useUi } from '../lib/ui';
 
-const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '本机环境'];
+const SECTIONS = ['工作区与并发', '默认执行配置', '自动化', 'Prompt 模板', '通知与外观', '备份与导出', '本机环境'];
 
 /** 编辑一个 Prompt 模板：左边改，右边看用示例数据填出来的效果。 */
 function TemplateEditor({ tpl, onClose, onSaved }: { tpl: TemplateInfo; onClose: () => void; onSaved: (list: TemplateInfo[]) => void }) {
@@ -157,8 +157,11 @@ export function SettingsPage({
   const [info, setInfo] = useState<SystemInfo | null>(null);
   const [workspace, setWorkspace] = useState(settings.workspace_dir ?? '');
 
+  const [backups, setBackups] = useState<BackupFile[]>([]);
+
   useEffect(() => {
     api.systemInfo().then(setInfo, () => undefined);
+    api.backupList().then(setBackups, () => undefined);
   }, []);
   useEffect(() => setWorkspace(settings.workspace_dir ?? ''), [settings.workspace_dir]);
 
@@ -169,6 +172,21 @@ export function SettingsPage({
   const pickWorkspace = async () => {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir === 'string') await save({ workspace_dir: dir });
+  };
+
+  const backupNow = async () => {
+    const list = await ui.attempt(api.backupNow(), '已备份数据库');
+    if (list) setBackups(list);
+  };
+  const exportAll = async () => {
+    const dir = await open({ directory: true, multiple: false, title: '选择导出到哪个目录' });
+    if (typeof dir !== 'string') return;
+    const done = await ui.attempt(api.exportTickets(dir));
+    if (!done) return;
+    ui.toast(
+      `已导出 ${done.tickets} 个工单、${done.attachments} 个附件到 ${done.dir}` +
+        (done.missing.length ? `；${done.missing.length} 个附件的文件已经不在，没有导出` : ''),
+    );
   };
 
   const stepper = (value: number, min: number, max: number, step: number, apply: (n: number) => void) => (
@@ -434,6 +452,40 @@ export function SettingsPage({
         </div>
 
         <h3 id="set-5">{SECTIONS[5]}</h3>
+        <div className="card">
+          <div className="srow">
+            <div>
+              <b>数据库备份</b>
+              <p>每天自动备份一次，保留最近 7 份。密钥存在系统凭据管理器里，不在数据库中，备份不含密钥。</p>
+              {backups.length ? (
+                <p className="mono">
+                  最近一份：{backups[0].name}（{(backups[0].bytes / 1024).toFixed(0)} KB），共 {backups.length} 份
+                </p>
+              ) : (
+                <p>还没有备份。</p>
+              )}
+              {backups[0] && <p className="mono">{backups[0].path.slice(0, -backups[0].name.length)}</p>}
+            </div>
+            <div className="sctl">
+              <button className="btn sm" onClick={() => void backupNow()}>
+                立即备份
+              </button>
+            </div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>导出工单</b>
+              <p>把全部工单导出成 Markdown 归档：每个工单一个文件夹（工单、各版本 PRD、附件），另带一份数据库快照。</p>
+            </div>
+            <div className="sctl">
+              <button className="btn sm" onClick={() => void exportAll()}>
+                导出…
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <h3 id="set-6">{SECTIONS[6]}</h3>
         <div className="card">
           <div className="srow">
             <div>

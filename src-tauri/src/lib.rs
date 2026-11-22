@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tidewatch_core::agent::{adapter, mock_process, AgentKind, Detection};
+use tidewatch_core::backup;
 use tidewatch_core::db::{self, lock};
 use tidewatch_core::engine::{
     CodeReviewOptions, Engine, EngineConfig, EngineEvent, Finalized, PrInput, RejectInput, RunPlan,
@@ -653,6 +654,34 @@ fn code_review_start(
         .map_err(err)
 }
 
+#[tauri::command]
+fn backup_list(state: State) -> Vec<backup::BackupFile> {
+    backup::list(&state.data_dir)
+}
+
+/// 立刻备份一份数据库。
+#[tauri::command]
+async fn backup_now(state: State<'_>) -> CmdResult<Vec<backup::BackupFile>> {
+    let dir = state.data_dir.clone();
+    blocking(state, move |e| {
+        backup::now(&lock(e.db()), &dir)?;
+        Ok(backup::list(&dir))
+    })
+    .await
+}
+
+/// 把全部工单导出成 Markdown 归档（带附件和一份数据库快照），放到用户选的目录下。
+#[tauri::command]
+async fn export_tickets(state: State<'_>, dest: String) -> CmdResult<backup::Exported> {
+    let data_dir = state.data_dir.clone();
+    blocking(state, move |e| {
+        let conn = lock(e.db());
+        let ws = settings::get(&conn)?.workspace(&data_dir);
+        backup::export(&conn, &ws, std::path::Path::new(&dest))
+    })
+    .await
+}
+
 /// 把子任务的分支推到远程。只有用户点了才会调用。
 #[tauri::command]
 async fn task_push(state: State<'_>, id: String) -> CmdResult<tasks::Task> {
@@ -926,6 +955,16 @@ pub fn run() {
             };
             std::fs::create_dir_all(data_dir.join("logs"))?;
             let db = db::shared(db::open(&data_dir.join("tidewatch.db"))?);
+            // 每天备份一次数据库：启动时一次，之后每小时看一眼有没有跨天。失败不影响使用
+            {
+                let (db, dir) = (db.clone(), data_dir.clone());
+                std::thread::spawn(move || loop {
+                    if let Err(e) = backup::daily(&lock(&db), &dir) {
+                        eprintln!("数据库自动备份失败：{e}");
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                });
+            }
             let handle = app.handle().clone();
             let events_db = db.clone();
             let engine = Engine::start(
@@ -994,6 +1033,9 @@ pub fn run() {
             task_accept,
             task_reject,
             code_review_start,
+            backup_list,
+            backup_now,
+            export_tickets,
             task_push,
             task_pr_draft,
             task_pr_create,
