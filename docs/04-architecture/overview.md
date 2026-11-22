@@ -84,4 +84,10 @@ sequenceDiagram
 - 启动：环境检测（git / claude / codex 版本）、恢复未完成 Run 的状态（标记 `orphaned`）、清理残留进程。
 - 托盘常驻：关闭窗口不退出，运行中的任务继续；托盘图标显示运行数。
 - 退出：有运行中任务时确认。
-- 更新：Tauri updater（P1）。
+- 更新：Tauri updater（P1）。检查更新只读 GitHub 上最新发布的版本号；有新版本时用户点「下载并安装」并确认后，才从发布页的 `latest.json` 找到安装包下载，用打包时内置的公钥校验签名，通过后安装并重启（Windows 上交给 NSIS 安装程序）。校验不过不安装；有运行在进行时不安装；没有内置公钥的构建只给出发布页地址。
+
+### 发布新版本
+
+1. 一次性准备：`npx tauri signer generate -w tidewatch.key` 生成签名密钥；私钥内容存成仓库 Secret `TAURI_SIGNING_PRIVATE_KEY`（设了密码再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`），公钥（`tidewatch.key.pub` 的内容）写进 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`。私钥丢了，已经装出去的版本就再也收不到应用内更新。
+2. 把 `Cargo.toml`、`package.json`、`src-tauri/tauri.conf.json` 三处版本号改成同一个新版本，合并进 main。
+3. 推送标签 `v<版本号>`。`.github/workflows/release.yml` 会构建 Windows 安装包、签名，并把安装包、`.sig` 和 `latest.json` 发布到 GitHub Releases。
