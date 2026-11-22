@@ -2119,3 +2119,88 @@ fn custom_workflow_stages_gate_finalize_and_done() {
         .is_empty());
     f.engine.finalize(&feature, false).unwrap();
 }
+
+#[test]
+fn compare_runs_the_same_task_with_several_agents_and_adopts_one() {
+    let f = fixture(3, None);
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_start_unblocked = false;
+        settings::save(&conn, &st).unwrap();
+    }
+    let (ticket, first) = f.bug("对比", "x [mock:steps=1] [mock:delay=50]", "medium");
+    let second = tasks::create(
+        &mut lock(f.db()),
+        tasks::TaskInput {
+            ticket_id: ticket.clone(),
+            kind: "bug".into(),
+            project_id: f.project_id.clone(),
+            title: "后续".into(),
+            depends_on: vec![first.clone()],
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .id;
+    let pick = |agent: &str| tasks::CompareOption {
+        agent: agent.into(),
+        ..Default::default()
+    };
+
+    // 选错的 Agent、不选、选太多：什么都不建
+    assert!(f.engine.compare_task(&first, vec![pick("nope")]).is_err());
+    assert!(f.engine.compare_task(&first, vec![]).is_err());
+    assert!(f
+        .engine
+        .compare_task(&first, vec![pick("mock"); 4])
+        .is_err());
+    assert!(f.engine.compare_task(&second, vec![pick("mock")]).is_err());
+    assert_eq!(
+        tasks::list_for_ticket(&lock(f.db()), &ticket)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(f.engine.adopt_candidate(&first).is_err());
+
+    let group = f.engine.compare_task(&first, vec![pick("mock")]).unwrap();
+    assert_eq!(group.len(), 2);
+    assert_eq!(group[0].id, first);
+    let other = group[1].id.clone();
+    assert_eq!(group[1].compare_of.as_deref(), Some(first.as_str()));
+    assert_eq!(group[1].depends_on, group[0].depends_on);
+    assert!(f.engine.compare_task(&first, vec![pick("mock")]).is_err());
+    assert!(f.engine.compare_task(&other, vec![pick("mock")]).is_err());
+
+    f.wait_idle(&ticket);
+    let (a, b) = (f.task(&first), f.task(&other));
+    assert_eq!((a.status.as_str(), b.status.as_str()), ("review", "review"));
+    assert_ne!(a.branch, b.branch);
+    assert_ne!(a.worktree_path, b.worktree_path);
+    assert!(Path::new(b.worktree_path.as_ref().unwrap()).exists());
+
+    // 没选定之前不能验收通过
+    let e = f.engine.accept_task(&other).unwrap_err().to_string();
+    assert!(e.contains("对比"), "{e}");
+
+    // 采用候选：原任务取消，后续子任务改为依赖候选
+    f.engine.adopt_candidate(&other).unwrap();
+    let a = f.task(&first);
+    assert_eq!(a.status, "cancelled");
+    assert!(a.worktree_path.is_none());
+    assert_eq!(f.task(&second).depends_on, vec![other.clone()]);
+    assert_eq!(f.task(&second).status, "pending");
+    assert!(f.engine.adopt_candidate(&other).is_err());
+
+    f.engine.accept_task(&other).unwrap();
+    f.engine.merge_task(&other).unwrap();
+    assert_eq!(f.task(&other).status, "merged");
+    let kinds: Vec<String> = tickets::timeline(&lock(f.db()), &ticket)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    assert!(kinds.contains(&"compare_started".to_string()));
+    assert!(kinds.contains(&"compare_adopted".to_string()));
+}

@@ -33,6 +33,9 @@ pub struct Task {
     /// `depends_on` 里只等接口文档的那些：对方产出接口文档就解锁，不用等它做完。
     #[serde(default)]
     pub api_doc_deps: Vec<String>,
+    /// 多 Agent 同题对比的候选：被对比的那个子任务的 id。
+    #[serde(default)]
+    pub compare_of: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -67,7 +70,7 @@ pub struct TaskInput {
     pub api_doc_deps: Vec<String>,
 }
 
-const COLS: &str = "id, ticket_id, kind, project_id, title, spec_md, acceptance_criteria_json, status, agent, provider_id, model, permission_profile, branch, worktree_path, base_commit, merged_commit, created_at, updated_at, pushed_commit, pr_url";
+const COLS: &str = "id, ticket_id, kind, project_id, title, spec_md, acceptance_criteria_json, status, agent, provider_id, model, permission_profile, branch, worktree_path, base_commit, merged_commit, created_at, updated_at, pushed_commit, pr_url, compare_of";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -93,6 +96,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         updated_at: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
         pushed_commit: r.get(18)?,
         pr_url: r.get(19)?,
+        compare_of: r.get(20)?,
     })
 }
 
@@ -187,6 +191,106 @@ pub fn create(conn: &mut Connection, input: TaskInput) -> Result<Task> {
     tx.commit()?;
     refresh_blocked(conn, &ticket.id)?;
     get(conn, &id)
+}
+
+/// 多 Agent 同题对比的一个候选：用哪个 Agent / Provider / 模型。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompareOption {
+    pub agent: String,
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+}
+
+/// 给 `original` 建对比候选：说明、验收标准、权限、依赖都照抄，只换 Agent / Provider / 模型。
+pub fn add_candidates(
+    conn: &mut Connection,
+    original: &Task,
+    picks: &[CompareOption],
+) -> Result<Vec<Task>> {
+    let tx = conn.transaction()?;
+    let now = crate::util::now();
+    let mut ids = Vec::new();
+    for pick in picks {
+        let kind = crate::agent::AgentKind::parse(pick.agent.trim())?;
+        if let Some(p) = clean(pick.provider_id.clone()) {
+            super::providers::get(&tx, &p)?;
+        }
+        let id = crate::util::new_id();
+        tx.execute(
+            "INSERT INTO task (id, ticket_id, kind, project_id, title, spec_md, acceptance_criteria_json, status,
+             agent, provider_id, model, permission_profile, compare_of, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+            rusqlite::params![
+                id,
+                original.ticket_id,
+                original.kind,
+                original.project_id,
+                format!("{}（对比 · {}）", original.title, kind.display_name()),
+                original.spec_md,
+                to_json(&original.acceptance_criteria),
+                kind.as_str(),
+                clean(pick.provider_id.clone()),
+                clean(pick.model.clone()),
+                original.permission_profile,
+                original.id,
+                now
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO task_dependency (task_id, depends_on_task_id, artifact_kind)
+             SELECT ?1, depends_on_task_id, artifact_kind FROM task_dependency WHERE task_id = ?2",
+            [&id, &original.id],
+        )?;
+        ids.push(id);
+    }
+    tx.commit()?;
+    ids.iter().map(|id| get(conn, id)).collect()
+}
+
+/// 撤掉还没跑过的对比候选（候选的 Agent 配置起不来时用）。
+pub fn drop_candidates(conn: &Connection, ids: &[String]) -> Result<()> {
+    for id in ids {
+        conn.execute("DELETE FROM task_dependency WHERE task_id = ?1", [id])?;
+        conn.execute(
+            "DELETE FROM task WHERE id = ?1 AND compare_of IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM run WHERE task_id = ?1)",
+            [id],
+        )?;
+    }
+    Ok(())
+}
+
+/// 和 `task` 同题对比、还没取消的子任务（含它自己），原任务在前。不在对比里时只有它自己。
+pub fn compare_group(conn: &Connection, task: &Task) -> Result<Vec<Task>> {
+    let root = task.compare_of.as_deref().unwrap_or(&task.id);
+    let mut st = conn.prepare(&format!(
+        "SELECT {COLS} FROM task WHERE (id = ?1 OR compare_of = ?1) AND status != 'cancelled'
+         ORDER BY compare_of IS NOT NULL, created_at, rowid"
+    ))?;
+    let rows = st
+        .query_map([root], row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter().map(|t| with_deps(conn, t)).collect()
+}
+
+/// 还有别的候选没淘汰：这时不能验收通过、不能合并。
+pub fn comparing(conn: &Connection, task: &Task) -> Result<bool> {
+    Ok(compare_group(conn, task)?.len() > 1)
+}
+
+/// 依赖 `from` 的子任务改成依赖 `to`（选定了对比结果之后）。
+pub fn move_dependents(conn: &Connection, from: &str, to: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE OR IGNORE task_dependency SET depends_on_task_id = ?2
+         WHERE depends_on_task_id = ?1 AND task_id != ?2",
+        [from, to],
+    )?;
+    conn.execute(
+        "DELETE FROM task_dependency WHERE depends_on_task_id = ?1",
+        [from],
+    )?;
+    Ok(())
 }
 
 /// 改执行配置与说明；运行中不能改。

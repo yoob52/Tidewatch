@@ -336,6 +336,11 @@ impl Engine {
                 workflow::task_status_label(&task.status)
             )));
         }
+        if tasks::comparing(&conn, &task)? {
+            return Err(Error::invalid(
+                "这个子任务还在和别的 Agent 对比：先「采用这个结果」，再验收通过。",
+            ));
+        }
         tasks::set_status(&conn, task_id, "accepted")?;
         add_timeline(
             &conn,
@@ -451,6 +456,11 @@ impl Engine {
         if crate::store::code_reviews::running_for_task(&lock(&self.inner.db), task_id)? {
             return Err(Error::invalid(
                 "交叉审查还在这个子任务的 worktree 里进行，等它结束或停掉后再合并。",
+            ));
+        }
+        if tasks::comparing(&lock(&self.inner.db), &task)? {
+            return Err(Error::invalid(
+                "这个子任务还在和别的 Agent 对比：先「采用这个结果」，再合并。",
             ));
         }
         let branch = task
@@ -1049,6 +1059,8 @@ mod ticket_flow;
 pub use ticket_flow::{CodeReviewOptions, Finalized};
 #[path = "engine_api.rs"]
 mod api_flow;
+#[path = "engine_compare.rs"]
+mod compare_flow;
 pub use api_flow::{ApiEndpoint, DelegateInput, RUN_TOKEN_ENV};
 
 struct Finished {

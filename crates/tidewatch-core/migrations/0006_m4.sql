@@ -90,3 +90,6 @@ CREATE TABLE ticket_stage (
   note TEXT,
   PRIMARY KEY (ticket_id, stage_id)
 );
+
+-- 多 Agent 同题对比：候选子任务指向被对比的那个子任务。选定一个之后其余的取消。
+ALTER TABLE task ADD COLUMN compare_of TEXT;
