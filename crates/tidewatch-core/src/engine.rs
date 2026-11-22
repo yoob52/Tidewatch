@@ -1434,8 +1434,37 @@ impl Inner {
         let logs = self.cfg.data_dir.join("logs");
         std::fs::create_dir_all(&logs)?;
         let raw_log = logs.join(format!("{}.jsonl", run.id));
+        // PRD 里的图片：复制到 worktree 之外，Prompt 里换成路径并加图片清单
+        let images = {
+            let conn = lock(&self.db);
+            let workspace = st.workspace(&self.cfg.data_dir);
+            crate::store::attachments::prepare_prompt(
+                &conn,
+                &workspace,
+                &run.prompt,
+                &crate::store::attachments::PrepareOptions {
+                    dir: &workspace.join("tmp").join(&run.id).join("images"),
+                    text_only: provider.as_ref().is_some_and(|p| p.text_only),
+                    skip_superseded: run.task_id.is_some() && !st.send_superseded_images,
+                    review: run.purpose == "review",
+                },
+            )?
+        };
+        if images.prompt != run.prompt {
+            // 记下 Agent 实际看到的 Prompt 和图片，便于复盘
+            runs::set_fields(&lock(&self.db), &run.id, &[("prompt", &images.prompt)])?;
+            self.log(
+                &run.id,
+                "images",
+                json!({
+                    "files": images.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
+                    "missing": images.missing,
+                }),
+            );
+        }
         let mut spec = RunSpec {
-            prompt: run.prompt.clone(),
+            prompt: images.prompt,
+            images: images.files,
             cwd: worktree.to_path_buf(),
             model: run.model.clone(),
             permission: PermissionMode::parse(
@@ -1737,11 +1766,8 @@ impl Inner {
         }
         let name = workspace_name(&ticket.key, task, siblings);
         let branch = task.branch.clone().unwrap_or_else(|| format!("tw/{name}"));
-        let workspace = match &st.workspace_dir {
-            Some(d) => PathBuf::from(d),
-            None => self.cfg.data_dir.join("workspace"),
-        };
-        let path = workspace
+        let path = st
+            .workspace(&self.cfg.data_dir)
             .join("worktrees")
             .join(slug(&project.name, &project.id))
             .join(&name);

@@ -34,6 +34,22 @@ pub struct Settings {
     pub stuck_action: String,
     /// 发现危险命令时停止这一轮（只能在 Agent 报出命令后停，拦不住已经开始执行的那一条）。
     pub stop_on_danger: bool,
+    /// 开发阶段也把已被取代的参考图发给 Agent（默认不发，减少误导）。
+    pub send_superseded_images: bool,
+}
+
+impl Settings {
+    /// 工作区根目录：worktree、附件、临时文件都在这下面。
+    pub fn workspace(&self, data_dir: &std::path::Path) -> std::path::PathBuf {
+        match self
+            .workspace_dir
+            .as_deref()
+            .filter(|d| !d.trim().is_empty())
+        {
+            Some(d) => std::path::PathBuf::from(d),
+            None => data_dir.join("workspace"),
+        }
+    }
 }
 
 impl Default for Settings {
@@ -56,6 +72,7 @@ impl Default for Settings {
             stuck_minutes: 10,
             stuck_action: "notify".into(),
             stop_on_danger: false,
+            send_superseded_images: false,
         }
     }
 }

@@ -5,6 +5,7 @@ pub mod engine;
 pub mod error;
 pub mod git;
 pub mod guard;
+pub mod import;
 pub mod process;
 pub mod prompt;
 pub mod provider;

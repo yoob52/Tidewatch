@@ -32,6 +32,17 @@ impl AgentAdapter for ClaudeAdapter {
         if let Some(id) = &spec.resume_session {
             args.extend(["--resume".into(), id.clone()]);
         }
+        // 图片按 Prompt 里的路径读取；它们在 worktree 之外，要把所在目录放行
+        let mut dirs: Vec<String> = spec
+            .images
+            .iter()
+            .filter_map(|f| f.parent())
+            .map(|d| d.display().to_string())
+            .collect();
+        dirs.dedup();
+        for d in dirs {
+            args.extend(["--add-dir".into(), d]);
+        }
         args.extend(spec.extra_args.iter().cloned());
         Ok(CommandSpec {
             program: self.resolve_binary(spec)?,

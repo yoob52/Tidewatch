@@ -229,6 +229,13 @@ fn insert_version_by(
         [ticket_id],
         |r| r.get(0),
     )?;
+    let previous: Option<String> = conn
+        .query_row(
+            "SELECT content_md FROM prd_version WHERE ticket_id = ?1 ORDER BY version DESC LIMIT 1",
+            [ticket_id],
+            |r| r.get(0),
+        )
+        .ok();
     let v = PrdVersion {
         id: crate::util::new_id(),
         ticket_id: ticket_id.into(),
@@ -248,6 +255,7 @@ fn insert_version_by(
         "UPDATE ticket SET current_version_id = ?2, updated_at = ?3 WHERE id = ?1",
         rusqlite::params![ticket_id, v.id, v.created_at],
     )?;
+    attachments::index_version(conn, ticket_id, &v.id, content, author, previous.as_deref())?;
     Ok(v)
 }
 

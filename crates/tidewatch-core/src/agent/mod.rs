@@ -88,6 +88,8 @@ pub struct RunSpec {
     pub env_passthrough: Vec<String>,
     /// 追加到命令行末尾之前的参数（Provider 的 `-c` 覆盖、实例启动参数）。
     pub extra_args: Vec<String>,
+    /// 随 Prompt 发给 Agent 的图片（绝对路径，在 worktree 之外）。
+    pub images: Vec<PathBuf>,
 }
 
 /// 可直接交给 `std::process::Command` 的命令描述。
