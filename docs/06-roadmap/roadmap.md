@@ -58,7 +58,7 @@
 - [x] 更多 Agent：OpenCode、Aider（真实跑通，OpenAI 兼容端点）
 - [ ] 更多 Agent：Gemini CLI 的成功路径未用真实账号验证
 - [x] 多 Agent 同题对比（只用演示 Agent 测过）
-- [x] 本地 HTTP / MCP 接口，含 Agent 委派工具（真实 Codex、OpenCode 经 MCP 跑通；Claude Code 因中转站额度用完没有跑到工具调用）
+- [x] 本地 HTTP / MCP 接口，含 Agent 委派工具（真实 Codex、OpenCode、Claude Code 经 MCP 跑通）
 - [x] 自定义工作流：在内置状态上加自定义环节。功能清单里的「自定义状态与转换」没有做，见 [工作流 §7](../02-workflow/workflow.md)
 - [x] 轻量协作（成员与角色、令牌、指派、时间线记名、远程访问开关、只读看板页面）。远程访问没有跨机器验证
 

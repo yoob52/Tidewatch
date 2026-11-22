@@ -80,5 +80,5 @@
 ## 6. 验证情况
 
 - 令牌与角色、REST、MCP 工具、Agent 经 MCP 提问和委派：端到端测试（演示 Agent），Linux 与 Windows CI 都跑。
-- 真实 Agent 经 MCP 调观澜的工具：Codex 和 OpenCode 各跑通一次（`gpt-6.1-sol`）。Claude Code 能加载工具列表，但中转站额度用完（HTTP 429），没有跑到工具调用。Gemini CLI、Aider 没有用真实账号验证。
+- 真实 Agent 经 MCP 调观澜的工具：Codex 和 OpenCode 各跑通一次（`gpt-6.1-sol`），Claude Code 跑通一次（`claude-sonnet-4-6`）。Gemini CLI、Aider 没有用真实账号验证。
 - 远程访问（监听所有网卡）没有跨机器、跨网络验证。
