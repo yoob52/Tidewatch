@@ -88,6 +88,20 @@ sequenceDiagram
 
 ### 发布新版本
 
-1. 一次性准备：`npx tauri signer generate -w tidewatch.key` 生成签名密钥；私钥内容存成仓库 Secret `TAURI_SIGNING_PRIVATE_KEY`（设了密码再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`），公钥（`tidewatch.key.pub` 的内容）写进 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`。私钥丢了，已经装出去的版本就再也收不到应用内更新。
-2. 把 `Cargo.toml`、`package.json`、`src-tauri/tauri.conf.json` 三处版本号改成同一个新版本，合并进 main。
-3. 推送标签 `v<版本号>`。`.github/workflows/release.yml` 会构建 Windows 安装包、签名，并把安装包、`.sig` 和 `latest.json` 发布到 GitHub Releases。
+发版由 `.github/workflows/release.yml` 完成，推送标签即触发：
+
+1. 把 `Cargo.toml`、`package.json`、`src-tauri/tauri.conf.json` 三处版本号改成同一个新版本，合并进 main。
+2. 在 main 上打标签并推送：`git tag v<版本号> && git push origin v<版本号>`。标签和版本号不一致时工作流直接报错，不发布。
+3. 工作流在 Windows 上构建 NSIS 安装包，建一个同名的 GitHub Release（发布说明自动生成），把安装包传上去。几分钟后在仓库的 Releases 页能看到。
+
+想先试一次构建而不发布：在 Actions 页选 Release 工作流点 Run workflow，安装包留在那次运行的 Artifacts 里。
+
+发错了：在 Releases 页删掉这个 Release 和标签，修好后重新打同一个标签。
+
+**签名与应用内更新**（一次性准备，不做也能发版，只是用户要从发布页手动下载安装）：
+
+1. `npx tauri signer generate -w tidewatch.key` 生成签名密钥。
+2. 私钥（`tidewatch.key` 的内容）存成仓库 Secret `TAURI_SIGNING_PRIVATE_KEY`；设了密码再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。私钥丢了，已经装出去的版本就再也收不到应用内更新。
+3. 公钥（`tidewatch.key.pub` 的内容）写进 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`，合并进 main。
+
+配了 Secret 之后，工作流会给安装包签名，并多发布 `.sig` 和应用内更新读的 `latest.json`。应用内安装要两头都齐：用户手里的版本内置了公钥，新版本带签名。
