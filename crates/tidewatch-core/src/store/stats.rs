@@ -99,7 +99,9 @@ pub fn compute_at(conn: &Connection, today: chrono::NaiveDate) -> Result<Stats> 
         .collect();
     (s.rework_runs, s.auto_fix_runs, s.auto_fix_succeeded) = conn.query_row(
         "SELECT COALESCE(SUM(purpose = 'rework'), 0), COALESCE(SUM(purpose = 'test_fix'), 0),
-                COALESCE(SUM(purpose = 'test_fix' AND status = 'succeeded'), 0)
+                COALESCE(SUM(purpose = 'test_fix' AND status = 'succeeded' AND NOT EXISTS (
+                  SELECT 1 FROM test_report t
+                  WHERE t.run_id = run.id AND (t.exit_code IS NULL OR t.exit_code != 0))), 0)
          FROM run WHERE status != 'queued'",
         [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -210,7 +212,11 @@ mod tests {
                ('e', 'TW-5', 'e', 'bug', 'done', '2025-01-01T00:00:00Z', '2025-06-01T00:00:00Z');
              INSERT INTO run (id, agent, status, purpose) VALUES
                ('r1', 'codex', 'succeeded', 'test_fix'), ('r2', 'codex', 'failed', 'test_fix'),
-               ('r3', 'codex', 'succeeded', 'rework'), ('r4', 'codex', 'queued', 'rework');
+               ('r3', 'codex', 'succeeded', 'rework'), ('r4', 'codex', 'queued', 'rework'),
+               ('r5', 'codex', 'succeeded', 'test_fix'), ('r6', 'codex', 'succeeded', 'test_fix');
+             INSERT INTO test_report (id, run_id, command, exit_code) VALUES
+               ('p1', 'r1', 'cargo test', 0), ('p2', 'r5', 'cargo test', 0),
+               ('p3', 'r5', 'cargo clippy', 1), ('p4', 'r6', 'cargo test', NULL);
              INSERT INTO code_review (id, task_id, ticket_id, run_id, agent, status, findings_json, created_at, updated_at) VALUES
                ('c1', 't', 'a', 'r1', 'codex', 'done', '[{},{}]', '', ''),
                ('c2', 't', 'a', 'r2', 'codex', 'failed', '[]', '', '');",
@@ -230,7 +236,8 @@ mod tests {
         );
         assert_eq!(
             (s.rework_runs, s.auto_fix_runs, s.auto_fix_succeeded),
-            (1, 2, 1)
+            (1, 4, 1),
+            "Agent 正常结束但检查还没过（r5）或检查没跑完（r6）的不算修好"
         );
         assert_eq!((s.code_reviews, s.code_review_findings), (1, 2));
     }

@@ -48,10 +48,12 @@ pub fn snapshot(conn: &Connection, dest: &Path) -> Result<()> {
 
 /// 今天还没备份过就备份一次，然后只留最近 [`KEEP`] 份。已经备份过返回 `None`。
 pub fn daily(conn: &Connection, data_dir: &Path) -> Result<Option<PathBuf>> {
-    let dest = backup_dir(data_dir).join(format!("{PREFIX}{}.db", Local::now().format("%Y-%m-%d")));
-    if dest.is_file() {
+    // 今天手动备份过也算：每日那份的文件名没有时间，排序时当作当天最早的一份
+    let today = format!("{PREFIX}{}", Local::now().format("%Y-%m-%d"));
+    if list(data_dir).iter().any(|b| b.name.starts_with(&today)) {
         return Ok(None);
     }
+    let dest = backup_dir(data_dir).join(format!("{today}.db"));
     snapshot(conn, &dest)?;
     prune(data_dir)?;
     Ok(Some(dest))
@@ -83,9 +85,19 @@ pub fn list(data_dir: &Path) -> Vec<BackupFile> {
             })
         })
         .collect();
-    // 文件名里是日期（和时间），按名字倒序就是新的在前
-    out.sort_by(|a, b| b.name.cmp(&a.name));
+    out.sort_by_key(|b| std::cmp::Reverse(order_key(&b.name)));
     out
+}
+
+/// 排序用：文件名里的日期和时间。每日备份（`tidewatch-2026-01-14.db`）没有时间，算当天 0 点，
+/// 否则直接比文件名的话 `.` 排在 `-` 后面，当天稍后手动备份的那份反而会被当成更旧的删掉。
+fn order_key(name: &str) -> String {
+    let stem = name.trim_end_matches(".db");
+    if stem.len() == PREFIX.len() + "2026-01-14".len() {
+        format!("{stem}-000000")
+    } else {
+        stem.to_string()
+    }
 }
 
 fn prune(data_dir: &Path) -> Result<()> {
@@ -326,6 +338,24 @@ mod tests {
         );
         assert_eq!(names.last().unwrap(), "tidewatch-2020-01-04.db");
         assert!(bdir.join("notes.txt").is_file());
+
+        // 当天稍后手动备份的那份比每日那份新：排在最前，清理时留下的也是它
+        let manual = now(&conn, dir.path()).unwrap();
+        let names: Vec<String> = list(dir.path()).into_iter().map(|b| b.name).collect();
+        assert_eq!(names.len(), KEEP);
+        assert_eq!(
+            names[0],
+            manual.file_name().unwrap().to_string_lossy().to_string()
+        );
+        assert_eq!(
+            names[1],
+            made.file_name().unwrap().to_string_lossy().to_string()
+        );
+        assert_eq!(names.last().unwrap(), "tidewatch-2020-01-05.db");
+        // 今天只手动备份过，也不再补一份每日备份
+        std::fs::remove_file(&made).unwrap();
+        assert!(daily(&conn, dir.path()).unwrap().is_none());
+        let made = manual;
 
         // 备份是一份能打开的完整数据库
         let copy = Connection::open(&made).unwrap();
