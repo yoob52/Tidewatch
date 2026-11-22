@@ -99,7 +99,7 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
       return;
     }
     if (to === 'cancelled' && !(await ui.confirm('取消工单', `${t.key} 会从看板移走，之后可以恢复到取消前的状态。`, '取消工单', true))) return;
-    let job: Promise<unknown> = api.ticketTransition(t.id, to);
+    let job: Promise<unknown>;
     if (to === 'human_review' && (t.status === 'finalized' || t.status === 'developing')) {
       // 发起变更：要写原因；有子任务在跑时问要不要停
       const reason = await ui.prompt(
@@ -113,6 +113,8 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
       const busy = d.runs.some((r) => r.task_id && (runActive(r.status) || r.status === 'queued'));
       const stop = busy && (await ui.confirm('有子任务正在运行', '要现在停掉它们吗？不停的话它们会按旧需求跑完，之后再按影响分析返工。', '停掉正在运行的'));
       job = api.changeRequest(t.id, reason, stop);
+    } else {
+      job = api.ticketTransition(t.id, to);
     }
     if (await ui.attempt(job, `${t.key} → ${STAGE_NAME[to]}（${label}）`)) {
       await Promise.all([reload(), data.reload()]);

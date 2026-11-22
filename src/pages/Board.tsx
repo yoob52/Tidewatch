@@ -51,11 +51,13 @@ export function BoardPage() {
       return;
     }
     if (to === 'finalized' && !(await ui.confirm('定稿', `定稿后 ${t.key} 的 PRD 将锁定，再修改需要「发起变更」。要让 AI 拆分子任务，请在工单的「审核」页定稿。`, '定稿'))) return;
-    let job: Promise<unknown> = api.ticketTransition(t.id, to);
+    let job: Promise<unknown>;
     if (to === 'human_review' && (t.status === 'finalized' || t.status === 'developing')) {
       const reason = await ui.prompt('发起变更', `${t.key} 回到人工审核，PRD 重新可编辑；正在运行的子任务会继续跑完。`, '为什么要改需求', '发起变更', true);
       if (!reason) return;
       job = api.changeRequest(t.id, reason, false);
+    } else {
+      job = api.ticketTransition(t.id, to);
     }
     const done = await ui.attempt(job);
     if (done) {
