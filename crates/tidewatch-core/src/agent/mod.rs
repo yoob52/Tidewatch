@@ -102,6 +102,10 @@ pub struct RunSpec {
     pub permission: PermissionMode,
     /// 续接已有会话。
     pub resume_session: Option<String>,
+    /// 这次调用只要一段文字回答：不给 Agent 读文件、跑命令、联网的工具。
+    /// 只读模式拦不住读工作目录之外的文件，分析不可信的正文时要用这个。
+    /// Gemini CLI 和 Aider 没有对应的开关，仍然只是只读。
+    pub no_tools: bool,
     /// 追加到白名单的工具 / 命令（Claude `--allowedTools`）。
     pub allowed_tools: Vec<String>,
     /// 指定可执行文件；为空则从 PATH 查找。

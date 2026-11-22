@@ -560,6 +560,54 @@ fn display_masks_only_secrets() {
     assert!(!shown.contains("sk-secret"));
 }
 
+/// 只要文字回答的调用（智能创建的 AI 分析）：不给读文件、跑命令的工具。
+#[test]
+fn no_tools_takes_away_file_and_command_tools() {
+    let spec = |no_tools| RunSpec {
+        prompt: "p".into(),
+        cwd: "/w".into(),
+        permission: PermissionMode::ReadOnly,
+        binary: Some("/bin/x".into()),
+        no_tools,
+        ..Default::default()
+    };
+    let pair = |args: &[String], a: &str, b: &str| args.windows(2).any(|w| w[0] == a && w[1] == b);
+
+    let claude = adapter(AgentKind::ClaudeCode);
+    let c = claude.build_command(&spec(true)).unwrap();
+    assert!(pair(&c.args, "--tools", ""));
+    assert!(c.args.contains(&"--strict-mcp-config".to_string()));
+    let c = claude.build_command(&spec(false)).unwrap();
+    assert!(!c.args.contains(&"--tools".to_string()));
+
+    let codex = adapter(AgentKind::Codex);
+    let c = codex.build_command(&spec(true)).unwrap();
+    assert!(pair(&c.args, "--disable", "shell_tool"));
+    assert!(pair(&c.args, "--disable", "unified_exec"));
+    assert_eq!(c.args.last().unwrap(), "-");
+    let c = codex.build_command(&spec(false)).unwrap();
+    assert!(!c.args.contains(&"--disable".to_string()));
+
+    let opencode = adapter(AgentKind::OpenCode);
+    let config = |c: &tidewatch_core::agent::CommandSpec| -> serde_json::Value {
+        let v = &c
+            .env
+            .iter()
+            .find(|(k, _)| k == "OPENCODE_CONFIG_CONTENT")
+            .unwrap()
+            .1;
+        serde_json::from_str(v).unwrap()
+    };
+    assert_eq!(
+        config(&opencode.build_command(&spec(true)).unwrap())["permission"],
+        "deny"
+    );
+    assert_eq!(
+        config(&opencode.build_command(&spec(false)).unwrap())["permission"]["bash"],
+        "deny"
+    );
+}
+
 /// 观澜的 MCP 服务：令牌只以环境变量名出现，各家都预先放行它的工具。
 #[test]
 fn mcp_server_is_injected_without_the_token() {

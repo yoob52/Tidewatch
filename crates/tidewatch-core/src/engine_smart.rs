@@ -121,6 +121,8 @@ impl Engine {
         let mut spec = RunSpec {
             prompt: crate::prompt::smart_prompt(&body, &all),
             permission: PermissionMode::ReadOnly,
+            // 正文可能是别人给的：里面的话不能让 Agent 去读这台电脑上的文件
+            no_tools: true,
             binary: if kind == AgentKind::Mock {
                 self.inner.cfg.mock_binary.clone()
             } else {
