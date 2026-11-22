@@ -20,6 +20,7 @@ use tidewatch_core::store::questions::{self, Question};
 use tidewatch_core::store::{
     attachments, code_reviews, projects, providers, reviews, runs, settings, stats, tasks, tickets,
 };
+use tidewatch_core::sync;
 use tidewatch_core::update;
 
 /// 推给界面的事件名。
@@ -244,6 +245,85 @@ fn member_delete(state: State, id: String) -> CmdResult<()> {
     members::delete(&lock(state.engine.db()), &id).map_err(err)
 }
 
+// ---- 外部同步 ----
+
+#[tauri::command]
+fn sync_source_list(state: State) -> CmdResult<Vec<sync::SyncSource>> {
+    sync::list(&lock(state.engine.db())).map_err(err)
+}
+
+/// `id` 为空是新建。`secret`：`None` 不动，空串清除。
+#[tauri::command]
+fn sync_source_save(
+    state: State,
+    id: Option<String>,
+    input: sync::SourceInput,
+    secret: Option<String>,
+) -> CmdResult<sync::SyncSource> {
+    let conn = lock(state.engine.db());
+    let saved = match id {
+        Some(id) => sync::update(&conn, &id, input),
+        None => sync::create(&conn, input),
+    }
+    .map_err(err)?;
+    match secret {
+        Some(s) => {
+            sync::store_secret(&conn, state.engine.secrets(), &saved.id, Some(&s)).map_err(err)
+        }
+        None => Ok(saved),
+    }
+}
+
+#[tauri::command]
+fn sync_source_delete(state: State, id: String) -> CmdResult<()> {
+    sync::delete(&lock(state.engine.db()), state.engine.secrets(), &id).map_err(err)
+}
+
+/// 联网，可能要几秒到几十秒：放到后台线程，不卡界面。
+#[tauri::command(async)]
+fn sync_run(state: State, id: String) -> CmdResult<sync::SyncReport> {
+    let ws = workspace(&state, &lock(state.engine.db()));
+    sync::run(state.engine.db(), state.engine.secrets(), &ws, &id).map_err(err)
+}
+
+#[derive(Serialize)]
+struct FeishuImported {
+    ticket: tickets::Ticket,
+    warnings: Vec<String>,
+}
+
+#[tauri::command(async)]
+fn sync_feishu_import(state: State, source_id: String, url: String) -> CmdResult<FeishuImported> {
+    let ws = workspace(&state, &lock(state.engine.db()));
+    let (ticket, warnings) = sync::import_feishu(
+        state.engine.db(),
+        state.engine.secrets(),
+        &ws,
+        &source_id,
+        &url,
+    )
+    .map_err(err)?;
+    Ok(FeishuImported { ticket, warnings })
+}
+
+/// 把外部的新版本导入为新的 PRD 版本；正文已锁定的工单先发起变更。
+#[tauri::command]
+fn sync_apply(state: State, ticket_id: String) -> CmdResult<tickets::Ticket> {
+    let ticket = tickets::get(&lock(state.engine.db()), &ticket_id).map_err(err)?;
+    if sync::needs_change_request(&ticket).map_err(err)? {
+        state
+            .engine
+            .request_change(&ticket.id, "外部来源的内容有更新", false)
+            .map_err(err)?;
+    }
+    sync::apply_pending(&mut lock(state.engine.db()), &ticket.id).map_err(err)
+}
+
+#[tauri::command]
+fn sync_dismiss(state: State, ticket_id: String) -> CmdResult<()> {
+    sync::dismiss_pending(&lock(state.engine.db()), &ticket_id).map_err(err)
+}
+
 #[tauri::command]
 fn ticket_assign(
     state: State,
@@ -432,6 +512,8 @@ struct TicketDetail {
     code_reviews: Vec<code_reviews::CodeReview>,
     /// Agent 提的问题，旧的在前。
     questions: Vec<Question>,
+    /// 外部来源（GitHub Issue / 飞书文档），以及有没有还没导入的新版本。
+    source: Option<sync::TicketSource>,
     /// 负责人的名字。
     assignee: Option<String>,
 }
@@ -452,6 +534,7 @@ fn ticket_get(state: State, id: String) -> CmdResult<TicketDetail> {
         artifacts: tasks::artifacts_for_ticket(&conn, &ticket.id).map_err(err)?,
         code_reviews: code_reviews::list_for_ticket(&conn, &ticket.id).map_err(err)?,
         questions: questions::list_for_ticket(&conn, &ticket.id).map_err(err)?,
+        source: sync::ticket_source(&conn, &ticket.id).map_err(err)?,
         assignee: ticket
             .assignee_id
             .as_deref()
@@ -1218,6 +1301,13 @@ pub fn run() {
             member_update,
             member_reset_token,
             member_delete,
+            sync_source_list,
+            sync_source_save,
+            sync_source_delete,
+            sync_run,
+            sync_feishu_import,
+            sync_apply,
+            sync_dismiss,
             ticket_assign,
             question_list,
             question_answer,
