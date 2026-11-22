@@ -339,6 +339,17 @@ pub fn update(conn: &mut Connection, id: &str, input: TicketInput) -> Result<Tic
     get(conn, id)
 }
 
+pub fn type_label(kind: &str) -> &str {
+    match kind {
+        "feature_backend" => "后端需求",
+        "feature_frontend" => "前端需求",
+        "feature_mixed" => "前后端混合",
+        "bug" => "Bug",
+        "chore" => "杂项",
+        other => other,
+    }
+}
+
 /// 只改标题（外部来源改了标题时用）。
 pub fn rename(conn: &Connection, id: &str, title: &str) -> Result<()> {
     let title = required(title, "标题")?;
@@ -456,6 +467,9 @@ pub fn transition(conn: &mut Connection, id: &str, to: &str) -> Result<Ticket> {
     if to == "finalized" {
         check_can_finalize(conn, &t)?;
     }
+    if to == "done" {
+        super::workflows::check_gate(conn, &t, "done")?;
+    }
     if to == "human_review" && matches!(t.status.as_str(), "finalized" | "developing") {
         return Err(Error::invalid(
             "定稿后要改需求，请用「发起变更」并填写变更原因。",
@@ -480,6 +494,7 @@ pub fn transition(conn: &mut Connection, id: &str, to: &str) -> Result<Ticket> {
         "status",
         serde_json::json!({ "from": t.status, "to": to }),
     )?;
+    super::workflows::reset(&tx, &t, to)?;
     tx.commit()?;
     get(conn, id)
 }
@@ -500,7 +515,7 @@ pub fn check_can_finalize(conn: &Connection, t: &Ticket) -> Result<()> {
     if t.acceptance_criteria.is_empty() {
         return Err(Error::invalid("验收标准为空，不能定稿。"));
     }
-    Ok(())
+    super::workflows::check_gate(conn, t, "finalized")
 }
 
 /// 只改验收标准。定稿后锁定（Bug 工单没有定稿环节，开发中也能改）。
@@ -554,6 +569,7 @@ pub fn request_change(conn: &mut Connection, id: &str, reason: &str) -> Result<T
         "change_requested",
         serde_json::json!({ "reason": reason }),
     )?;
+    super::workflows::reset(&tx, &t, "human_review")?;
     tx.commit()?;
     get(conn, &t.id)
 }

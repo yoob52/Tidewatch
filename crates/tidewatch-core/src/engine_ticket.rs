@@ -652,6 +652,36 @@ impl Engine {
         Ok(started)
     }
 
+    /// 通过一个自定义环节。完成前的最后一个环节通过后，子任务都已合并的工单自动完成。
+    pub fn pass_stage(
+        &self,
+        ticket_id: &str,
+        stage_id: &str,
+        note: &str,
+    ) -> Result<workflows::StageState> {
+        let (ticket, state) = {
+            let mut conn = lock(&self.inner.db);
+            let state = workflows::pass(&conn, ticket_id, stage_id, note)?;
+            let ticket = tickets::get(&conn, ticket_id)?;
+            let all = tasks::list_for_ticket(&conn, &ticket.id)?;
+            let merged = !all.is_empty()
+                && all
+                    .iter()
+                    .all(|t| matches!(t.status.as_str(), "merged" | "cancelled"))
+                && all.iter().any(|t| t.status == "merged");
+            if state.gate == "done"
+                && ticket.status == "acceptance"
+                && merged
+                && workflows::can_auto_done(&conn, &ticket)?
+            {
+                tickets::transition(&mut conn, &ticket.id, "done")?;
+            }
+            (ticket, state)
+        };
+        self.inner.changed(Some(ticket.id), None, None);
+        Ok(state)
+    }
+
     /// 发起变更：定稿后的工单回到人工审核。`stop_running` 为真时停掉正在跑的子任务，否则让它们跑完。
     pub fn request_change(
         &self,

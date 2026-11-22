@@ -12,6 +12,7 @@ pub mod settings;
 pub mod stats;
 pub mod tasks;
 pub mod tickets;
+pub mod workflows;
 
 use crate::{Error, Result};
 use rusqlite::Connection;
@@ -58,6 +59,11 @@ pub fn with_actor<T>(actor: &str, f: impl FnOnce() -> T) -> T {
     }
     let _reset = Reset(ACTOR.with(|a| a.replace(Some(actor.to_string()))));
     f()
+}
+
+/// 当前线程在替哪个成员办事；桌面端自己操作时是 `None`。
+pub fn current_actor() -> Option<String> {
+    ACTOR.with(|a| a.borrow().clone())
 }
 
 /// 工单时间线。

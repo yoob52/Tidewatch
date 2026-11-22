@@ -9,7 +9,7 @@ use tidewatch_core::engine::{
 };
 use tidewatch_core::git;
 use tidewatch_core::secrets::MemoryStore;
-use tidewatch_core::store::{projects, reviews, runs, settings, stats, tasks, tickets};
+use tidewatch_core::store::{projects, reviews, runs, settings, stats, tasks, tickets, workflows};
 
 struct Fixture {
     engine: Engine,
@@ -1970,4 +1970,152 @@ fn pushing_and_opening_a_pr_only_happen_when_the_user_asks() {
     f.engine.accept_task(&task).unwrap();
     f.engine.merge_task(&task).unwrap();
     assert!(f.engine.push_task(&task).is_err());
+}
+
+#[test]
+fn custom_workflow_stages_gate_finalize_and_done() {
+    let f = fixture(2, None);
+    let stage = |name: &str, gate: &str| workflows::Stage {
+        name: name.into(),
+        gate: gate.into(),
+        ..Default::default()
+    };
+    let input =
+        |types: &[&str], stages: Vec<workflows::Stage>, auto_done: bool| workflows::WorkflowInput {
+            name: "带评审的流程".into(),
+            enabled: true,
+            config: workflows::WorkflowConfig {
+                ticket_types: types.iter().map(|t| t.to_string()).collect(),
+                stages,
+                auto_done,
+            },
+        };
+    let wf = workflows::create(
+        &lock(f.db()),
+        input(
+            &["bug", "feature_backend"],
+            vec![
+                stage("设计评审", "finalized"),
+                stage("QA 验证", "done"),
+                stage("产品确认", "done"),
+            ],
+            true,
+        ),
+    )
+    .unwrap();
+    let id_of = |name: &str| {
+        wf.config
+            .stages
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    // 一种类型只能有一个启用的工作流；环节要说清卡在哪
+    let e = workflows::create(&lock(f.db()), input(&["bug"], vec![], true)).unwrap_err();
+    assert!(e.to_string().contains("带评审的流程"), "{e}");
+    assert!(workflows::create(
+        &lock(f.db()),
+        input(&["chore"], vec![stage("x", "developing")], true)
+    )
+    .is_err());
+
+    // 需求工单：没过「设计评审」不能定稿
+    let feature = {
+        let mut conn = lock(f.db());
+        let t = tickets::create(
+            &mut conn,
+            tickets::TicketInput {
+                title: "导出".into(),
+                kind: "feature_backend".into(),
+                content_md: "导出 CSV".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        tickets::set_criteria(&conn, &t.id, vec!["能导出".into()]).unwrap();
+        tickets::transition(&mut conn, &t.id, "ai_review").unwrap();
+        let e = workflows::pass(&conn, &t.id, &id_of("设计评审"), "").unwrap_err();
+        assert!(e.to_string().contains("人工审核"), "{e}");
+        tickets::transition(&mut conn, &t.id, "human_review").unwrap();
+        t.id
+    };
+    let e = f.engine.finalize(&feature, false).unwrap_err().to_string();
+    assert!(e.contains("设计评审"), "{e}");
+    let waiting = workflows::waiting(&lock(f.db())).unwrap();
+    assert_eq!(waiting, [(feature.clone(), "设计评审".to_string())]);
+    let passed = f
+        .engine
+        .pass_stage(&feature, &id_of("设计评审"), "接口没问题")
+        .unwrap();
+    assert!(passed.passed_at.is_some() && passed.note.as_deref() == Some("接口没问题"));
+    f.engine.finalize(&feature, false).unwrap();
+    assert_eq!(f.ticket_status(&feature), "finalized");
+    // 发起变更后要重新评审
+    f.engine.request_change(&feature, "加一列", false).unwrap();
+    let e = f.engine.finalize(&feature, false).unwrap_err().to_string();
+    assert!(e.contains("设计评审"), "{e}");
+
+    // Bug 不经过定稿：只有完成前的两个环节
+    let (bug, task) = f.bug("金额为负", "修一下", "high");
+    let bug_ticket = f.ticket(&bug);
+    let names: Vec<String> = workflows::stages_of(&lock(f.db()), &bug_ticket)
+        .unwrap()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(names, ["QA 验证", "产品确认"]);
+    let run = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_done(&run.id);
+    f.wait_idle(&bug);
+    f.engine.accept_task(&task).unwrap();
+    f.engine.merge_task(&task).unwrap();
+    assert_eq!(
+        f.ticket_status(&bug),
+        "acceptance",
+        "子任务都合并了，但还有环节没过"
+    );
+    let e = tickets::transition(&mut lock(f.db()), &bug, "done").unwrap_err();
+    assert!(
+        e.to_string().contains("QA 验证") && e.to_string().contains("产品确认"),
+        "{e}"
+    );
+    let e = f
+        .engine
+        .pass_stage(&bug, &id_of("产品确认"), "")
+        .unwrap_err();
+    assert!(e.to_string().contains("前面还有环节"), "{e}");
+    f.engine.pass_stage(&bug, &id_of("QA 验证"), "").unwrap();
+    assert_eq!(f.ticket_status(&bug), "acceptance");
+    f.engine.pass_stage(&bug, &id_of("产品确认"), "").unwrap();
+    assert_eq!(f.ticket_status(&bug), "done", "最后一个环节通过后自动完成");
+    let kinds: Vec<String> = tickets::timeline(&lock(f.db()), &bug)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(kinds.iter().filter(|k| *k == "stage_passed").count(), 2);
+
+    // 关掉自动完成：合并后停在验收，手动完成
+    workflows::update(&lock(f.db()), &wf.id, input(&["bug"], vec![], false)).unwrap();
+    let (bug2, task2) = f.bug("第二个", "再修一个", "low");
+    let run = f
+        .engine
+        .start_task(&task2, StartOptions::default())
+        .unwrap();
+    f.wait_done(&run.id);
+    f.wait_idle(&bug2);
+    f.engine.accept_task(&task2).unwrap();
+    f.engine.merge_task(&task2).unwrap();
+    assert_eq!(f.ticket_status(&bug2), "acceptance");
+    tickets::transition(&mut lock(f.db()), &bug2, "done").unwrap();
+
+    // 删掉工作流：回到内置流程
+    workflows::delete(&lock(f.db()), &wf.id).unwrap();
+    let feature_ticket = f.ticket(&feature);
+    assert!(workflows::stages_of(&lock(f.db()), &feature_ticket)
+        .unwrap()
+        .is_empty());
+    f.engine.finalize(&feature, false).unwrap();
 }

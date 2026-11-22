@@ -14,6 +14,7 @@ use crate::store::runs::{self, Run, RunEventRow};
 use crate::store::settings::{self, Settings};
 use crate::store::tasks::{self, Task};
 use crate::store::tickets::{self, Ticket};
+use crate::store::workflows;
 use crate::store::{add_timeline, not_found};
 use crate::{workflow, Error, Result};
 use serde::{Deserialize, Serialize};
@@ -509,7 +510,11 @@ impl Engine {
                 if now == "developing" {
                     tickets::transition(&mut conn, &ticket.id, "acceptance")?;
                 }
-                if matches!(now.as_str(), "developing" | "acceptance") {
+                // 自定义工作流还有环节没过、或者关掉了自动完成：停在验收，等人来
+                let ticket = tickets::get(&conn, &ticket.id)?;
+                if matches!(now.as_str(), "developing" | "acceptance")
+                    && workflows::can_auto_done(&conn, &ticket)?
+                {
                     tickets::transition(&mut conn, &ticket.id, "done")?;
                 }
             }

@@ -71,3 +71,22 @@ CREATE TABLE ticket_source (
   written_back_at TEXT,
   UNIQUE (source_id, external_id)
 );
+
+-- 自定义工作流：给某几类工单加上自己的环节（卡在定稿前或完成前，逐个由人通过）。
+CREATE TABLE workflow (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  config_json TEXT NOT NULL DEFAULT '{}',   -- { ticket_types, stages: [{ id, name, gate, hint }], auto_done }
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT
+);
+
+-- 工单已经通过的自定义环节。工单退回前面的状态时清掉。
+CREATE TABLE ticket_stage (
+  ticket_id TEXT NOT NULL,
+  stage_id TEXT NOT NULL,
+  passed_at TEXT NOT NULL,
+  actor TEXT,
+  note TEXT,
+  PRIMARY KEY (ticket_id, stage_id)
+);
