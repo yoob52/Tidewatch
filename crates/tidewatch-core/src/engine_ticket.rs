@@ -1,6 +1,7 @@
 //! 工单级的流程：AI 预审、定稿后的拆分建议、变更影响分析，以及把确认后的建议落成子任务。
 //! 这三种运行都不属于某个子任务：在项目目录里只读地跑，不建 worktree、不提交。
 use super::*;
+use crate::store::code_reviews::{self, CodeReview};
 use crate::store::reviews::{self, Proposal, TaskDraft, TaskImpact};
 use std::collections::{HashMap as Map, HashSet};
 
@@ -29,6 +30,11 @@ pub(super) fn recover(conn: &mut rusqlite::Connection) -> Result<()> {
         reviews::save_result(conn, &ticket_id, version.as_deref(), "", Err(MSG))?;
         tickets::transition(conn, &ticket_id, "human_review")?;
     }
+    conn.execute(
+        "UPDATE code_review SET status = 'failed', error = ?1, updated_at = ?2 WHERE status = 'running' AND run_id NOT IN
+           (SELECT id FROM run WHERE status IN ('queued', 'starting', 'running', 'finalizing', 'stopping'))",
+        rusqlite::params![MSG, crate::util::now()],
+    )?;
     conn.execute(
         "UPDATE proposal SET status = 'failed', error = ?1, updated_at = ?2 WHERE status = 'running' AND run_id NOT IN
            (SELECT id FROM run WHERE status IN ('queued', 'starting', 'running', 'finalizing', 'stopping'))",
@@ -207,7 +213,73 @@ fn proposal_prompt(
     }
 }
 
+/// 交叉审查由谁来做。都不填时换一个和写代码的不同的 Agent。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CodeReviewOptions {
+    pub agent: Option<String>,
+    pub provider_id: Option<String>,
+}
+
+/// 选审查者：指定了就用指定的；否则换成另一种 Agent，并找一个它能用的 Provider。
+fn plan_code_review(
+    conn: &rusqlite::Connection,
+    task: &Task,
+    project: Project,
+    opts: &CodeReviewOptions,
+) -> Result<TicketPlan> {
+    let author = runs::list_for_task(conn, &task.id)?.pop();
+    let author_kind = author
+        .as_ref()
+        .and_then(|r| AgentKind::parse(&r.agent).ok());
+    let kind = match crate::store::clean(opts.agent.clone()) {
+        Some(a) => AgentKind::parse(&a)?,
+        None => match author_kind {
+            Some(AgentKind::ClaudeCode) => AgentKind::Codex,
+            Some(AgentKind::Codex) => AgentKind::ClaudeCode,
+            _ => AgentKind::Mock,
+        },
+    };
+    let provider = match crate::store::clean(opts.provider_id.clone()) {
+        Some(id) => Some(providers::get(conn, &id)?),
+        None => {
+            let same = author
+                .as_ref()
+                .filter(|_| author_kind == Some(kind))
+                .and_then(|r| r.provider_id.clone());
+            match same {
+                Some(id) => providers::get(conn, &id).ok(),
+                // 换了 Agent：找第一个协议对得上、且不是"官方默认登录"的 Provider；没有就用它自己的登录
+                None => providers::list(conn)?.into_iter().find(|p| {
+                    p.config().is_ok_and(|c| {
+                        c.protocol != crate::provider::Protocol::Native && c.protocol.supports(kind)
+                    })
+                }),
+            }
+        }
+    };
+    if let Some(p) = &provider {
+        crate::provider::inject(kind, &p.config()?, None)?;
+    }
+    Ok(TicketPlan {
+        project,
+        agent: kind.as_str().into(),
+        provider_id: provider.as_ref().map(|p| p.id.clone()),
+        model: provider.and_then(|p| p.default_model),
+    })
+}
+
 impl Engine {
+    /// AI 交叉审查：让另一个 Agent 在子任务的 worktree 里只读地看 Diff，给出问题列表。
+    /// 结果只供参考，不改变子任务的状态。
+    pub fn start_code_review(&self, task_id: &str, opts: CodeReviewOptions) -> Result<Run> {
+        self.inner.start_code_review(task_id, &opts)
+    }
+
+    pub fn code_reviews(&self, task_id: &str) -> Result<Vec<CodeReview>> {
+        code_reviews::list_for_task(&lock(&self.inner.db), task_id)
+    }
+
     /// 提交 AI 预审：工单进入"AI 预审中"，预审运行入队。结束后（无论成败）回到人工审核。
     pub fn start_review(&self, ticket_id: &str) -> Result<Run> {
         let run = {
@@ -771,7 +843,72 @@ fn create_planned(
 }
 
 impl Inner {
-    /// 跑一轮工单级运行（预审 / 拆分 / 影响分析），把结果写回。
+    pub(super) fn start_code_review(&self, task_id: &str, opts: &CodeReviewOptions) -> Result<Run> {
+        let run = {
+            let mut conn = lock(&self.db);
+            let task = tasks::get(&conn, task_id)?;
+            if !matches!(
+                task.status.as_str(),
+                "review" | "accepted" | "changes_requested" | "failed" | "stopped"
+            ) {
+                return Err(Error::invalid(format!(
+                    "子任务处于「{}」，有了改动并且不在运行时才能审查。",
+                    workflow::task_status_label(&task.status)
+                )));
+            }
+            if code_reviews::running_for_task(&conn, task_id)? {
+                return Err(Error::invalid("这个子任务的交叉审查正在进行。"));
+            }
+            let (Some(worktree), Some(base)) = (
+                task.worktree_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_dir()),
+                task.base_commit.clone(),
+            ) else {
+                return Err(Error::invalid(
+                    "子任务的 worktree 已经不在了，没有可以审查的改动。",
+                ));
+            };
+            let head = git::rev_parse(&worktree, "HEAD")?;
+            if head == base {
+                return Err(Error::invalid("子任务还没有提交任何改动。"));
+            }
+            let ticket = tickets::get(&conn, &task.ticket_id)?;
+            let project = projects::get(&conn, &task.project_id)?;
+            let plan = plan_code_review(&conn, &task, project, opts)?;
+            let prd = tickets::current_prd(&conn, &ticket.id)?
+                .map(|v| v.content_md)
+                .unwrap_or_default();
+            let ov = crate::prompt::load_overrides(&conn)?;
+            let prompt =
+                crate::prompt::code_review_prompt(&ov, &plan.project, &ticket, &task, &prd, &base);
+            let tx = conn.transaction()?;
+            let run = enqueue_ticket_run(&tx, &ticket, &plan, "code_review", &prompt)?;
+            code_reviews::create(
+                &tx,
+                code_reviews::NewCodeReview {
+                    task_id: &task.id,
+                    ticket_id: &ticket.id,
+                    run_id: &run.id,
+                    head_commit: Some(&head),
+                    agent: &plan.agent,
+                    model: plan.model.as_deref(),
+                },
+            )?;
+            tx.commit()?;
+            run
+        };
+        self.changed(
+            run.ticket_id.clone(),
+            Some(task_id.into()),
+            Some(run.id.clone()),
+        );
+        self.wake();
+        Ok(run)
+    }
+
+    /// 跑一轮工单级运行（预审 / 拆分 / 影响分析 / 交叉审查），把结果写回。
     pub(super) fn execute_ticket_run(&self, run: &Run, cancel: &AtomicBool) {
         let res = self.ticket_run_steps(run, cancel);
         let stopped = cancel.load(Ordering::SeqCst);
@@ -795,33 +932,42 @@ impl Inner {
 
     fn ticket_run_steps(&self, run: &Run, cancel: &AtomicBool) -> Result<String> {
         let ticket_id = run.ticket_id.clone().unwrap_or_default();
-        let (plan, st, provider) = {
+        let (project, cwd, st, provider) = {
             let conn = lock(&self.db);
             let ticket = tickets::get(&conn, &ticket_id)?;
-            let plan = plan_ticket_run(&conn, &ticket)?;
+            // 交叉审查在子任务的 worktree 里看；其它在项目目录里看
+            let (project, cwd) = if run.purpose == "code_review" {
+                let cr = code_reviews::by_run(&conn, &run.id)?
+                    .ok_or_else(|| Error::invalid("找不到这轮审查对应的子任务。"))?;
+                let task = tasks::get(&conn, &cr.task_id)?;
+                let cwd = task.worktree_path.clone().ok_or_else(|| {
+                    Error::invalid("子任务的 worktree 已经不在了，没有可以审查的改动。")
+                })?;
+                (projects::get(&conn, &task.project_id)?, PathBuf::from(cwd))
+            } else {
+                let project = plan_ticket_run(&conn, &ticket)?.project;
+                let cwd = PathBuf::from(&project.local_path);
+                (project, cwd)
+            };
             let provider = run
                 .provider_id
                 .as_deref()
                 .map(|id| providers::get(&conn, id))
                 .transpose()?;
-            (plan, settings::get(&conn)?, provider)
+            (project, cwd, settings::get(&conn)?, provider)
         };
         if cancel.load(Ordering::SeqCst) {
             return Err(Error::invalid("在 Agent 启动前被停止。"));
         }
         let kind = AgentKind::parse(&run.agent)?;
-        let cwd = PathBuf::from(&plan.project.local_path);
         if !cwd.is_dir() {
-            return Err(Error::invalid(format!(
-                "项目目录不存在：{}",
-                plan.project.local_path
-            )));
+            return Err(Error::invalid(format!("目录不存在：{}", cwd.display())));
         }
         let outcome = self.agent_phase(
             run,
             kind,
             &cwd,
-            &plan.project,
+            &project,
             &st,
             &provider,
             cancel,
@@ -858,6 +1004,7 @@ impl Inner {
         finish: Option<(&str, Option<&str>)>,
     ) {
         let ticket_id = run.ticket_id.clone().unwrap_or_default();
+        let mut task_id = None;
         let res: Result<EngineEvent> = (|| {
             let mut conn = lock(&self.db);
             if let Some((status, error)) = finish {
@@ -877,7 +1024,33 @@ impl Inner {
                 );
             }
             let ticket = tickets::get(&conn, &ticket_id)?;
-            if run.purpose == "review" {
+            if run.purpose == "code_review" {
+                let cr = code_reviews::finish(&conn, &run.id, output)?
+                    .ok_or_else(|| Error::invalid("找不到这轮审查的记录。"))?;
+                task_id = Some(cr.task_id.clone());
+                let task = tasks::get(&conn, &cr.task_id)?;
+                let blockers = cr
+                    .findings
+                    .iter()
+                    .filter(|f| f.severity == "blocker")
+                    .count();
+                add_timeline(
+                    &conn,
+                    &ticket.id,
+                    "code_review_finished",
+                    json!({ "run_id": run.id, "task_id": cr.task_id, "agent": cr.agent, "findings": cr.findings.len(),
+                            "blockers": blockers, "error": cr.error }),
+                )?;
+                Ok(EngineEvent::CodeReviewFinished {
+                    ticket_id: ticket.id,
+                    task_id: cr.task_id,
+                    ticket_key: ticket.key,
+                    task_title: task.title,
+                    findings: cr.findings.len(),
+                    blockers,
+                    error: cr.error,
+                })
+            } else if run.purpose == "review" {
                 let review = reviews::save_result(
                     &mut conn,
                     &ticket.id,
@@ -925,7 +1098,7 @@ impl Inner {
                 })
             }
         })();
-        self.changed(run.ticket_id.clone(), None, Some(run.id.clone()));
+        self.changed(run.ticket_id.clone(), task_id, Some(run.id.clone()));
         match res {
             Ok(ev) => self.emit(ev),
             Err(e) => eprintln!("写回工单级运行的结果失败：{e}"),

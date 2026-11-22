@@ -1792,3 +1792,79 @@ fn failed_checks_are_sent_back_to_the_agent_until_they_pass_or_attempts_run_out(
             EngineEvent::RunFinished { run_id, failed_checks, .. } if *run_id == all[1].id && !failed_checks.is_empty()))
     });
 }
+
+#[test]
+fn cross_review_reads_the_diff_and_leaves_findings_without_touching_the_task() {
+    let f = fixture(1, None);
+    let (ticket, task) = f.bug("交叉审查", "x [mock:steps=1] [mock:delay=30]", "medium");
+    // 还没有改动：不能审查
+    assert!(f
+        .engine
+        .start_code_review(&task, Default::default())
+        .is_err());
+    let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
+    f.wait_done(&r.id);
+    assert_eq!(f.task(&task).status, "review");
+
+    let review = f
+        .engine
+        .start_code_review(&task, Default::default())
+        .unwrap();
+    assert_eq!(
+        (
+            review.purpose.as_str(),
+            review.permission.as_deref().unwrap_or_default(),
+            &review.task_id
+        ),
+        ("code_review", "read_only", &None)
+    );
+    assert!(review.prompt.contains("git diff"), "{}", review.prompt);
+    // 同一个子任务不能同时审两次；审查中也不能合并
+    assert!(f
+        .engine
+        .start_code_review(&task, Default::default())
+        .is_err());
+    let done = f.wait_done(&review.id);
+    assert_eq!(done.status, "succeeded", "{:?}", done.error);
+    let all = f.engine.code_reviews(&task).unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].status, "done");
+    assert_eq!(all[0].findings.len(), 1);
+    // 演示 Agent 只有在子任务的 worktree 里才看得到改动
+    assert_eq!(all[0].findings[0].title, "演示改动没有对应的测试");
+    assert_eq!(all[0].findings[0].severity, "major");
+    assert!(all[0].head_commit.is_some());
+    // 结果只供参考：子任务还在待验收，运行列表里也不算它的开发运行
+    assert_eq!(f.task(&task).status, "review");
+    assert_eq!(f.ticket_status(&ticket), "acceptance");
+    assert_eq!(runs::list_for_task(&lock(f.db()), &task).unwrap().len(), 1);
+    f.wait_for("交叉审查的通知", || {
+        f.events.lock().unwrap().iter().any(|e| matches!(e,
+            EngineEvent::CodeReviewFinished { task_id, findings: 1, error: None, .. } if *task_id == task))
+    });
+
+    // 打开"自动交叉审查"：子任务一进入待验收就自己审
+    {
+        let conn = lock(f.db());
+        let mut st = settings::get(&conn).unwrap();
+        st.auto_cross_review = true;
+        settings::save(&conn, &st).unwrap();
+    }
+    let (_, task2) = f.bug(
+        "自动审查",
+        "y [mock:steps=1] [mock:delay=30] [mock:findings=0]",
+        "medium",
+    );
+    let r = f
+        .engine
+        .start_task(&task2, StartOptions::default())
+        .unwrap();
+    f.wait_done(&r.id);
+    f.wait_for("自动发起的审查结束", || {
+        f.engine
+            .code_reviews(&task2)
+            .unwrap()
+            .first()
+            .is_some_and(|c| c.status == "done" && c.findings.is_empty())
+    });
+}

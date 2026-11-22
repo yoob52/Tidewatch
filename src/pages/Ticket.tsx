@@ -258,6 +258,12 @@ function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string]
       return p.error
         ? ['alert', 'AI', `预审没有完成：${p.error}`]
         : ['spark', 'AI', `预审完成，发现 ${p.issues} 个问题${p.blockers ? `，其中 ${p.blockers} 个阻塞` : ''}`];
+    case 'code_review_finished':
+      return p.error
+        ? ['alert', 'AI', `${name}的交叉审查没有完成：${p.error}`]
+        : ['spark', 'AI', `${name}的交叉审查完成，${p.findings ? `发现 ${p.findings} 个问题${p.blockers ? `，其中 ${p.blockers} 个阻塞` : ''}` : '没有发现问题'}`];
+    case 'auto_fix':
+      return ['undo', '系统', `${name}的自动检查没过，交回 Agent 自动修复（第 ${p.attempt} 次）`];
     case 'issue_resolved': {
       const how = { accepted: '采纳了', manual: '手动处理了', ignored: '忽略了', pending_confirm: '把', open: '重新打开了' }[p.resolution as string] ?? '处理了';
       return ['check', '你', `${how}问题 ${p.code}${p.resolution === 'pending_confirm' ? ' 标为待确认' : ''}${p.note ? `：${p.note}` : ''}`];

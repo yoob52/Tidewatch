@@ -31,6 +31,8 @@ export interface Settings {
   auto_test: boolean;
   /** 自动检查没过时最多让 Agent 自己修几次；0 不自动修。 */
   auto_fix_attempts: number;
+  /** 子任务进入待验收时自动发起 AI 交叉审查。 */
+  auto_cross_review: boolean;
   merge_mode: 'merge' | 'squash';
   delete_branch_after_merge: boolean;
   notifications: boolean;
@@ -448,6 +450,32 @@ export interface TaskDiff {
   truncated: boolean;
 }
 
+export interface CodeFinding {
+  severity: 'blocker' | 'major' | 'minor';
+  file: string | null;
+  line: number | null;
+  title: string;
+  detail: string;
+  suggestion: string;
+}
+
+/** AI 交叉审查：另一个 Agent 只读看完子任务的 Diff 后给的问题列表，只供参考。 */
+export interface CodeReview {
+  id: string;
+  task_id: string;
+  ticket_id: string;
+  run_id: string;
+  head_commit: string | null;
+  agent: string;
+  model: string | null;
+  status: 'running' | 'done' | 'failed';
+  summary: string | null;
+  findings: CodeFinding[];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TicketDetail {
   ticket: Ticket;
   versions: PrdVersion[];
@@ -459,6 +487,7 @@ export interface TicketDetail {
   split: Proposal | null;
   impact: Proposal | null;
   artifacts: Artifact[];
+  code_reviews: CodeReview[];
 }
 
 export interface RunDetail {
@@ -583,6 +612,9 @@ export const api = {
   taskMerge: (id: string) => invoke<Task>('task_merge', { id }),
   taskCancel: (id: string) => invoke<Task>('task_cancel', { id }),
   taskDiff: (id: string) => invoke<TaskDiff>('task_diff', { id }),
+  /** 不指定 agent 时换一个和写代码的不同的 Agent。 */
+  codeReviewStart: (taskId: string, agent?: string | null, providerId?: string | null) =>
+    invoke<Run>('code_review_start', { taskId, agent: agent ?? null, providerId: providerId ?? null }),
 
   runList: (limit?: number) => invoke<RunRow[]>('run_list', { limit: limit ?? null }),
   runGet: (id: string, after?: number) => invoke<RunDetail>('run_get', { id, after: after ?? null }),

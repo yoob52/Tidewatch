@@ -16,6 +16,8 @@ pub struct Settings {
     pub auto_test: bool,
     /// 自动检查没过时，最多让 Agent 自己修几次；0 表示不自动修。
     pub auto_fix_attempts: u32,
+    /// 子任务进入待验收时，自动让另一个 Agent 审查 Diff。
+    pub auto_cross_review: bool,
     /// `merge`（--no-ff）或 `squash`。
     pub merge_mode: String,
     pub delete_branch_after_merge: bool,
@@ -64,6 +66,7 @@ impl Default for Settings {
             default_permission: "workspace_write".into(),
             auto_test: true,
             auto_fix_attempts: 2,
+            auto_cross_review: false,
             merge_mode: "merge".into(),
             delete_branch_after_merge: true,
             notifications: true,

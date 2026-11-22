@@ -55,6 +55,16 @@ pub enum EngineEvent {
         blockers: usize,
         error: Option<String>,
     },
+    /// AI 交叉审查结束（用于系统通知）。
+    CodeReviewFinished {
+        ticket_id: String,
+        task_id: String,
+        ticket_key: String,
+        task_title: String,
+        findings: usize,
+        blockers: usize,
+        error: Option<String>,
+    },
     /// 拆分建议 / 变更影响分析出来了，等人确认。
     ProposalReady {
         ticket_id: String,
@@ -396,6 +406,11 @@ impl Engine {
                 "子任务处于「{}」，验收通过后才能合并。",
                 workflow::task_status_label(&task.status)
             )));
+        }
+        if crate::store::code_reviews::running_for_task(&lock(&self.inner.db), task_id)? {
+            return Err(Error::invalid(
+                "交叉审查还在这个子任务的 worktree 里进行，等它结束或停掉后再合并。",
+            ));
         }
         let branch = task
             .branch
@@ -845,7 +860,7 @@ fn slug(name: &str, id: &str) -> String {
 
 #[path = "engine_ticket.rs"]
 mod ticket_flow;
-pub use ticket_flow::Finalized;
+pub use ticket_flow::{CodeReviewOptions, Finalized};
 
 struct Finished {
     status: &'static str,
@@ -1163,6 +1178,7 @@ impl Inner {
             run.task_id.clone(),
             Some(run.id.clone()),
         );
+        let mut fixing = false;
         if let Some(attempt) = auto_fix {
             let started = self.enqueue_task(
                 &task_id,
@@ -1173,27 +1189,61 @@ impl Inner {
                 },
             );
             match started {
-                Ok(next) => self.log(
-                    &run.id,
-                    "auto_fix",
-                    json!({ "attempt": attempt, "run_id": next.id, "failed_checks": fin.failed_checks }),
-                ),
+                Ok(next) => {
+                    fixing = true;
+                    if let Some(t) = &run.ticket_id {
+                        let _ = add_timeline(
+                            &lock(&self.db),
+                            t,
+                            "auto_fix",
+                            json!({ "task_id": task_id, "run_id": next.id, "attempt": attempt, "failed_checks": fin.failed_checks }),
+                        );
+                    }
+                    self.log(
+                        &run.id,
+                        "auto_fix",
+                        json!({ "attempt": attempt, "run_id": next.id, "failed_checks": fin.failed_checks }),
+                    )
+                }
                 Err(e) => {
                     // 起不来就照常交给人验收
-                    self.log(&run.id, "error", json!({ "message": format!("没能发起自动修复：{e}") }));
+                    self.log(
+                        &run.id,
+                        "error",
+                        json!({ "message": format!("没能发起自动修复：{e}") }),
+                    );
                     let conn = lock(&self.db);
                     let _ = tasks::set_status(&conn, &task_id, "review");
                     if let Some(t) = &run.ticket_id {
                         unblocked = tasks::refresh_blocked(&conn, t).unwrap_or_default();
                     }
                     drop(conn);
-                    self.changed(run.ticket_id.clone(), run.task_id.clone(), Some(run.id.clone()));
+                    self.changed(
+                        run.ticket_id.clone(),
+                        run.task_id.clone(),
+                        Some(run.id.clone()),
+                    );
                 }
+            }
+        }
+        if (task_status == "review" || (auto_fix.is_some() && !fixing))
+            && settings::get(&lock(&self.db)).is_ok_and(|s| s.auto_cross_review)
+        {
+            if let Err(e) = self.start_code_review(&task_id, &Default::default()) {
+                self.log(
+                    &run.id,
+                    "error",
+                    json!({ "message": format!("没能发起交叉审查：{e}") }),
+                );
             }
         }
         self.auto_start(&unblocked);
         if let Some(ticket_id) = &run.ticket_id {
             self.start_deferred(ticket_id);
+        }
+        // 已经交回 Agent 自动修复：还没到要人看的时候，不发"等你验收"的通知
+        if fixing {
+            return;
         }
         self.emit(EngineEvent::RunFinished {
             run_id: run.id.clone(),

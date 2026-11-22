@@ -668,6 +668,7 @@ pub const CODE_REVIEW_FORMAT: &str = r#"
 ## 输出格式
 只输出一个 JSON 对象，不要任何其它文字，也不要用代码块包起来：
 {"summary": "一两句总体评价", "findings": [{"severity": "blocker | major | minor", "file": "相对路径", "line": 行号或 null, "title": "一句话问题", "detail": "为什么是问题", "suggestion": "建议怎么改"}]}
+<!-- tw:purpose=code_review -->
 "#;
 
 pub fn code_review_prompt(

@@ -2,6 +2,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   api,
+  type CodeFinding,
   type InlineComment,
   type Proposal,
   type RunDetail,
@@ -880,13 +881,14 @@ export function AcceptTab({ d, reload }: TabProps) {
   };
   const removeComment = (c: InlineComment) => setDrafts((x) => ({ ...x, [task.id]: (x[task.id] ?? []).filter((y) => y !== c) }));
 
-  const reject = async () => {
+  const reject = async (initial?: string) => {
     const note = await ui.prompt(
       '打回子任务',
       comments.length ? `会带上 ${comments.length} 条行内评论。意见交给 Agent，优先续接原会话返工。` : '意见会交给 Agent，优先续接原会话返工。也可以先在 Diff 的行号旁加行内评论。',
       comments.length ? '总体意见（可选）' : '写明需要修改的地方',
       '打回并开始返工',
       comments.length === 0,
+      initial,
     );
     if (note === null) return;
     const rejected = await ui.attempt(api.taskReject(task.id, { note, comments }));
@@ -895,6 +897,20 @@ export function AcceptTab({ d, reload }: TabProps) {
     await start(rejected);
     await refresh();
   };
+
+  // AI 交叉审查：最新的一次；之后又跑过开发就算过期
+  const cr = d.code_reviews.find((c) => c.task_id === task.id);
+  const crStale = !!cr && cr.status === 'done' && !!last?.end_commit && !!cr.head_commit && cr.head_commit !== last.end_commit;
+  const crossReview = async () => {
+    if (await ui.attempt(api.codeReviewStart(task.id), '已发起交叉审查，结果出来后显示在这里')) await refresh();
+  };
+  const findingsNote = (list: CodeFinding[]) =>
+    list
+      .map((f, i) => {
+        const at = f.file ? `（${f.file}${f.line ? `:${f.line}` : ''}）` : '';
+        return `${i + 1}. ${f.title}${at}${f.detail && f.detail !== f.title ? `\n   ${f.detail}` : ''}${f.suggestion ? `\n   建议：${f.suggestion}` : ''}`;
+      })
+      .join('\n');
 
   const merge = async () => {
     if (!(await ui.confirm('合并到主分支', '把这个子任务的分支合并进项目的默认分支，然后清理 worktree。不会推送到远程。', '合并'))) return;
@@ -1084,6 +1100,75 @@ export function AcceptTab({ d, reload }: TabProps) {
               ))
             ) : (
               <p className="dim">这次运行没有执行检查命令（项目没有配置，或在设置里关掉了）。</p>
+            )}
+          </div>
+          <div className="sec-title" style={{ marginTop: 18 }}>
+            AI 交叉审查
+            {cr && cr.status !== 'running' && <small>{AGENTS[cr.agent]?.name ?? cr.agent}{cr.model ? ` · ${cr.model}` : ''}</small>}
+          </div>
+          <div className="xrev">
+            {!cr ? (
+              <p className="dim">让另一个 Agent 只读地看一遍这份 Diff，列出它发现的问题。只供参考，不影响验收。</p>
+            ) : cr.status === 'running' ? (
+              <p className="dim">
+                <Icon name="spark" size={12} /> {AGENTS[cr.agent]?.name ?? cr.agent} 正在审查…{' '}
+                <a className="lnk" href={`#/runs/${cr.run_id}`}>
+                  看实时日志
+                </a>
+              </p>
+            ) : cr.status === 'failed' ? (
+              <p style={{ color: 'var(--cinnabar)' }}>
+                审查没有完成：{cr.error}{' '}
+                <a className="lnk" href={`#/runs/${cr.run_id}`}>
+                  看日志
+                </a>
+              </p>
+            ) : (
+              <>
+                {crStale && <p className="tag amber">审查之后又有新的改动，结果可能已经过期</p>}
+                {cr.summary && <p className="sum">{cr.summary}</p>}
+                {cr.findings.length === 0 ? (
+                  <p className="tag moss">
+                    <Icon name="check" size={11} />
+                    没有发现问题
+                  </p>
+                ) : (
+                  <ul className="xrev-list">
+                    {cr.findings.map((f, i) => (
+                      <li key={i} className={`s-${f.severity}`}>
+                        <div>
+                          <span className={`tag ${f.severity === 'blocker' ? 'cin' : f.severity === 'major' ? 'amber' : 'line'}`}>
+                            {{ blocker: '阻塞', major: '重要', minor: '次要' }[f.severity]}
+                          </span>{' '}
+                          <b>{f.title}</b>
+                        </div>
+                        {f.file && (
+                          <a className="lnk mono" title="在 Diff 里打开这个文件" onClick={() => setFile(f.file)}>
+                            {f.file}
+                            {f.line ? `:${f.line}` : ''}
+                          </a>
+                        )}
+                        {f.detail && f.detail !== f.title && <p>{f.detail}</p>}
+                        {f.suggestion && <p className="dim">建议：{f.suggestion}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+            {cr?.status !== 'running' && ['review', 'accepted'].includes(task.status) && (
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                <button className="btn sm" onClick={() => void crossReview()}>
+                  <Icon name="spark" size={13} />
+                  {cr ? '重新审查' : '让另一个 Agent 审查'}
+                </button>
+                {cr?.status === 'done' && cr.findings.length > 0 && (
+                  <button className="btn sm" onClick={() => void reject(findingsNote(cr.findings))}>
+                    <Icon name="undo" size={13} />
+                    带着这些问题打回
+                  </button>
+                )}
+              </div>
             )}
           </div>
           <div className="sec-title" style={{ marginTop: 18 }}>

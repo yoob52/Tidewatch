@@ -6,13 +6,14 @@ use tauri::{Emitter, Manager};
 use tidewatch_core::agent::{adapter, mock_process, AgentKind, Detection};
 use tidewatch_core::db::{self, lock};
 use tidewatch_core::engine::{
-    Engine, EngineConfig, EngineEvent, Finalized, RejectInput, RunPlan, StartOptions, TaskDiff,
+    CodeReviewOptions, Engine, EngineConfig, EngineEvent, Finalized, RejectInput, RunPlan,
+    StartOptions, TaskDiff,
 };
 use tidewatch_core::git;
 use tidewatch_core::prompt;
 use tidewatch_core::secrets;
 use tidewatch_core::store::{
-    attachments, projects, providers, reviews, runs, settings, stats, tasks, tickets,
+    attachments, code_reviews, projects, providers, reviews, runs, settings, stats, tasks, tickets,
 };
 
 /// 推给界面的事件名。
@@ -235,6 +236,8 @@ struct TicketDetail {
     split: Option<reviews::Proposal>,
     impact: Option<reviews::Proposal>,
     artifacts: Vec<tasks::Artifact>,
+    /// AI 交叉审查的结果，新的在前。
+    code_reviews: Vec<code_reviews::CodeReview>,
 }
 
 #[tauri::command]
@@ -251,6 +254,7 @@ fn ticket_get(state: State, id: String) -> CmdResult<TicketDetail> {
         split: reviews::latest_proposal(&conn, &ticket.id, "split").map_err(err)?,
         impact: reviews::latest_proposal(&conn, &ticket.id, "impact").map_err(err)?,
         artifacts: tasks::artifacts_for_ticket(&conn, &ticket.id).map_err(err)?,
+        code_reviews: code_reviews::list_for_ticket(&conn, &ticket.id).map_err(err)?,
         ticket,
     })
 }
@@ -635,6 +639,20 @@ fn task_reject(state: State, id: String, input: RejectInput) -> CmdResult<tasks:
     state.engine.reject_task_with(&id, input).map_err(err)
 }
 
+/// AI 交叉审查：让另一个 Agent 只读审查这个子任务的 Diff。
+#[tauri::command]
+fn code_review_start(
+    state: State,
+    task_id: String,
+    agent: Option<String>,
+    provider_id: Option<String>,
+) -> CmdResult<runs::Run> {
+    state
+        .engine
+        .start_code_review(&task_id, CodeReviewOptions { agent, provider_id })
+        .map_err(err)
+}
+
 #[tauri::command]
 async fn task_merge(state: State<'_>, id: String) -> CmdResult<tasks::Task> {
     blocking(state, move |e| e.merge_task(&id)).await
@@ -772,6 +790,23 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
             None => (
                 "预审完成，等你处理",
                 format!("{ticket_key} {ticket_title}：{issues} 个问题，其中 {blockers} 个阻塞"),
+            ),
+        },
+        EngineEvent::CodeReviewFinished {
+            ticket_key,
+            task_title,
+            findings,
+            blockers,
+            error,
+            ..
+        } => match error {
+            Some(_) => ("交叉审查没有完成", format!("{ticket_key} {task_title}")),
+            None if *findings == 0 => {
+                ("交叉审查没有发现问题", format!("{ticket_key} {task_title}"))
+            }
+            None => (
+                "交叉审查完成",
+                format!("{ticket_key} {task_title}：{findings} 个问题，其中 {blockers} 个阻塞"),
             ),
         },
         EngineEvent::ProposalReady {
@@ -940,6 +975,7 @@ pub fn run() {
             task_start,
             task_accept,
             task_reject,
+            code_review_start,
             task_merge,
             task_cancel,
             task_diff,

@@ -367,6 +367,15 @@ export function SettingsPage({
           </div>
           <div className="srow">
             <div>
+              <b>自动 AI 交叉审查</b>
+              <p>子任务进入待验收时，自动让另一个 Agent 只读审查 Diff，问题列表显示在验收页供你参考。会多花一轮费用；关掉时可以在验收页手动发起。</p>
+            </div>
+            <div className="sctl">
+              <Switch on={settings.auto_cross_review} onChange={(v) => void save({ auto_cross_review: v })} label="自动 AI 交叉审查" />
+            </div>
+          </div>
+          <div className="srow">
+            <div>
               <b>合并方式</b>
               <p>merge 保留子任务分支上的每个提交；squash 压成一个提交。观澜不会自动推送到远程。</p>
             </div>
