@@ -313,6 +313,8 @@ struct Render<'a> {
     by_id: HashMap<&'a str, &'a Value>,
     out: String,
     images: Vec<String>,
+    /// 最外层上一个列表项的种类（12 无序 / 13 有序 / 17 待办）：种类变了就另起一个列表。
+    top_list: i64,
 }
 
 impl Render<'_> {
@@ -351,10 +353,14 @@ impl Render<'_> {
         self.out.push_str("\n\n");
     }
 
-    fn item(&mut self, marker: &str, text: &str, depth: usize) {
-        // 列表项之间不空行
-        if self.out.ends_with("\n\n") && self.last_is_item() {
+    fn item(&mut self, kind: i64, marker: &str, text: &str, depth: usize) {
+        // 同一个列表的项之间不空行；换了一种列表就留着空行，另起一个
+        let same_list = depth > 0 || self.top_list == kind;
+        if same_list && self.out.ends_with("\n\n") && self.last_is_item() {
             self.out.pop();
+        }
+        if depth == 0 {
+            self.top_list = kind;
         }
         self.out
             .push_str(&format!("{}{marker} {text}\n", "  ".repeat(depth)));
@@ -405,7 +411,7 @@ impl Render<'_> {
                     _ if b["todo"]["style"]["done"].as_bool() == Some(true) => "- [x]".into(),
                     _ => "- [ ]".into(),
                 };
-                self.item(&marker, &text(false), depth);
+                self.item(kind, &marker, &text(false), depth);
                 self.children(b, depth + 1);
                 if depth == 0 {
                     self.out.push('\n');
@@ -450,6 +456,7 @@ impl Render<'_> {
                     by_id: self.by_id.clone(),
                     out: String::new(),
                     images: vec![],
+                    top_list: 0,
                 };
                 if let Some(cell) = self.by_id.get(id.as_str()).copied() {
                     inner.children(cell, 0);
@@ -478,6 +485,7 @@ pub fn to_markdown(blocks: &[Value]) -> (String, Vec<String>) {
         by_id,
         out: String::new(),
         images: vec![],
+        top_list: 0,
     };
     if let Some(root) = blocks.iter().find(|b| b["block_type"].as_i64() == Some(1)) {
         r.block(root, 0, 0);

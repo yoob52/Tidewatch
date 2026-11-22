@@ -198,6 +198,7 @@ pub fn parse_repo(input: &str) -> Result<String> {
     let parts: Vec<&str> = s.split('/').collect();
     let ok = |p: &str| {
         !p.is_empty()
+            && p.chars().any(|c| c != '.')
             && p.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
