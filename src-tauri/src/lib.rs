@@ -1601,6 +1601,11 @@ pub fn run() {
             stats_get,
             tray::tray_labels
         ])
-        .run(tauri::generate_context!())
-        .expect("启动观澜失败");
+        .build(tauri::generate_context!())
+        .expect("启动观澜失败")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                tray::remove(app);
+            }
+        });
 }

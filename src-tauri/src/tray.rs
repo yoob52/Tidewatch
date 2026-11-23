@@ -68,6 +68,19 @@ pub fn show_main(app: &AppHandle) {
     }
 }
 
+/// Windows 退出时不收托盘图标会留下一个鼠标划过才消失的空图标。
+pub fn remove(app: &AppHandle) {
+    if let Some(t) = app.try_state::<Tray>() {
+        let _ = t.icon.set_visible(false);
+    }
+    let _ = app.remove_tray_by_id("main");
+}
+
+fn exit(app: &AppHandle) {
+    remove(app);
+    app.exit(0);
+}
+
 fn running(app: &AppHandle) -> u32 {
     app.try_state::<AppState>()
         .and_then(|s| runs::count_running(&lock(s.engine.db())).ok())
@@ -77,7 +90,7 @@ fn running(app: &AppHandle) -> u32 {
 /// 退出观澜；有运行在进行时先确认，取消就什么都不做。
 pub fn quit(app: &AppHandle) {
     if running(app) == 0 {
-        app.exit(0);
+        exit(app);
         return;
     }
     let (message, ok, cancel) = match app.try_state::<Tray>() {
@@ -99,7 +112,7 @@ pub fn quit(app: &AppHandle) {
         .buttons(MessageDialogButtons::OkCancelCustom(ok, cancel))
         .show(move |yes| {
             if yes {
-                handle.exit(0);
+                exit(&handle);
             }
         });
 }
