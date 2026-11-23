@@ -44,6 +44,8 @@ pub struct InstalledSkill {
     pub target: SkillTarget,
     pub dir: String,
     pub files: usize,
+    /// 从市场安装时记录的来源（`owner/repo/skill`），手动放入的 skill 为空。
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -65,6 +67,8 @@ pub struct SkillPreview {
     pub path: String,
     pub content: String,
     pub files: Vec<String>,
+    /// 预览读取的提交；安装时按它下载，保证装的就是看过的内容。
+    pub commit: String,
 }
 
 pub fn home_dir() -> Result<PathBuf> {
@@ -164,6 +168,10 @@ pub fn list_installed_in(home: &Path) -> Vec<InstalledSkill> {
                 target,
                 dir: dir.to_string_lossy().into_owned(),
                 files: count_files(&dir),
+                origin: std::fs::read_to_string(dir.join(ORIGIN_FILE))
+                    .ok()
+                    .map(|o| o.trim().to_string())
+                    .filter(|o| !o.is_empty()),
             });
         }
     }
@@ -378,31 +386,77 @@ pub fn pick_skill_dir<'a>(paths: &'a [String], skill_id: &str) -> Vec<&'a str> {
 struct Located {
     owner: String,
     repo: String,
+    commit: String,
     dir: String,
     files: Vec<String>,
     content: String,
 }
 
-fn raw_url(owner: &str, repo: &str, path: &str) -> String {
+fn raw_url(owner: &str, repo: &str, commit: &str, path: &str) -> String {
     let path: Vec<String> = path.split('/').map(encode).collect();
     format!(
-        "https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{}",
+        "https://raw.githubusercontent.com/{owner}/{repo}/{commit}/{}",
         path.join("/")
     )
 }
 
-fn locate(source: &str, skill_id: &str) -> Result<Located> {
+pub fn valid_commit(c: &str) -> bool {
+    c.len() == 40 && c.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// 从 git 智能协议的引用公告里取 HEAD 指向的提交。
+pub fn parse_head_ref(text: &str) -> Option<String> {
+    text.split('\n').find_map(|line| {
+        let i = line
+            .find(" HEAD\0")
+            .or_else(|| line.strip_suffix(" HEAD").map(str::len))?;
+        let sha = line.get(i.checked_sub(40)?..i)?;
+        valid_commit(sha).then(|| sha.to_ascii_lowercase())
+    })
+}
+
+/// 默认分支当前的提交。先走 git 协议（不占 GitHub API 配额），失败再问 API。
+fn resolve_head(owner: &str, repo: &str) -> Result<String> {
+    let via_git = get_text(
+        &format!("https://github.com/{owner}/{repo}.git/info/refs?service=git-upload-pack"),
+        "*/*",
+    )
+    .ok()
+    .and_then(|t| parse_head_ref(&t));
+    if let Some(c) = via_git {
+        return Ok(c);
+    }
+    let sha = get_text(
+        &format!("https://api.github.com/repos/{owner}/{repo}/commits/HEAD"),
+        "application/vnd.github.sha",
+    )?;
+    let sha = sha.trim().to_ascii_lowercase();
+    if valid_commit(&sha) {
+        Ok(sha)
+    } else {
+        Err(Error::invalid(format!(
+            "无法确定 {owner}/{repo} 的当前提交。"
+        )))
+    }
+}
+
+fn locate(source: &str, skill_id: &str, commit: Option<&str>) -> Result<Located> {
     let (owner, repo) = github_repo(source).ok_or_else(|| {
         Error::invalid(format!("「{source}」不是 GitHub 仓库，暂不支持一键安装。"))
     })?;
-    let blobs = list_files(owner, repo)?;
+    let commit = match commit {
+        Some(c) if valid_commit(c) => c.to_ascii_lowercase(),
+        Some(c) => return Err(Error::invalid(format!("「{c}」不是有效的提交号。"))),
+        None => resolve_head(owner, repo)?,
+    };
+    let blobs = list_files(owner, repo, &commit)?;
     for dir in pick_skill_dir(&blobs, skill_id).into_iter().take(30) {
         let md_path = if dir.is_empty() {
             "SKILL.md".to_string()
         } else {
             format!("{dir}/SKILL.md")
         };
-        let Ok(content) = get_text(&raw_url(owner, repo, &md_path), "text/plain") else {
+        let Ok(content) = get_text(&raw_url(owner, repo, &commit, &md_path), "text/plain") else {
             continue;
         };
         let (name, _) = parse_frontmatter(&content);
@@ -423,6 +477,7 @@ fn locate(source: &str, skill_id: &str) -> Result<Located> {
         return Ok(Located {
             owner: owner.into(),
             repo: repo.into(),
+            commit,
             dir: dir.to_string(),
             files,
             content,
@@ -434,16 +489,18 @@ fn locate(source: &str, skill_id: &str) -> Result<Located> {
 }
 
 /// 仓库里的全部文件路径。未登录的 GitHub API 每小时只有 60 次，超限时改用 jsDelivr 的文件列表。
-fn list_files(owner: &str, repo: &str) -> Result<Vec<String>> {
+fn list_files(owner: &str, repo: &str, commit: &str) -> Result<Vec<String>> {
     let gh = get_text(
-        &format!("https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1"),
+        &format!("https://api.github.com/repos/{owner}/{repo}/git/trees/{commit}?recursive=1"),
         "application/vnd.github+json",
     )
     .and_then(|t| parse_github_tree(&t));
     match gh {
         Ok(files) => Ok(files),
         Err(e) => get_text(
-            &format!("https://data.jsdelivr.com/v1/packages/gh/{owner}/{repo}@HEAD?structure=flat"),
+            &format!(
+                "https://data.jsdelivr.com/v1/packages/gh/{owner}/{repo}@{commit}?structure=flat"
+            ),
             "application/json",
         )
         .and_then(|t| parse_jsdelivr_files(&t))
@@ -482,7 +539,7 @@ pub fn parse_jsdelivr_files(text: &str) -> Result<Vec<String>> {
 }
 
 pub fn preview(source: &str, skill_id: &str) -> Result<SkillPreview> {
-    let l = locate(source, skill_id)?;
+    let l = locate(source, skill_id, None)?;
     let (name, desc) = parse_frontmatter(&l.content);
     Ok(SkillPreview {
         name: name.unwrap_or_else(|| skill_id.to_string()),
@@ -491,12 +548,19 @@ pub fn preview(source: &str, skill_id: &str) -> Result<SkillPreview> {
         path: l.dir,
         content: l.content,
         files: l.files,
+        commit: l.commit,
     })
 }
 
-/// 下载 skill 目录下的全部文件，安装到所选目标。已存在时覆盖（视为更新）。
-pub fn install(source: &str, skill_id: &str, targets: &[SkillTarget]) -> Result<Vec<String>> {
-    install_in(&home_dir()?, source, skill_id, targets)
+/// 按 `commit`（预览时看到的提交，缺省取默认分支当前提交）下载 skill 目录下的全部文件，
+/// 安装到所选目标。已存在时覆盖（视为更新）。
+pub fn install(
+    source: &str,
+    skill_id: &str,
+    commit: Option<&str>,
+    targets: &[SkillTarget],
+) -> Result<Vec<String>> {
+    install_in(&home_dir()?, source, skill_id, commit, targets)
 }
 
 const ORIGIN_FILE: &str = ".tidewatch-source";
@@ -528,6 +592,7 @@ fn install_in(
     home: &Path,
     source: &str,
     skill_id: &str,
+    commit: Option<&str>,
     targets: &[SkillTarget],
 ) -> Result<Vec<String>> {
     if targets.is_empty() {
@@ -535,7 +600,7 @@ fn install_in(
     }
     let origin = format!("{source}/{skill_id}");
     check_overwrite(home, targets, skill_id, &origin)?;
-    let l = locate(source, skill_id)?;
+    let l = locate(source, skill_id, commit)?;
     if l.files.len() > MAX_FILES {
         return Err(Error::invalid(format!(
             "这个 skill 有 {} 个文件，超过上限 {MAX_FILES}。",
@@ -558,7 +623,7 @@ fn install_in(
             format!("{}/{rel}", l.dir)
         };
         let mut resp = agent()
-            .get(&raw_url(&l.owner, &l.repo, &full))
+            .get(&raw_url(&l.owner, &l.repo, &l.commit, &full))
             .header("User-Agent", "Tidewatch")
             .call()
             .map_err(|e| Error::invalid(format!("下载 {rel} 失败：{e}")))?;
@@ -667,6 +732,23 @@ mod tests {
         assert_eq!(
             parse_jsdelivr_files(jd).unwrap(),
             vec!["skills/a/SKILL.md", "README.md"]
+        );
+    }
+
+    #[test]
+    fn head_ref_from_git_advertisement() {
+        let sha = "0123456789abcdef0123456789ABCDEF01234567";
+        let adv = format!(
+            "001e# service=git-upload-pack\n0000015b{sha} HEAD\0multi_ack symref=HEAD:refs/heads/main\n003f{sha} refs/heads/main\n0000"
+        );
+        assert_eq!(parse_head_ref(&adv), Some(sha.to_ascii_lowercase()));
+        assert_eq!(parse_head_ref("001e# service=git-upload-pack\n0000"), None);
+        assert!(valid_commit(&sha[..]));
+        assert!(!valid_commit("HEAD"));
+        assert!(!valid_commit("../../etc/passwd/0123456789abcdef01234567"));
+        assert_eq!(
+            raw_url("o", "r", "abc", "a b/SKILL.md"),
+            "https://raw.githubusercontent.com/o/r/abc/a%20b/SKILL.md"
         );
     }
 

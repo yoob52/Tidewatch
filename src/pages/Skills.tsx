@@ -34,8 +34,9 @@ function PreviewModal({ skill, installedIn, onClose, onInstalled }: { skill: Mar
   const [busy, setBusy] = useState(false);
   const { data: preview, error } = useLoad<SkillPreview>(() => api.skillsPreview(skill.source, skill.skillId), [skill.id], () => false);
   const install = async () => {
+    if (!preview) return;
     setBusy(true);
-    const dirs = await ui.attempt(api.skillsInstall(skill.source, skill.skillId, targets));
+    const dirs = await ui.attempt(api.skillsInstall(skill.source, skill.skillId, preview.commit, targets));
     setBusy(false);
     if (dirs) {
       ui.toast(tr('已安装到 {0} 个位置', dirs.length));
@@ -80,7 +81,7 @@ function PreviewModal({ skill, installedIn, onClose, onInstalled }: { skill: Mar
             <TargetPicker value={targets} onChange={setTargets} />
           </Field>
           <div className="sk-files mono dim">
-            {tr('{0} 个文件', preview.files.length)} · {preview.path || '/'}
+            {tr('{0} 个文件', preview.files.length)} · {preview.path || '/'} · <span title={preview.commit}>@{preview.commit.slice(0, 7)}</span>
           </div>
           <div className="sk-md">
             <Md src={preview.content.replace(/^---[\s\S]*?\n---\n?/, '')} />
@@ -149,10 +150,10 @@ export function SkillsPage() {
   const [creating, setCreating] = useState(false);
 
   const mine = installed.data ?? [];
-  const byName = useMemo(() => {
-    const m = new Map<string, SkillTarget[]>();
-    for (const s of mine) m.set(s.name, [...(m.get(s.name) ?? []), s.target]);
-    return m;
+  const installedIn = useMemo(() => {
+    const byOrigin = new Map<string, SkillTarget[]>();
+    for (const s of mine) if (s.origin) byOrigin.set(s.origin, [...(byOrigin.get(s.origin) ?? []), s.target]);
+    return (s: MarketSkill) => byOrigin.get(`${s.source}/${s.skillId}`) ?? [];
   }, [mine]);
   const shown = mine.filter((s) => !filter || `${s.name} ${s.description}`.toLowerCase().includes(filter.toLowerCase()));
   const results = market.data ?? [];
@@ -252,7 +253,7 @@ export function SkillsPage() {
             <Empty icon="search" title={tr('没有找到匹配的 skill')} body={tr('换个关键词试试。')} />
           ) : (
             slice.map((s) => {
-              const there = byName.get(s.skillId) ?? byName.get(s.name) ?? [];
+              const there = installedIn(s);
               return (
                 <div
                   key={s.id}
@@ -307,7 +308,7 @@ export function SkillsPage() {
           </footer>
         )}
       </section>
-      {preview && <PreviewModal skill={preview} installedIn={byName.get(preview.skillId) ?? []} onClose={() => setPreview(null)} onInstalled={() => void installed.reload()} />}
+      {preview && <PreviewModal skill={preview} installedIn={installedIn(preview)} onClose={() => setPreview(null)} onInstalled={() => void installed.reload()} />}
       {creating && <CreateModal onClose={() => setCreating(false)} onCreated={() => void installed.reload()} />}
     </div>
   );

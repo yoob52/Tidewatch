@@ -218,7 +218,7 @@ type DispatchMode =
 
 - 默认：有 `steerActive` → `steer_active`；否则 → `restart_active`。
 - 用户明确"作为下一轮"时，即使支持引导也排队。
-- 【第一版实现】`run_followup` 接受 `steer` / `restart` / `queue`：Claude Code 与 mock 以 `--input-format stream-json` 启动，`steer` 把指令写成一条流式用户消息送进 stdin；不能引导的运行界面默认改为 `queue`。`restart` / `queue` 都是续接原会话开一轮新运行，Codex `app-server` 尚未接入。
+- 【第一版实现】`run_followup` 接受 `steer` / `restart` / `queue`：Claude Code 与 mock 以 `--input-format stream-json` 启动，`steer` 把指令写成一条流式用户消息送进 stdin；Codex 子任务运行改用 `codex app-server`（stdio JSON-RPC，和 Codex 桌面版同一套协议），`steer` 发 `turn/steer` 并进当前这一轮，这一轮已结束时改发 `turn/start`；只要文字回答的调用仍用 `codex exec`。界面默认 `queue`（排队），另提供“立即发送”（`steer`）和“打断重开”。`restart` / `queue` 都是续接原会话开一轮新运行。
 - 停止按钮会 **暂停该子任务的队列**，避免自动化（自动修复、排队消息）在停止后又把它拉起来；需要手动"继续"。
 
 ## 7. 上下文交接
