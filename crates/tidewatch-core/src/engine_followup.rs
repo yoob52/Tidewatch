@@ -68,8 +68,17 @@ impl Engine {
             return Ok(result("started", Some(next.id)));
         }
         let restart = mode == FollowupMode::Restart && run.status != "stopping";
-        self.inner
-            .queue_followup(run_id, text, if restart { "restart" } else { "queue" });
+        // 已在停止中还发来的指令：停下后照样续接，不当作被停止作废
+        let resume_after_stop = restart || run.status == "stopping";
+        self.inner.queue_followup(
+            run_id,
+            text,
+            if resume_after_stop {
+                "restart"
+            } else {
+                "queue"
+            },
+        );
         if restart {
             self.stop_run(run_id)?;
             return Ok(result("restarting", None));
