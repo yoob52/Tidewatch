@@ -134,7 +134,7 @@ pub fn on_close_requested(window: &Window, api: &tauri::CloseRequestApi) {
     if to_tray && window.app_handle().try_state::<Tray>().is_some() {
         api.prevent_close();
         let _ = window.hide();
-    } else if running(window.app_handle()) > 0 {
+    } else {
         api.prevent_close();
         quit(window.app_handle());
     }
