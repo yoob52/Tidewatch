@@ -15,22 +15,21 @@ function initial(): Lang {
 export const lang: Lang = initial();
 document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
 
-// 这一页上有没有敲过字：切换语言要重新加载，先问一句，免得没保存的输入丢掉。
-let typed = false;
+// 敲过字、现在还在页面上的输入框：切换语言要重新加载，先问一句，免得没保存的输入丢掉。
+// 不按路由清零：同一页内换标签时地址会变，但编辑框还挂着。
+const typed = new Set<Element>();
 document.addEventListener(
   'input',
   (e) => {
     const el = e.target;
-    if ((el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) && el.closest('.main')) typed = true;
+    if ((el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) && el.closest('.main')) typed.add(el);
   },
   true,
 );
-window.addEventListener('hashchange', () => {
-  typed = false;
-});
 
 export function typedOnPage(): boolean {
-  return typed;
+  for (const el of typed) if (!el.isConnected) typed.delete(el);
+  return typed.size > 0;
 }
 
 export function setLang(next: Lang) {
