@@ -1,14 +1,16 @@
 import { useSyncExternalStore } from 'react';
 import { api, onUpdateProgress, type UpdateInfo, type UpdateProgress } from './api';
 
-/** 检查更新的结果和安装进度。放在页面之外：下载要几分钟，离开设置页再回来还得看得到。 */
+/** 检查更新的结果和安装进度。关闭更新窗口后仍然保留。 */
 interface UpdateState {
   info: UpdateInfo | null;
+  checking: boolean;
   progress: UpdateProgress | null;
   error: string | null;
 }
 
-let state: UpdateState = { info: null, progress: null, error: null };
+let state: UpdateState = { info: null, checking: false, progress: null, error: null };
+let pendingCheck: Promise<UpdateInfo | null> | null = null;
 const subscribers = new Set<() => void>();
 let listening = false;
 
@@ -33,12 +35,28 @@ export function useUpdate(): UpdateState {
   return useSyncExternalStore(subscribe, () => state);
 }
 
-export function setUpdateInfo(info: UpdateInfo) {
-  set({ info, error: null });
+export function checkUpdate() {
+  if (state.progress) return;
+  if (pendingCheck) return pendingCheck;
+  set({ checking: true, error: null });
+  pendingCheck = api.updateCheck().then(
+    (info) => {
+      set({ info });
+      return info;
+    },
+    (e) => {
+      set({ error: String(e) });
+      return null;
+    },
+  ).finally(() => {
+    pendingCheck = null;
+    set({ checking: false });
+  });
+  return pendingCheck;
 }
 
 export async function installUpdate() {
-  if (state.progress) return;
+  if (state.checking || state.progress || !state.info?.newer || state.info.install_blocked) return;
   set({ error: null, progress: { phase: 'checking' } });
   try {
     await api.updateInstall();

@@ -5,6 +5,7 @@ import { api, type Detection, type SystemInfo, type TicketSummary } from './lib/
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { lang, tr } from './lib/i18n';
 import { DataProvider, useData } from './lib/data';
+import { UpdateButton } from './lib/UpdateButton';
 import { STAGE_NAME, UiProvider, fmtAgo, fmtCost, fmtDur, go, runActive, runSeconds, runTitle, switchLang, useNow, useUi } from './lib/ui';
 import { BoardPage } from './pages/Board';
 import { TicketsPage } from './pages/Tickets';
@@ -181,17 +182,7 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-  // 开了「启动时检查更新」才联网；失败不打扰
   const ui = useUi();
-  const checkUpdates = settings.check_updates;
-  useEffect(() => {
-    if (!checkUpdates) return;
-    api.updateCheck().then(
-      (u) => u.newer && ui.toast(tr('观澜有新版本 {0}（当前 {1}），到 设置 › 本机环境 查看。', u.latest, u.current)),
-      () => undefined,
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkUpdates]);
 
   const live = runs.filter((r) => runActive(r.status) || r.status === 'queued');
   const running = live.filter((r) => r.status !== 'queued').length;
@@ -275,6 +266,19 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
           <button className="iconbtn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={tr('切换亮色 / 暗色')}>
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
+          <UpdateButton checkAtStartup={settings.check_updates} />
+          <a
+            className="iconbtn"
+            href="https://github.com/yoob52/Tidewatch"
+            aria-label={tr('在浏览器中打开 GitHub 仓库')}
+            title={tr('在浏览器中打开 GitHub 仓库')}
+            onClick={(e) => {
+              e.preventDefault();
+              void ui.attempt(api.openUrl(e.currentTarget.href));
+            }}
+          >
+            <Icon name="github" />
+          </a>
           <WinControls />
         </div>
       </header>

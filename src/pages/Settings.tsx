@@ -2,8 +2,7 @@ import { lang, tr, type Lang } from '../lib/i18n';
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
-import { api, type UpdateProgress, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type Stage, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type Workflow, type WorkflowInput } from '../lib/api';
-import { installUpdate as runInstall, setUpdateInfo, useUpdate } from '../lib/update';
+import { api, type ApiStatus, type BackupFile, type Detection, type Member, type Settings, type SourceConfig, type SourceInput, type Stage, type SyncReport, type SyncSource, type SystemInfo, type TemplateInfo, type TicketType, type Workflow, type WorkflowInput } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { AGENTS, Field, Modal, PERMISSIONS, Seg, Switch, TYPES, switchLang, useUi } from '../lib/ui';
@@ -809,24 +808,6 @@ const PERMISSION_HINT: Record<string, string> = {
   full_auto: tr('不经确认执行任意命令'),
 };
 
-function UpdateProgressLine({ p }: { p: UpdateProgress }) {
-  if (p.phase !== 'downloading') {
-    return <p>{p.phase === 'checking' ? tr('正在查找安装包…') : p.phase === 'installing' ? tr('签名校验通过，正在安装…') : tr('安装完成，正在重启…')}</p>;
-  }
-  const mb = (n: number) => (n / 1048576).toFixed(1);
-  const pct = p.total ? Math.min(100, Math.round((p.downloaded / p.total) * 100)) : null;
-  return (
-    <>
-      <p>
-        {tr('正在下载')} {mb(p.downloaded)} MB{p.total ? tr(' / {0} MB（{1}%）', mb(p.total), pct) : ''}
-      </p>
-      <div className="bar" style={{ maxWidth: 320 }}>
-        <i style={{ width: `${pct ?? 0}%` }} />
-      </div>
-    </>
-  );
-}
-
 export function SettingsPage({
   theme,
   setTheme,
@@ -858,23 +839,6 @@ export function SettingsPage({
     if (typeof dir === 'string') await save({ workspace_dir: dir });
   };
 
-  const { info: update, progress, error: updateError } = useUpdate();
-  const checkUpdate = async () => {
-    const u = await ui.attempt(api.updateCheck());
-    if (u) setUpdateInfo(u);
-  };
-  const installUpdate = async () => {
-    if (!update?.latest) return;
-    const ok = await ui.confirm(
-      tr('安装 {0}', update.latest),
-      <>
-        <p>{tr('观澜会下载安装包，校验签名通过后安装，然后自动重启。校验不过不会安装。')}</p>
-        <p>{tr('有运行在进行时不能安装；排队中的运行会在重启后继续。')}</p>
-      </>,
-      tr('下载并安装'),
-    );
-    if (ok) await runInstall();
-  };
   const backupNow = async () => {
     const list = await ui.attempt(api.backupNow(), tr('已备份数据库'));
     if (list) setBackups(list);
@@ -1263,49 +1227,6 @@ export function SettingsPage({
             <div>
               <b>{tr('观澜')}</b>
               <p>{info ? `${info.version} · ${info.os}` : tr('读取中…')}</p>
-              {update &&
-                (update.newer ? (
-                  <>
-                    <p>
-                      {tr('有新版本')} {update.latest}{tr('。')}
-                      {update.install_blocked
-                        ? tr('{0}请到发布页下载：', update.install_blocked)
-                        : tr('可以直接在这里安装，也可以到发布页下载：')}
-                      {update.url && (
-                        <a
-                          className="mono"
-                          href={update.url}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            void ui.attempt(api.openUrl(update.url ?? ''));
-                          }}
-                        >
-                          {update.url}
-                        </a>
-                      )}
-                    </p>
-                    {update.notes && (
-                      <details className="rec-why">
-                        <summary>{tr('这一版的更新说明')}</summary>
-                        <p style={{ whiteSpace: 'pre-wrap' }}>{update.notes}</p>
-                      </details>
-                    )}
-                    {progress && <UpdateProgressLine p={progress} />}
-                    {updateError && <p style={{ color: 'var(--cinnabar)' }}>{updateError}</p>}
-                  </>
-                ) : (
-                  <p>{update.latest ? tr('已经是最新版本（最新发布 {0}）。', update.latest) : tr('还没有发布过正式版本。')}</p>
-                ))}
-            </div>
-            <div className="sctl">
-              {update?.newer && !update.install_blocked && (
-                <button className="btn sm primary" disabled={!!progress} onClick={() => void installUpdate()}>
-                  {progress ? tr('正在更新…') : tr('下载并安装')}
-                </button>
-              )}
-              <button className="btn sm" disabled={!!progress} onClick={() => void checkUpdate()}>
-                {tr('检查更新')}
-              </button>
             </div>
           </div>
           <div className="srow">
