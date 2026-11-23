@@ -140,10 +140,10 @@ Aider 的限制：
 
 | 选项 | Codex | Claude Code |
 |---|---|---|
-| `auto` | PATH 上第一个 `pwsh.exe`，没有就用系统的 `powershell.exe` | 默认 Git Bash |
-| `pwsh` | 把 MSI 装的 PowerShell 7 放到 PATH 最前 | 同左，并设 `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` |
+| `auto` | 优先使用 PATH 上的实际 `pwsh.exe`；只有 Store 别名时查找实际安装路径；否则回退到系统的 `powershell.exe` | 默认 Git Bash |
+| `pwsh` | 使用 PATH 上已有的 PowerShell 7，或将 MSI / Microsoft Store 的实际安装目录加入 PATH 最前 | 同左，并设 `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` |
 | `powershell` | 从 PATH 去掉所有带 `pwsh.exe` 的目录 | 同左，并设 `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` |
 | `git_bash` | 不受影响（Codex 只用 PowerShell） | `CLAUDE_CODE_GIT_BASH_PATH` 指向 Git for Windows 的 bash |
 
-任何选项下都会从 PATH 去掉装着 Store 版 `pwsh.exe` 别名的 WindowsApps 目录：Agent 的沙箱启动它会报「拒绝访问」（错误 5）。Codex 不读 `SHELL` / `COMSPEC`，两个 Agent 都不能用 cmd 当 Shell，所以没有 cmd 选项。
+任何选项下都会从 PATH 去掉装着 Store 版 `pwsh.exe` 别名的 WindowsApps 目录：Agent 的沙箱启动它会报「拒绝访问」（错误 5）。Codex 自动选 Shell 时，如果 PATH 上只有 Store 别名，就尝试使用已注册包中的 `pwsh.exe`。Codex 不读 `SHELL` / `COMSPEC`，两个 Agent 都不能用 cmd 当 Shell，所以没有 cmd 选项。
 
