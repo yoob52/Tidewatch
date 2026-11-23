@@ -802,7 +802,8 @@ export type EngineEvent =
 export const api = {
   systemInfo: () => invoke<SystemInfo>('system_info'),
   /** 托盘菜单跟着界面语言走。 */
-  trayLabels: (show: string, quit: string, tooltip: string) => invoke<void>('tray_labels', { show, quit, tooltip }),
+  trayLabels: (show: string, quit: string, tooltip: string, quitMessage: string, cancel: string) =>
+    invoke<void>('tray_labels', { show, quit, tooltip, quitMessage, cancel }),
   /** 这个协议的 Provider 哪个 Agent 能直接用；不能的给出 LiteLLM 桥接说明。 */
   providerCompat: (name: string, protocol: string, baseUrl: string | null, defaultModel: string | null) =>
     invoke<ProviderCompat[]>('provider_compat', { name, protocol, baseUrl, defaultModel }),

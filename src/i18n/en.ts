@@ -632,6 +632,7 @@ export const EN: Record<string, string> = {
   '缩到系统托盘': 'Minimize to tray',
   '退出观澜': 'Quit Tidewatch',
   '显示观澜': 'Show Tidewatch',
+  '还有正在运行的 Agent，退出会中断它们。确定退出观澜吗？': 'Agents are still running and quitting will interrupt them. Quit Tidewatch anyway?',
   '外观': 'Appearance',
   '只保存在这台机器上。': 'Saved on this machine only.',
   '浅色': 'Light',
