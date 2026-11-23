@@ -109,7 +109,9 @@ fn escape_stray_quotes(s: &str) -> String {
                 in_str = true;
             } else {
                 let next = chars[i + 1..].iter().find(|c| !c.is_whitespace());
-                if matches!(next, None | Some(',' | '"' | ':' | '}' | ']')) {
+                // 紧挨着的 `""` 是引用短语收尾，中间隔了空白的是漏了逗号
+                let quoted_tail = chars.get(i + 1) == Some(&'"');
+                if !quoted_tail && matches!(next, None | Some(',' | '"' | ':' | '}' | ']')) {
                     in_str = false;
                 } else {
                     out.push('\\');
@@ -724,6 +726,8 @@ mod tests {
         assert_eq!(v["issues"][0]["question"], "可明确写\"仅支持 number\"。");
         assert_eq!(v["issues"][0]["n"], 1);
         assert!(extract_json("没有 JSON").is_err());
+        let v = extract_json(r#"{"s": "写成"xxx"", "n": 1}"#).unwrap();
+        assert_eq!(v["s"], "写成\"xxx\"");
         // 漏了逗号不能把两条合成一条
         assert!(extract_json(r#"{"c": ["a" "b"]}"#).is_err());
     }
