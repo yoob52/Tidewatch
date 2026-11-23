@@ -157,6 +157,9 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
     void api.systemInfo().then(setSys, () => setSys(null));
   }, []);
   useEffect(() => {
+    void api.trayLabels(tr('显示观澜'), tr('退出观澜'), tr('观澜')).catch(() => {});
+  }, []);
+  useEffect(() => {
     localStorage.setItem('tw-explorer', narrow ? 'off' : 'on');
   }, [narrow]);
   useEffect(() => {

@@ -27,6 +27,8 @@ pub struct Settings {
     pub merge_mode: String,
     pub delete_branch_after_merge: bool,
     pub notifications: bool,
+    /// 点窗口右上角的关闭按钮时缩到系统托盘、后台继续跑；关掉则直接退出。
+    pub close_to_tray: bool,
     /// 单次 Run 的最长时间（分钟）；0 表示不限。
     pub run_timeout_minutes: u32,
     /// 确认拆分后自动开始开发。
@@ -82,6 +84,7 @@ impl Default for Settings {
             merge_mode: "merge".into(),
             delete_branch_after_merge: true,
             notifications: true,
+            close_to_tray: true,
             run_timeout_minutes: 60,
             auto_develop: false,
             auto_start_unblocked: true,
