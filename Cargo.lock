@@ -4856,7 +4856,7 @@ dependencies = [
 
 [[package]]
 name = "tidewatch"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4871,7 +4871,7 @@ dependencies = [
 
 [[package]]
 name = "tidewatch-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -5201,7 +5201,7 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "twctl"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "ctrlc",
