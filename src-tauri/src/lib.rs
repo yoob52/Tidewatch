@@ -1069,7 +1069,7 @@ struct UpdateStatus {
     install_blocked: Option<String>,
 }
 
-/// 联网看有没有新版本。只在用户点了「检查更新」或打开了启动时检查的开关时调用。
+/// 联网看有没有新版本。应用启动时或用户手动点「检查更新」时调用。
 #[tauri::command]
 async fn update_check(app: tauri::AppHandle) -> CmdResult<UpdateStatus> {
     let info = tauri::async_runtime::spawn_blocking(|| {

@@ -670,8 +670,6 @@ export const EN: Record<string, string> = {
   '已经是最新版本（最新发布 {0}）。': 'Already up to date (latest release {0}).',
   '还没有发布过正式版本。': 'No stable version has been released yet.',
   '正在更新…': 'Updating…',
-  '启动时检查更新': 'Check for updates at startup',
-  '打开后，每次启动联网读一次 GitHub 上的最新版本号，不发送任何本机数据，也不会自动下载或安装（安装要你点「下载并安装」并确认）。默认关闭。': 'When on, each start reads the latest version number from GitHub once; no local data is sent and nothing is downloaded or installed automatically (installing needs you to click "Download and install" and confirm). Off by default.',
   '数据库': 'Database',
   '结构第': 'schema v',
   '版 · SQLite': '· SQLite',

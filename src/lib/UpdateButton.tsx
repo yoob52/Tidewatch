@@ -23,7 +23,7 @@ function UpdateProgressLine({ p }: { p: UpdateProgress }) {
   );
 }
 
-export function UpdateButton({ checkAtStartup }: { checkAtStartup: boolean }) {
+export function UpdateButton() {
   const ui = useUi();
   const { info, checking, progress, error } = useUpdate();
   const [open, setOpen] = useState(false);
@@ -31,7 +31,6 @@ export function UpdateButton({ checkAtStartup }: { checkAtStartup: boolean }) {
   const button = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (!checkAtStartup) return;
     let active = true;
     void checkUpdate()?.then((u) => {
       if (active && u?.newer) ui.toast(tr('观澜有新版本 {0}（当前 {1}），点击右上角的更新按钮查看。', u.latest, u.current));
@@ -39,7 +38,7 @@ export function UpdateButton({ checkAtStartup }: { checkAtStartup: boolean }) {
     return () => {
       active = false;
     };
-  }, [checkAtStartup, ui]);
+  }, [ui]);
 
   const close = () => {
     setOpen(false);

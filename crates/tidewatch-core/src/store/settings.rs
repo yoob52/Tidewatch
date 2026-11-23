@@ -21,8 +21,6 @@ pub struct Settings {
     pub auto_fix_attempts: u32,
     /// 子任务进入待验收时，自动让另一个 Agent 审查 Diff。
     pub auto_cross_review: bool,
-    /// 启动时联网看一眼有没有新版本（只读 GitHub 上的版本号）。默认关：观澜默认不联网。
-    pub check_updates: bool,
     /// `merge`（--no-ff）或 `squash`。
     pub merge_mode: String,
     pub delete_branch_after_merge: bool,
@@ -80,7 +78,6 @@ impl Default for Settings {
             auto_test: true,
             auto_fix_attempts: 2,
             auto_cross_review: false,
-            check_updates: false,
             merge_mode: "merge".into(),
             delete_branch_after_merge: true,
             notifications: true,
@@ -193,6 +190,23 @@ mod tests {
         s.default_permission = "full_auto".into();
         s.agent_shell = "cmd".into();
         assert!(save(&conn, &s).is_err(), "Agent 不能用 cmd 当 Shell");
+    }
+
+    #[test]
+    fn legacy_update_preference_does_not_affect_other_settings() {
+        let conn = crate::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO setting (key, value_json) VALUES (?1, ?2)",
+            [KEY, r#"{"check_updates":false,"max_concurrency":3}"#],
+        )
+        .unwrap();
+        let loaded = get(&conn).unwrap();
+        assert_eq!(loaded.max_concurrency, 3);
+        let saved = save(&conn, &loaded).unwrap();
+        assert!(serde_json::to_value(saved)
+            .unwrap()
+            .get("check_updates")
+            .is_none());
     }
 
     #[test]
