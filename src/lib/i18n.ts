@@ -15,21 +15,31 @@ function initial(): Lang {
 export const lang: Lang = initial();
 document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
 
-// 敲过字、现在还在页面上的输入框：切换语言要重新加载，先问一句，免得没保存的输入丢掉。
-// 不按路由清零：同一页内换标签时地址会变，但编辑框还挂着。
-const typed = new Set<Element>();
+// 这一页上有没有敲过字：切换语言要重新加载，先问一句，免得没保存的输入丢掉。
+// 只在换了页面（或换了一张工单）时清零；页内换标签、换输入模式时草稿还在页面状态里。
+function pageId(): string {
+  const [page, a] = (window.location.hash.slice(2) || 'board').split('?')[0].split('/');
+  return page === 'ticket' ? `${page}/${a ?? ''}` : page;
+}
+
+let typed = false;
+let typedAt = pageId();
 document.addEventListener(
   'input',
   (e) => {
     const el = e.target;
-    if ((el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) && el.closest('.main')) typed.add(el);
+    if ((el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) && el.closest('.main')) typed = true;
   },
   true,
 );
+window.addEventListener('hashchange', () => {
+  const id = pageId();
+  if (id !== typedAt) typed = false;
+  typedAt = id;
+});
 
 export function typedOnPage(): boolean {
-  for (const el of typed) if (!el.isConnected) typed.delete(el);
-  return typed.size > 0;
+  return typed;
 }
 
 export function setLang(next: Lang) {
