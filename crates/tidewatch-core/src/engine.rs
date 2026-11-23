@@ -1914,6 +1914,8 @@ impl Inner {
                 run.permission.as_deref().unwrap_or("workspace_write"),
             )?,
             resume_session: run.resume_session_id.clone(),
+            isolated_session_dir: (kind == AgentKind::Aider && run.task_id.is_none())
+                .then(|| logs.join(format!("{}.aider", run.id))),
             allowed_tools: project
                 .commands
                 .checks()

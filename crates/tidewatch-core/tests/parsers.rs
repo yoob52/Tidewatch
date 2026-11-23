@@ -456,6 +456,38 @@ fn aider_real_bad_key_exits_zero_but_fails() {
 }
 
 #[test]
+fn aider_isolated_session_does_not_use_development_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let review = temp.path().join("review");
+    let spec = RunSpec {
+        cwd: temp.path().to_path_buf(),
+        binary: Some("/bin/aider".into()),
+        isolated_session_dir: Some(review.clone()),
+        ..Default::default()
+    };
+    let aider = adapter(AgentKind::Aider);
+    aider.prepare(&spec).unwrap();
+    let command = aider.build_command(&spec).unwrap();
+    for (flag, file) in [
+        ("--chat-history-file", "chat.md"),
+        ("--input-history-file", "input.txt"),
+        ("--message-file", ".aider.tidewatch-prompt.md"),
+    ] {
+        let path = review.join(file);
+        assert!(command
+            .args
+            .windows(2)
+            .any(|args| args[0] == flag && args[1] == path.display().to_string()));
+    }
+    assert!(command
+        .args
+        .iter()
+        .any(|arg| arg == "--no-restore-chat-history"));
+    assert!(review.join(".aider.tidewatch-prompt.md").is_file());
+    assert!(!temp.path().join(".aider.tidewatch-prompt.md").exists());
+}
+
+#[test]
 fn new_agent_command_lines() {
     let dir = tempfile::tempdir().unwrap();
     let spec = |resume: Option<&str>, permission| RunSpec {
