@@ -33,6 +33,10 @@ impl AgentAdapter for CodexAdapter {
             args.extend(["-m".into(), m.clone()]);
         }
         args.extend(["-c".into(), format!("sandbox_mode={sandbox}")]);
+        if cfg!(windows) {
+            // 不指定时 Codex 用旧版受限令牌沙箱，在很多 Windows 上任何命令都被 policy 拒绝、工作区也写不了
+            args.extend(["-c".into(), "windows.sandbox=unelevated".into()]);
+        }
         if spec.no_tools {
             // 只读沙箱里仍然能 cat 任意文件；把跑命令的工具整个关掉
             for f in ["shell_tool", "unified_exec"] {

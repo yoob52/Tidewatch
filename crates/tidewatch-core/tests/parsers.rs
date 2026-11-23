@@ -256,7 +256,7 @@ fn command_lines() {
         .build_command(&spec(None, PermissionMode::WorkspaceWrite))
         .unwrap();
     assert_eq!(
-        c.args,
+        without_windows_sandbox(c.args),
         [
             "exec",
             "--json",
@@ -272,7 +272,7 @@ fn command_lines() {
         .build_command(&spec(Some("sid"), PermissionMode::ReadOnly))
         .unwrap();
     assert_eq!(
-        c.args,
+        without_windows_sandbox(c.args),
         [
             "exec",
             "resume",
@@ -286,6 +286,18 @@ fn command_lines() {
             "-"
         ]
     );
+}
+
+/// Windows 上 Codex 额外带 `-c windows.sandbox=unelevated`，其它平台没有。
+fn without_windows_sandbox(mut a: Vec<String>) -> Vec<String> {
+    if cfg!(windows) {
+        let i = a
+            .iter()
+            .position(|x| x == "windows.sandbox=unelevated")
+            .expect("Windows 上应指定沙箱实现");
+        a.drain(i - 1..=i);
+    }
+    a
 }
 
 #[test]
