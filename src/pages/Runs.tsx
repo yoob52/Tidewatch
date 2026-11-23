@@ -150,9 +150,9 @@ function RunItem({ r, on, now }: { r: RunRow; on: boolean; now: number }) {
 }
 
 const MODES: { id: FollowupMode; label: string; hint: string }[] = [
-  { id: 'steer', label: tr('引导'), hint: tr('直接送进运行中的会话，Agent 在当前这一轮里接着处理。') },
-  { id: 'restart', label: tr('打断重开'), hint: tr('停掉这一轮，再续接会话、带着这条指令重新开始。') },
   { id: 'queue', label: tr('排队'), hint: tr('等这一轮结束，再续接会话、带着这条指令开始下一轮。') },
+  { id: 'steer', label: tr('立即发送'), hint: tr('直接送进运行中的会话，Agent 在当前这一轮里接着处理。') },
+  { id: 'restart', label: tr('打断重开'), hint: tr('停掉这一轮，再续接会话、带着这条指令重新开始。') },
 ];
 
 const OUTCOMES: Record<string, string> = {
@@ -169,7 +169,7 @@ function Composer({ r, compact, onStarted }: { r: RunRow; compact?: boolean; onS
   const startTask = useStartTask();
   const live = runActive(r.status) || r.status === 'queued';
   const [text, setText] = useState('');
-  const [mode, setMode] = useState<FollowupMode>('steer');
+  const [mode, setMode] = useState<FollowupMode>('queue');
   const [canSteer, setCanSteer] = useState(false);
   const [busy, setBusy] = useState(false);
 
