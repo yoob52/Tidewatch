@@ -471,6 +471,7 @@ export interface InstalledSkill {
   target: SkillTarget;
   dir: string;
   files: number;
+  origin: string | null;
 }
 export interface MarketSkill {
   id: string;
@@ -486,6 +487,7 @@ export interface SkillPreview {
   path: string;
   content: string;
   files: string[];
+  commit: string;
 }
 
 export interface RunRow extends Run {
@@ -936,14 +938,15 @@ export const api = {
   skillsInstalled: () => invoke<InstalledSkill[]>('skills_installed'),
   skillsMarket: (query: string) => invoke<MarketSkill[]>('skills_market', { query }),
   skillsPreview: (source: string, skillId: string) => invoke<SkillPreview>('skills_preview', { source, skillId }),
-  skillsInstall: (source: string, skillId: string, targets: SkillTarget[]) =>
-    invoke<string[]>('skills_install', { source, skillId, targets }),
+  skillsInstall: (source: string, skillId: string, commit: string, targets: SkillTarget[]) =>
+    invoke<string[]>('skills_install', { source, skillId, commit, targets }),
   skillsRemove: (target: SkillTarget, name: string) => invoke<void>('skills_remove', { target, name }),
   skillsCreate: (targets: SkillTarget[], name: string, description: string, body: string) =>
     invoke<void>('skills_create', { targets, name, description, body }),
   readLog: (path: string) => invoke<string>('read_log', { path }),
 
   statsGet: () => invoke<Stats>('stats_get'),
+  uiLangSet: (lang: string) => invoke<void>('ui_lang_set', { lang }),
 };
 
 /** 订阅引擎事件；返回取消订阅的函数。 */
