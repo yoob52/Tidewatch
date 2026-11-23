@@ -157,6 +157,17 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
     void api.systemInfo().then(setSys, () => setSys(null));
   }, []);
   useEffect(() => {
+    void api
+      .trayLabels(
+        tr('显示观澜'),
+        tr('退出观澜'),
+        tr('观澜'),
+        tr('还有正在运行的 Agent，退出会中断它们。确定退出观澜吗？'),
+        tr('取消'),
+      )
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
     localStorage.setItem('tw-explorer', narrow ? 'off' : 'on');
   }, [narrow]);
   useEffect(() => {

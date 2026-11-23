@@ -1,4 +1,5 @@
 //! Tauri 壳：把 tidewatch-core 暴露成命令，并把引擎事件转给界面。业务逻辑都在 core 里。
+mod tray;
 mod updater;
 
 use serde::Serialize;
@@ -1496,7 +1497,15 @@ pub fn maybe_run_mock_agent() -> Option<i32> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // 窗口缩在托盘里时再从开始菜单打开，应该叫出原来那个，而不是再起一个。
+    // 指定了数据目录的（测试、多开）各管各的，不受限制
+    if std::env::var_os("TIDEWATCH_DATA_DIR").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main(app)
+        }));
+    }
+    builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1540,7 +1549,16 @@ pub fn run() {
             };
             apply_api(&state);
             app.manage(state);
+            // 托盘起不来（比如没有任务栏的环境）时关闭按钮照常退出，不影响使用
+            if let Err(e) = tray::setup(app) {
+                eprintln!("系统托盘创建失败：{e}");
+            }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                tray::on_close_requested(window, api);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             system_info,
@@ -1641,7 +1659,8 @@ pub fn run() {
             skills_create,
             read_log,
             stats_get,
-            ui_lang_set
+            ui_lang_set,
+            tray::tray_labels
         ])
         .run(tauri::generate_context!())
         .expect("启动观澜失败");

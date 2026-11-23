@@ -1166,6 +1166,22 @@ export function SettingsPage({
           </div>
           <div className="srow">
             <div>
+              <b>{tr('关闭窗口时')}</b>
+              <p>{tr('缩到系统托盘时，正在跑的 Agent 会继续运行；在托盘图标上右键可以退出观澜。')}</p>
+            </div>
+            <div className="sctl">
+              <Seg
+                value={settings.close_to_tray ? 'tray' : 'quit'}
+                onChange={(v) => void save({ close_to_tray: v === 'tray' })}
+                options={[
+                  ['tray', tr('缩到系统托盘')],
+                  ['quit', tr('退出观澜')],
+                ]}
+              />
+            </div>
+          </div>
+          <div className="srow">
+            <div>
               <b>{tr('外观')}</b>
               <p>{tr('只保存在这台机器上。')}</p>
             </div>
