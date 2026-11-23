@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { api, type TicketStatus, type TicketSummary } from '../lib/api';
 import { useData } from '../lib/data';
 import { canMove } from '../lib/flow';
+import { useConfirmTicketRun } from '../lib/start';
 import { Icon } from '../lib/Icon';
 import { Ripple, STAGES, STAGE_NAME, Seg, Stamp, runActive, useUi } from '../lib/ui';
 
@@ -29,6 +30,7 @@ export function TaskChips({ t }: { t: TicketSummary }) {
 export function BoardPage() {
   const { tickets, projects, runs, reload } = useData();
   const ui = useUi();
+  const confirmRun = useConfirmTicketRun();
   const [filter, setFilter] = useState('all');
   const [drag, setDrag] = useState<TicketSummary | null>(null);
   const [over, setOver] = useState<TicketStatus | null>(null);
@@ -57,6 +59,7 @@ export function BoardPage() {
       if (!reason) return;
       job = api.changeRequest(t.id, reason, false);
     } else {
+      if (to === 'ai_review' && !(await confirmRun())) return;
       job = api.ticketTransition(t.id, to);
     }
     const done = await ui.attempt(job);

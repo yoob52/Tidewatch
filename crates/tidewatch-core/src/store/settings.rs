@@ -11,7 +11,10 @@ pub struct Settings {
     pub max_concurrency: u32,
     pub default_agent: String,
     pub default_provider_id: Option<String>,
+    /// 可以是 full_auto：每次开始都要用户确认，AI 预审 / 拆分 / 影响分析也跟着以 full_auto 运行。
     pub default_permission: String,
+    /// Windows 上 Agent 跑命令用的 Shell：auto / pwsh / powershell / git_bash，见 `crate::shell`。
+    pub agent_shell: String,
     /// Run 结束后自动跑项目的 lint / typecheck / test / build 命令。
     pub auto_test: bool,
     /// 自动检查没过时，最多让 Agent 自己修几次；0 表示不自动修。
@@ -71,6 +74,7 @@ impl Default for Settings {
             default_agent: "claude_code".into(),
             default_provider_id: None,
             default_permission: "workspace_write".into(),
+            agent_shell: "auto".into(),
             auto_test: true,
             auto_fix_attempts: 2,
             auto_cross_review: false,
@@ -117,13 +121,8 @@ pub fn save(conn: &Connection, s: &Settings) -> Result<Settings> {
         return Err(Error::invalid("并发上限至少为 1。"));
     }
     crate::agent::AgentKind::parse(&s.default_agent)?;
-    if crate::agent::PermissionMode::parse(&s.default_permission)?
-        == crate::agent::PermissionMode::FullAuto
-    {
-        return Err(Error::invalid(
-            "全自动不能设为全局默认权限；需要时请在单个子任务上明确选择。",
-        ));
-    }
+    crate::agent::PermissionMode::parse(&s.default_permission)?;
+    crate::shell::validate(&s.agent_shell)?;
     if !matches!(s.merge_mode.as_str(), "merge" | "squash") {
         return Err(Error::invalid("合并方式只能是 merge 或 squash。"));
     }
@@ -185,7 +184,12 @@ mod tests {
         assert!(save(&conn, &s).is_err());
         s.max_concurrency = 1;
         s.default_permission = "full_auto".into();
-        assert!(save(&conn, &s).is_err(), "全自动不能当全局默认");
+        assert_eq!(save(&conn, &s).unwrap().default_permission, "full_auto");
+        s.default_permission = "yolo".into();
+        assert!(save(&conn, &s).is_err());
+        s.default_permission = "full_auto".into();
+        s.agent_shell = "cmd".into();
+        assert!(save(&conn, &s).is_err(), "Agent 不能用 cmd 当 Shell");
     }
 
     #[test]

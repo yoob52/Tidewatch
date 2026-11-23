@@ -77,6 +77,18 @@ pub(super) struct TicketPlan {
     pub(super) agent: String,
     pub(super) provider_id: Option<String>,
     pub(super) model: Option<String>,
+    /// 预审 / 拆分 / 影响分析的权限：默认权限是 full_auto 时跟着它，否则只读。
+    pub(super) permission: &'static str,
+}
+
+/// 工单级运行（预审、拆分、影响分析）在项目目录里跑，不在 worktree 里：
+/// 只有用户把默认权限设成 full_auto 时才放开，否则保持只读。
+pub(crate) fn ticket_run_permission(default_permission: &str) -> &'static str {
+    if default_permission == "full_auto" {
+        "full_auto"
+    } else {
+        "read_only"
+    }
 }
 
 pub(super) fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<TicketPlan> {
@@ -111,6 +123,7 @@ pub(super) fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> R
         agent: kind.as_str().into(),
         provider_id,
         model: provider.and_then(|p| p.default_model),
+        permission: ticket_run_permission(&st.default_permission),
     })
 }
 
@@ -131,7 +144,11 @@ pub(super) fn enqueue_ticket_run(
             agent: &plan.agent,
             provider_id: plan.provider_id.as_deref(),
             model: plan.model.as_deref(),
-            permission: "read_only",
+            permission: if matches!(purpose, "review" | "split" | "impact") {
+                plan.permission
+            } else {
+                "read_only"
+            },
             resume_session_id: None,
             prompt,
         },
@@ -266,6 +283,7 @@ fn plan_code_review(
         agent: kind.as_str().into(),
         provider_id: provider.as_ref().map(|p| p.id.clone()),
         model: provider.and_then(|p| p.default_model),
+        permission: "read_only",
     })
 }
 

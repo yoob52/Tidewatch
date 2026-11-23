@@ -28,6 +28,8 @@ export interface Settings {
   default_agent: string;
   default_provider_id: string | null;
   default_permission: string;
+  /** Windows 上 Agent 跑命令用的 Shell。 */
+  agent_shell: 'auto' | 'pwsh' | 'powershell' | 'git_bash';
   auto_test: boolean;
   /** 自动检查没过时最多让 Agent 自己修几次；0 不自动修。 */
   auto_fix_attempts: number;

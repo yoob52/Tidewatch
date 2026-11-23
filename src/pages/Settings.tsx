@@ -788,6 +788,20 @@ function SyncSection() {
   );
 }
 
+const SHELL_NAME: Record<Settings['agent_shell'], string> = {
+  auto: '自动',
+  pwsh: 'PowerShell 7',
+  powershell: 'Windows PowerShell',
+  git_bash: 'Git Bash',
+};
+
+const SHELL_HINT: Record<Settings['agent_shell'], string> = {
+  auto: '按 Agent 自己的默认（Codex 用 PowerShell，Claude Code 用 Git Bash），只是避开 Microsoft Store 版 pwsh 的别名，Agent 启动它会被拒绝访问',
+  pwsh: '要求用 MSI 装的 PowerShell 7（Store 版不行）。Claude Code 额外开启 PowerShell 工具',
+  powershell: '系统自带的 powershell.exe。Claude Code 额外开启 PowerShell 工具',
+  git_bash: 'Claude Code 用 Git for Windows 的 bash。Codex 只能用 PowerShell，不受影响',
+};
+
 const PERMISSION_HINT: Record<string, string> = {
   read_only: '只读，不改文件',
   workspace_write: '可改 worktree 内的文件',
@@ -1021,14 +1035,43 @@ export function SettingsPage({
           <div className="srow">
             <div>
               <b>默认权限档位</b>
-              <p>{PERMISSION_HINT[settings.default_permission]}。full_auto 不能设为默认，只能在子任务上单独选，每次开始都要确认。</p>
+              <p>
+                {PERMISSION_HINT[settings.default_permission]}。对所有 Agent 生效，子任务上可以单独改。选 full_auto 时，每次开始都要确认；AI 预审、拆分和影响分析也以 full_auto 运行，其他档位下它们只读。
+              </p>
             </div>
             <div className="sctl">
               <Seg
                 value={settings.default_permission}
-                onChange={(v) => void save({ default_permission: v })}
-                options={PERMISSIONS.filter((p) => p !== 'full_auto').map((p) => [p, p] as const)}
+                onChange={async (v) => {
+                  if (
+                    v === 'full_auto' &&
+                    !(await ui.confirm('把 full_auto 设为默认', 'Codex 用 danger-full-access，Claude Code 用 bypassPermissions，Gemini 用 yolo：Agent 不经确认执行任意命令。每次开始仍会再确认一次。', '设为默认', true))
+                  )
+                    return;
+                  void save({ default_permission: v });
+                }}
+                options={PERMISSIONS.map((p) => [p, p] as const)}
               />
+            </div>
+          </div>
+          <div className="srow">
+            <div>
+              <b>Agent 使用的 Shell（Windows）</b>
+              <p>{SHELL_HINT[settings.agent_shell]}</p>
+            </div>
+            <div className="sctl">
+              <select
+                className="input"
+                style={{ width: 220 }}
+                value={settings.agent_shell}
+                onChange={(e) => void save({ agent_shell: e.target.value as Settings['agent_shell'] })}
+              >
+                {Object.entries(SHELL_NAME).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
         </div>

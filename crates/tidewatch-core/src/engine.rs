@@ -1886,6 +1886,8 @@ impl Inner {
             spec.env.push((RUN_TOKEN_ENV.into(), token));
             spec.mcp = Some(mcp);
         }
+        spec.env
+            .extend(crate::shell::env_for(kind, &st.agent_shell)?);
         let attempt = {
             let conn = lock(&self.db);
             let reason = if run.resume_session_id.is_some() {

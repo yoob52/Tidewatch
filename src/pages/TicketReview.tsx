@@ -4,6 +4,7 @@ import { api, type Issue, type Resolution, type Severity } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { AgentTag, Empty, Inline, Md, Modal, Ripple, fmtCost, fmtDur, go, runActive, runSeconds, useUi } from '../lib/ui';
+import { useConfirmTicketRun } from '../lib/start';
 import type { TabProps } from './Ticket';
 
 const SEV: Record<Severity, [string, string]> = {
@@ -87,6 +88,7 @@ function PrdEditDialog({
 
 export function FinalizeDialog({ d, blockers, onClose, onDone }: { d: TabProps['d']; blockers: number; onClose: () => void; onDone: () => Promise<void> }) {
   const ui = useUi();
+  const confirmRun = useConfirmTicketRun();
   const t = d.ticket;
   const hasTasks = d.tasks.some((k) => k.status !== 'cancelled');
   const impact = !!t.change_from_version_id && hasTasks;
@@ -98,6 +100,7 @@ export function FinalizeDialog({ d, blockers, onClose, onDone }: { d: TabProps['
   const blocked = blockers > 0 || criteria === 0 || needsProject;
 
   const confirm = async () => {
+    if ((split || impact) && !(await confirmRun())) return;
     setBusy(true);
     const res = await ui.attempt(api.ticketFinalize(t.id, split));
     setBusy(false);
@@ -168,6 +171,7 @@ export function FinalizeDialog({ d, blockers, onClose, onDone }: { d: TabProps['
 
 export function ReviewTab({ d, reload }: TabProps) {
   const ui = useUi();
+  const confirmRun = useConfirmTicketRun();
   const data = useData();
   const t = d.ticket;
   const [dialog, setDialog] = useState<
@@ -192,6 +196,7 @@ export function ReviewTab({ d, reload }: TabProps) {
   const criteria = [...t.acceptance_criteria, ...(lastGood?.criteria_draft ?? []).filter((c) => !t.acceptance_criteria.includes(c))];
 
   const startReview = async () => {
+    if (!(await confirmRun())) return;
     if (await ui.attempt(api.reviewStart(t.id), '已提交预审，有空闲并发时自动开始')) await refresh();
   };
   const skipReview = async () => {
