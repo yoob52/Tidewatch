@@ -6,6 +6,7 @@ import { api, type Priority, type TicketDraft, type TicketStatus, type TicketTyp
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { imageFiles, imageMd, insertAt, parseImages, selectionOf, uploadImage } from '../lib/images';
+import { useConfirmTicketRun } from '../lib/start';
 import { AGENTS, Field, Md, PRIO, Prio, STAGE_NAME, Seg, Stamp, TYPES, go, useUi } from '../lib/ui';
 
 type Mode = 'paste' | 'file' | 'form';
@@ -15,6 +16,7 @@ const KIND_NAME: Record<string, string> = { backend: tr('后端'), frontend: tr(
 export function NewTicketPage() {
   const { projects, reload } = useData();
   const ui = useUi();
+  const confirmRun = useConfirmTicketRun();
   const [mode, setMode] = useState<Mode>('paste');
   const [raw, setRaw] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);
@@ -128,6 +130,7 @@ export function NewTicketPage() {
       ui.toast(tr('开始修复前请先绑定一个项目'));
       return;
     }
+    if ((to === 'ai_review' || to === 'developing') && !(await confirmRun())) return;
     if (to === 'ai_review' && picked.length === 0) {
       ui.toast(tr('提交预审前请先绑定一个项目：AI 要在项目目录里只读地查看代码'));
       return;

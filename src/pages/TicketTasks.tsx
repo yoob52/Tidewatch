@@ -16,7 +16,7 @@ import {
   type TaskInput,
 } from '../lib/api';
 import { useData } from '../lib/data';
-import { useStartTask } from '../lib/start';
+import { useConfirmTicketRun, useStartTask } from '../lib/start';
 import { Icon } from '../lib/Icon';
 import {
   AGENTS,
@@ -292,6 +292,7 @@ function DraftList({ drafts, setDrafts, choices }: { drafts: TaskDraft[]; setDra
 /** 定稿后 AI 给出的拆分建议 / 变更影响分析：生成中、失败、等确认三种状态。 */
 function ProposalPanel({ d, p, refresh }: { d: TabProps['d']; p: Proposal; refresh: () => Promise<unknown> }) {
   const ui = useUi();
+  const confirmRun = useConfirmTicketRun();
   const { projects } = useData();
   const t = d.ticket;
   const bound = projects.filter((x) => t.projects.some((b) => b.project_id === x.id));
@@ -320,7 +321,9 @@ function ProposalPanel({ d, p, refresh }: { d: TabProps['d']; p: Proposal; refre
     setBusy(false);
     if (res !== undefined) await refresh();
   };
-  const regenerate = () => act(api.proposalRegenerate(t.id), tr('已重新提交，AI 正在生成{0}', what));
+  const regenerate = async () => {
+    if (await confirmRun()) await act(api.proposalRegenerate(t.id), tr('已重新提交，AI 正在生成{0}', what));
+  };
   const discard = async () => {
     const body =
       p.kind === 'impact' ? tr('已有的子任务保持原样，不追加任何工作。确定这次变更不影响它们吗？') : tr('之后可以自己添加子任务，或再让 AI 拆一次。');
@@ -650,6 +653,7 @@ function ComparePanel({ group, runs, adopt }: { group: Task[]; runs: Run[]; adop
 export function TasksTab({ d, reload }: TabProps) {
   const { projects, providers } = useData();
   const ui = useUi();
+  const confirmRun = useConfirmTicketRun();
   const data = useData();
   const start = useStartTask(reload);
   const [adding, setAdding] = useState(false);
@@ -740,7 +744,7 @@ export function TasksTab({ d, reload }: TabProps) {
                 <button
                   className="btn"
                   onClick={async () => {
-                    if (await ui.attempt(api.proposalRegenerate(t.id), tr('AI 正在拆分子任务'))) await refresh();
+                    if ((await confirmRun()) && (await ui.attempt(api.proposalRegenerate(t.id), tr('AI 正在拆分子任务')))) await refresh();
                   }}
                 >
                   <Icon name="spark" size={13} />

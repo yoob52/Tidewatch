@@ -14,7 +14,9 @@ pub mod prompt;
 pub mod provider;
 pub mod runner;
 pub mod secrets;
+pub mod shell;
 pub mod skills;
+||||||| 93c3351
 pub mod store;
 pub mod sync;
 pub mod update;

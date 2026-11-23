@@ -230,6 +230,7 @@ impl Engine {
                 provider_id: provider.as_ref().map(|p| p.id.clone()),
                 model: crate::store::clean(input.model.clone())
                     .or(provider.and_then(|p| p.default_model)),
+                permission: "read_only",
             };
             let prompt = format!(
                 "你是被另一个 Agent 委派来协助的。只读地查看当前目录里的代码，不要修改任何文件；完成后用文字给出结论。\n\n## 委派的任务\n\n{prompt}"
