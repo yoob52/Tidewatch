@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { api, type TicketStatus, type TicketSummary } from '../lib/api';
 import { useData } from '../lib/data';
 import { canMove } from '../lib/flow';
+import { useConfirmTicketRun } from '../lib/start';
 import { Icon } from '../lib/Icon';
 import { Ripple, STAGES, STAGE_NAME, Seg, Stamp, runActive, useUi } from '../lib/ui';
 
@@ -30,6 +31,7 @@ export function TaskChips({ t }: { t: TicketSummary }) {
 export function BoardPage() {
   const { tickets, projects, runs, reload } = useData();
   const ui = useUi();
+  const confirmRun = useConfirmTicketRun();
   const [filter, setFilter] = useState('all');
   const [drag, setDrag] = useState<TicketSummary | null>(null);
   const [over, setOver] = useState<TicketStatus | null>(null);
@@ -55,12 +57,14 @@ export function BoardPage() {
       return;
     }
     if (to === 'finalized' && !(await ui.confirm(tr('定稿'), tr('定稿后 {0} 的 PRD 将锁定，再修改需要「发起变更」。要让 AI 拆分子任务，请在工单的「审核」页定稿。', t.key), tr('定稿')))) return;
+    if (to === 'finalized' && !(await confirmRun())) return;
     let job: Promise<unknown>;
     if (to === 'human_review' && (t.status === 'finalized' || t.status === 'developing')) {
       const reason = await ui.prompt(tr('发起变更'), tr('{0} 回到人工审核，PRD 重新可编辑；正在运行的子任务会继续跑完。', t.key), tr('为什么要改需求'), tr('发起变更'), true);
       if (!reason) return;
       job = api.changeRequest(t.id, reason, false);
     } else {
+      if (to === 'ai_review' && !(await confirmRun())) return;
       job = api.ticketTransition(t.id, to);
     }
     const done = await ui.attempt(job);

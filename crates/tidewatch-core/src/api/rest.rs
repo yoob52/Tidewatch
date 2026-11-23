@@ -245,8 +245,20 @@ pub(super) fn handle(
         }
         ("POST", ["tickets", id, "review"]) => {
             writer(m)?;
-            let id = tickets::get(&lock(engine.db()), id)?.id;
-            ok(run_json(&engine.start_review(&id)?))
+            let (id, full_auto) = {
+                let conn = lock(engine.db());
+                let default = crate::store::settings::get(&conn)?.default_permission;
+                (tickets::get(&conn, id)?.id, default == "full_auto")
+            };
+            // 默认权限是 full_auto 时预审也以 full_auto 运行，和子任务一样要 owner 明确确认
+            let confirmed = m.is_owner() && body.get("confirm_full_auto") == Some(&json!(true));
+            if full_auto && !confirmed {
+                return Err(ApiError::new(
+                    403,
+                    "默认权限是 full_auto，预审会以 full_auto 运行：只有 owner 能发起，并且要带上 \"confirm_full_auto\": true。",
+                ));
+            }
+            ok(run_json(&engine.start_review_as(&id, confirmed)?))
         }
         ("POST", ["tickets", id, "start"]) => {
             writer(m)?;

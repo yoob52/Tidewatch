@@ -25,8 +25,9 @@
 
 ## 3. Agent 权限边界
 
-- Agent 只在 worktree 中运行；默认档位不允许完全自动。
-- `full_auto` 需在设置中逐项目开启，并在启动前二次确认。
+- 子任务的 Agent 只在 worktree 中运行；出厂默认档位是 `workspace_write`。
+- `full_auto` 可以在子任务上单独选，也可以在设置里设为所有 Agent 的默认；每次开始都要二次确认，系统不会自动让它入队，经接口开始只有 owner 能做并且要带 `confirm_full_auto`。
+- AI 预审、拆分、影响分析在项目目录里跑：默认档位是 `full_auto` 时跟着它（发起前同样确认），否则只读。
 - 运行环境变量白名单：只传必要的系统变量 + Provider 变量，避免把用户 shell 中的其他密钥泄露给 Agent。
 - 观澜从不自动 `git push`；推送和开 PR 由用户点击触发。
 - 危险命令高亮与（可选）拦截：基于 Agent 的工具调用事件识别。

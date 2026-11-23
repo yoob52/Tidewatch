@@ -1354,8 +1354,17 @@ impl Inner {
             && !cancel.load(Ordering::SeqCst)
         {
             let conn = lock(&self.db);
+            // 会以 full_auto 运行的修复要用户确认，不自动发起
             let limit = settings::get(&conn)
-                .map(|s| s.auto_fix_attempts)
+                .map(|s| {
+                    let confirm = tasks::get(&conn, &task_id)
+                        .map_or(true, |t| needs_confirmation(&t, &s.default_permission));
+                    if confirm {
+                        0
+                    } else {
+                        s.auto_fix_attempts
+                    }
+                })
                 .unwrap_or(0);
             let done = runs::list_for_task(&conn, &task_id)
                 .map(|all| {
@@ -1886,6 +1895,8 @@ impl Inner {
             spec.env.push((RUN_TOKEN_ENV.into(), token));
             spec.mcp = Some(mcp);
         }
+        spec.env
+            .extend(crate::shell::env_for(kind, &st.agent_shell)?);
         let attempt = {
             let conn = lock(&self.db);
             let reason = if run.resume_session_id.is_some() {

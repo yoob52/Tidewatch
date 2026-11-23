@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from 'react';
 import { api, type TicketDetail, type TicketStatus, type TimelineEvent } from '../lib/api';
 import { useData } from '../lib/data';
 import { FLOW } from '../lib/flow';
+import { useConfirmTicketRun } from '../lib/start';
 import { Icon } from '../lib/Icon';
 import {
   imageFiles,
@@ -71,6 +72,7 @@ function Rail({ status, skipped }: { status: TicketStatus; skipped: TicketStatus
 
 export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string }) {
   const ui = useUi();
+  const confirmRun = useConfirmTicketRun();
   const data = useData();
   const { data: d, error, reload } = useLoad(() => api.ticketGet(ticketKey), [ticketKey]);
   const [finalizing, setFinalizing] = useState(false);
@@ -127,6 +129,7 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
       const stop = busy && (await ui.confirm(tr('有子任务正在运行'), tr('要现在停掉它们吗？不停的话它们会按旧需求跑完，之后再按影响分析返工。'), tr('停掉正在运行的')));
       job = api.changeRequest(t.id, reason, stop);
     } else {
+      if (to === 'ai_review' && !(await confirmRun())) return;
       job = api.ticketTransition(t.id, to);
     }
     if (await ui.attempt(job, tr('{0} → {1}（{2}）', t.key, STAGE_NAME[to], label))) {

@@ -133,3 +133,17 @@ Aider 的限制：
 - 模型调用失败时退出码仍是 0，成败从输出里的 `litellm.*Error` 判断。
 - 它在工作目录生成 `.aider*` 文件；运行前写进 `.git/info/exclude`，不进提交。
 - 不是终端时按 80 列折行，会断开 JSON；适配器把 `COLUMNS` 设大来避免。
+
+## Windows 上的 Shell
+
+设置里的「Agent 使用的 Shell」（`agent_shell`）只改这次运行的环境变量，见 `crates/tidewatch-core/src/shell.rs`：
+
+| 选项 | Codex | Claude Code |
+|---|---|---|
+| `auto` | PATH 上第一个 `pwsh.exe`，没有就用系统的 `powershell.exe` | 默认 Git Bash |
+| `pwsh` | 把 MSI 装的 PowerShell 7 放到 PATH 最前 | 同左，并设 `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` |
+| `powershell` | 从 PATH 去掉所有带 `pwsh.exe` 的目录 | 同左，并设 `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` |
+| `git_bash` | 不受影响（Codex 只用 PowerShell） | `CLAUDE_CODE_GIT_BASH_PATH` 指向 Git for Windows 的 bash |
+
+任何选项下都会从 PATH 去掉装着 Store 版 `pwsh.exe` 别名的 WindowsApps 目录：Agent 的沙箱启动它会报「拒绝访问」（错误 5）。Codex 不读 `SHELL` / `COMSPEC`，两个 Agent 都不能用 cmd 当 Shell，所以没有 cmd 选项。
+

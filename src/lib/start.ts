@@ -23,3 +23,12 @@ export function useStartTask(reload?: () => Promise<unknown>) {
     return run;
   };
 }
+
+/** 默认权限是 full_auto 时，AI 预审 / 拆分 / 影响分析和跟随默认的子任务都以 full_auto 运行：发起前确认一次。 */
+export function useConfirmTicketRun() {
+  const ui = useUi();
+  const data = useData();
+  return async (): Promise<boolean> =>
+    data.settings.default_permission !== 'full_auto' ||
+    ui.confirm(tr('以 full_auto 运行'), tr('默认权限是 full_auto：这次 Agent 运行会不经确认执行任意命令。'), tr('我了解风险，开始'), true);
+}
