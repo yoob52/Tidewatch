@@ -16,7 +16,7 @@ svg{display:block;flex:none}
 .app.narrow .explorer{display:none}
 
 /* 标题栏 */
-.titlebar{grid-column:1/-1;display:grid;grid-template-columns:1fr minmax(240px,420px) 1fr;align-items:center;gap:12px;padding:0 10px 0 9px;background:var(--side);border-bottom:1px solid var(--line)}
+.titlebar{grid-column:1/-1;display:grid;grid-template-columns:1fr minmax(240px,420px) 1fr;align-items:center;gap:12px;padding:0 0 0 9px;background:var(--side);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px;justify-self:start}
 .mark{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--tide);background:var(--tide-wash);border:1px solid color-mix(in srgb,var(--tide) 45%,transparent)}
 .brand b{font:700 14.5px/1 var(--font-sans);letter-spacing:1.5px}
@@ -27,8 +27,12 @@ svg{display:block;flex:none}
 .search{display:flex;align-items:center;gap:8px;height:30px;width:300px;padding:0 9px;border:1px solid var(--line-2);border-radius:var(--r);background:var(--surface);color:var(--ink-3);font-size:12.5px}
 .search:hover{border-color:var(--ink-4)}
 .search kbd{margin-left:auto}
-.titlebar .tools{justify-self:end;display:flex;align-items:center;gap:6px}
+.titlebar .tools{justify-self:end;align-self:stretch;display:flex;align-items:center;gap:6px}
 .titlebar .btn{height:28px}
+.winctl{display:flex;align-self:stretch;margin-left:4px}
+.winctl button{width:46px;display:grid;place-items:center;color:var(--ink-2)}
+.winctl button:hover{background:var(--wash);color:var(--ink)}
+.winctl .close:hover{background:#c42b1c;color:#fff}
 .langbtn{height:28px;min-width:30px;padding:0 7px;border-radius:var(--r);font:600 11px var(--font-mono);color:var(--ink-2);letter-spacing:.5px}
 .langbtn:hover{background:var(--wash);color:var(--ink)}
 
