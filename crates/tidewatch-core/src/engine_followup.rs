@@ -90,12 +90,11 @@ impl Engine {
 
 impl Inner {
     pub(super) fn queue_followup(&self, run_id: &str, text: &str, mode: &str) {
-        self.followups
-            .lock()
-            .unwrap()
-            .entry(run_id.to_string())
-            .or_default()
-            .push(text.to_string());
+        let mut map = self.followups.lock().unwrap();
+        let e = map.entry(run_id.to_string()).or_default();
+        e.0.push(text.to_string());
+        e.1 |= mode == "restart";
+        drop(map);
         self.log(run_id, "followup", json!({ "text": text, "mode": mode }));
     }
 
@@ -105,10 +104,20 @@ impl Inner {
 
     /// 这轮结束后把排队的追加指令合成一条，续接会话开始下一轮。
     pub(super) fn start_followups(&self, run: &Run) {
-        let Some(list) = self.followups.lock().unwrap().remove(&run.id) else {
+        let Some((list, restart)) = self.followups.lock().unwrap().remove(&run.id) else {
             return;
         };
         let Some(task_id) = &run.task_id else { return };
+        // 排队后用户自己点了停止：不再自动拉起，等手动恢复
+        let stopped = runs::get(&lock(&self.db), &run.id).is_ok_and(|r| r.status == "stopped");
+        if stopped && !restart {
+            self.log(
+                &run.id,
+                "followup_dropped",
+                json!({ "text": list.join("\n\n") }),
+            );
+            return;
+        }
         let opts = StartOptions {
             instruction: Some(list.join("\n\n")),
             ..Default::default()

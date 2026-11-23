@@ -215,7 +215,8 @@ struct Inner {
     /// 运行中 Agent 的追加指令收件箱（只有支持流式输入的 Agent 才有）。
     steers: Mutex<HashMap<String, Arc<crate::runner::SteerInbox>>>,
     /// 排到这轮结束后、以续接会话方式开始下一轮的追加指令。
-    followups: Mutex<HashMap<String, Vec<String>>>,
+    /// run_id → (排队的追加指令, 是否为打断重开)
+    followups: Mutex<HashMap<String, (Vec<String>, bool)>>,
     /// 合并会动项目主检出的索引和 HEAD，同一时间只做一个。
     merging: Mutex<()>,
     /// 本地接口开着时的地址和签发运行令牌用的密钥。

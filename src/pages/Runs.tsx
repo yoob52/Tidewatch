@@ -74,6 +74,8 @@ function LogItem({ e, start, raw }: { e: RunEvent; start: number | null; raw: bo
       );
     case 'followup':
       return sys(p.mode === 'restart' ? tr('追加指令（打断后重开）：{0}', str(p.text)) : tr('追加指令已排队，这一轮结束后接着做：{0}', str(p.text)));
+    case 'followup_dropped':
+      return sys(tr('运行已手动停止，排队的追加指令没有执行：{0}', str(p.text)));
     case 'thinking':
       return tool(tr('思考'), '', str(p.text));
     case 'tool_call':

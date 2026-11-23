@@ -1195,6 +1195,7 @@ export const EN: Record<string, string> = {
   '已创建': 'Created',
   '新建 skill': 'New skill',
   '创建 skill': 'Create skill',
+  '运行已手动停止，排队的追加指令没有执行：{0}': 'The run was stopped by hand, so the queued follow-up was not sent: {0}',
   '写一份 SKILL.md：Agent 会根据描述判断什么时候使用它。': 'Write a SKILL.md; agents use the description to decide when to use it.',
   '字母、数字、-、_、.': 'Letters, digits, -, _ and .',
   '描述': 'Description',
