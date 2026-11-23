@@ -116,7 +116,7 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
             {tr('取消')}
           </button>
           <button className="btn primary" disabled={!ok} onClick={() => void save()}>
-            {tr('创建')}
+            {tr('创建 skill')}
           </button>
         </>
       }
@@ -180,7 +180,7 @@ export function SkillsPage() {
           </button>
           <button className="btn sm" onClick={() => setCreating(true)}>
             <Icon name="plus" size={13} />
-            {tr('新建')}
+            {tr('新建 skill')}
           </button>
         </div>
         <input className="input" value={filter} placeholder={tr('筛选已安装的 skill')} onChange={(e) => setFilter(e.target.value)} />
