@@ -1,6 +1,6 @@
 //! 系统托盘：关闭按钮默认把窗口缩到这里，后台的 Agent 继续跑；从托盘菜单才真正退出。
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use std::sync::Mutex;
 use tauri::{App, AppHandle, Manager, Window, Wry};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -12,7 +12,6 @@ use crate::AppState;
 pub struct Tray {
     show: MenuItem<Wry>,
     quit: MenuItem<Wry>,
-    icon: TrayIcon<Wry>,
     prompt: Mutex<QuitPrompt>,
 }
 
@@ -50,13 +49,13 @@ pub fn setup(app: &App) -> tauri::Result<()> {
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
-    let icon = builder.build(app)?;
+    builder.build(app)?;
     let prompt = Mutex::new(QuitPrompt {
         message: "还有正在运行的 Agent，退出会中断它们。确定退出观澜吗？".into(),
         ok: "退出观澜".into(),
         cancel: "取消".into(),
     });
-    app.manage(Tray { show, quit, icon, prompt });
+    app.manage(Tray { show, quit, prompt });
     Ok(())
 }
 
@@ -68,12 +67,10 @@ pub fn show_main(app: &AppHandle) {
     }
 }
 
-/// Windows 退出时不收托盘图标会留下一个鼠标划过才消失的空图标。
-pub fn remove(app: &AppHandle) {
-    if let Some(t) = app.try_state::<Tray>() {
-        let _ = t.icon.set_visible(false);
-    }
-    let _ = app.remove_tray_by_id("main");
+/// 图标只在最后一个句柄释放时才从 Windows 托盘删掉；app.exit 不会释放它，
+/// 不先删就会留下一个鼠标划过才消失的空图标。
+fn remove(app: &AppHandle) {
+    drop(app.remove_tray_by_id("main"));
 }
 
 fn exit(app: &AppHandle) {
@@ -142,6 +139,7 @@ pub fn on_close_requested(window: &Window, api: &tauri::CloseRequestApi) {
 
 #[tauri::command]
 pub fn tray_labels(
+    app: AppHandle,
     tray: tauri::State<Tray>,
     show: String,
     quit: String,
@@ -157,7 +155,8 @@ pub fn tray_labels(
     }
     tray.show.set_text(show).map_err(|e| e.to_string())?;
     tray.quit.set_text(quit).map_err(|e| e.to_string())?;
-    tray.icon
-        .set_tooltip(Some(tooltip))
-        .map_err(|e| e.to_string())
+    match app.tray_by_id("main") {
+        Some(icon) => icon.set_tooltip(Some(tooltip)).map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
 }
