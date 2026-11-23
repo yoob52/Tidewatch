@@ -291,10 +291,14 @@ pub trait AgentAdapter: Send + Sync {
     fn detect(&self) -> Detection {
         let path = which::which(self.default_binary()).ok();
         let version = path.as_ref().and_then(|p| {
-            let out = std::process::Command::new(p)
-                .arg("--version")
-                .output()
-                .ok()?;
+            let mut cmd = std::process::Command::new(p);
+            cmd.arg("--version");
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000);
+            }
+            let out = cmd.output().ok()?;
             let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
             (!s.is_empty()).then_some(s)
         });
