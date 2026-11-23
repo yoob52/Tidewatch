@@ -54,8 +54,10 @@ pub struct CodexAppParser {
     next_id: u64,
     /// 已发出、还没收到响应的请求 → 追加指令原文（turn/start 为空串）
     awaiting: HashMap<u64, String>,
-    /// 会话建好前收到的追加指令
+    /// 还发不出去的追加指令：会话没建好，或 turn/steer 被拒、要等这一轮结束再开新的一轮
     early: Vec<String>,
+    /// 追加指令被拒的次数，超过上限就报错不再重试
+    rejected: HashMap<String, u8>,
     input: Vec<String>,
     started: bool,
     failed: bool,
@@ -77,6 +79,7 @@ impl CodexAppParser {
             next_id: THREAD_REQ + 1,
             awaiting: HashMap::new(),
             early: vec![],
+            rejected: HashMap::new(),
             input: vec![],
             started: false,
             failed: false,
@@ -156,14 +159,26 @@ impl CodexAppParser {
             return;
         };
         match err {
-            // 这一轮恰好结束了，turn/steer 不匹配：改成开新的一轮
-            Some(_) if !steer.is_empty() && self.turn.is_none() => {
-                self.start_turn(vec![text_input(&steer)], &steer)
+            Some(e) if !steer.is_empty() => {
+                let n = self.rejected.entry(steer.clone()).or_default();
+                *n += 1;
+                if *n > 2 {
+                    self.rejected.remove(&steer);
+                    out.push(AgentEvent::Error {
+                        message: e.to_string(),
+                    });
+                } else if self.turn.is_none() {
+                    self.start_turn(vec![text_input(&steer)], &steer);
+                } else {
+                    // 这一轮正在结束（turn/completed 还没到）：等它结束再开新的一轮
+                    self.early.push(steer);
+                }
             }
             Some(e) => out.push(AgentEvent::Error {
                 message: e.to_string(),
             }),
             None => {
+                self.rejected.remove(&steer);
                 if let Some(t) = v.pointer("/result/turn/id").and_then(|t| t.as_str()) {
                     self.turn = Some(t.to_string());
                     for s in std::mem::take(&mut self.early) {
@@ -281,6 +296,19 @@ impl EventParser for CodexAppParser {
             return out;
         }
         let p = v.get("params").cloned().unwrap_or(Value::Null);
+        let other_thread = p
+            .get("threadId")
+            .and_then(|t| t.as_str())
+            .is_some_and(|t| Some(t) != self.thread.as_deref());
+        if other_thread
+            && matches!(
+                method,
+                "turn/started" | "turn/completed" | "thread/tokenUsage/updated"
+            )
+        {
+            // 子 Agent 的线程：它的轮次不代表主会话的这一轮
+            return out;
+        }
         match method {
             "turn/started" => {
                 self.turn = p
@@ -311,6 +339,11 @@ impl EventParser for CodexAppParser {
             }
             "turn/completed" => {
                 self.turn = None;
+                let pending = std::mem::take(&mut self.early);
+                if !pending.is_empty() && self.thread.is_some() {
+                    let input = pending.iter().map(|t| text_input(t)).collect();
+                    self.start_turn(input, &pending.join("\n\n"));
+                }
                 let duration = p.pointer("/turn/durationMs").and_then(|d| d.as_u64());
                 let status = p
                     .pointer("/turn/status")
@@ -433,6 +466,28 @@ mod tests {
         p.parse_line(r#"{"id":5,"result":{"turn":{"id":"t2","status":"inProgress"}}}"#);
         p.parse_line(r#"{"method":"turn/completed","params":{"turn":{"id":"t2","status":"failed","error":{"message":"boom"}}}}"#);
         assert_eq!(p.idle(), Some(true));
+    }
+
+    #[test]
+    fn ignores_subagent_turns_and_retries_rejected_steer_after_turn_ends() {
+        let mut p = CodexAppParser::new(&spec());
+        p.parse_line(r#"{"id":1,"result":{"thread":{"id":"th1"}}}"#);
+        p.parse_line(r#"{"id":2,"result":{"turn":{"id":"t1","status":"inProgress"}}}"#);
+        sent(&mut p);
+        let ev = p.parse_line(
+            r#"{"method":"turn/completed","params":{"threadId":"sub","turn":{"id":"s1","status":"completed"}}}"#,
+        );
+        assert!(ev.is_empty());
+        assert_eq!(p.idle(), Some(false));
+        p.steer("late");
+        // turn/steer 被拒时 turn/completed 还没到：先留着，这一轮结束后开新的一轮
+        p.parse_line(r#"{"id":3,"error":{"code":-32600,"message":"expected turn mismatch"}}"#);
+        assert!(sent(&mut p).is_empty());
+        p.parse_line(r#"{"method":"turn/completed","params":{"threadId":"th1","turn":{"id":"t1","status":"completed"}}}"#);
+        let reqs = sent(&mut p);
+        assert_eq!(reqs[0]["method"], "turn/start");
+        assert_eq!(reqs[0]["params"]["input"][0]["text"], "late");
+        assert_eq!(p.idle(), Some(false));
     }
 
     #[test]

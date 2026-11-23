@@ -7,7 +7,9 @@ use tidewatch_core::runner::{run_agent, RunOptions, RunnerEvent, SteerInbox};
 #[test]
 #[ignore]
 fn codex_app_server_takes_a_steer_mid_turn() {
-    let Ok(base) = std::env::var("TW_CODEX_E2E") else { return };
+    let Ok(base) = std::env::var("TW_CODEX_E2E") else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let spec = RunSpec {
@@ -40,16 +42,23 @@ fn codex_app_server_takes_a_steer_mid_turn() {
         steer: Some(inbox.clone()),
     };
     let (mut texts, mut steered, mut finished) = (vec![], 0, 0);
-    let out = run_agent(adapter(AgentKind::Codex).as_ref(), &spec, &opts, &mut |e| match e {
-        RunnerEvent::Agent(AgentEvent::SessionStarted { .. }) => assert!(inbox.push("STEER now".into())),
-        RunnerEvent::Agent(AgentEvent::Text { text }) => texts.push(text),
-        RunnerEvent::Agent(AgentEvent::Finished { ok, .. }) => {
-            assert!(ok);
-            finished += 1
-        }
-        RunnerEvent::Steered(_) => steered += 1,
-        _ => {}
-    })
+    let out = run_agent(
+        adapter(AgentKind::Codex).as_ref(),
+        &spec,
+        &opts,
+        &mut |e| match e {
+            RunnerEvent::Agent(AgentEvent::SessionStarted { .. }) => {
+                assert!(inbox.push("STEER now".into()))
+            }
+            RunnerEvent::Agent(AgentEvent::Text { text }) => texts.push(text),
+            RunnerEvent::Agent(AgentEvent::Finished { ok, .. }) => {
+                assert!(ok);
+                finished += 1
+            }
+            RunnerEvent::Steered(_) => steered += 1,
+            _ => {}
+        },
+    )
     .unwrap();
     assert_eq!(steered, 1);
     assert_eq!(finished, 1);
