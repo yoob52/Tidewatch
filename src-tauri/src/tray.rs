@@ -73,9 +73,18 @@ fn remove(app: &AppHandle) {
     drop(app.remove_tray_by_id("main"));
 }
 
+/// 托盘窗口只能在主线程销毁，确认框的回调在别的线程上，所以统一切回主线程退出。
 fn exit(app: &AppHandle) {
-    remove(app);
-    app.exit(0);
+    let handle = app.clone();
+    if app
+        .run_on_main_thread(move || {
+            remove(&handle);
+            handle.exit(0);
+        })
+        .is_err()
+    {
+        app.exit(0);
+    }
 }
 
 fn running(app: &AppHandle) -> u32 {
