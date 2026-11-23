@@ -73,7 +73,7 @@ export function UpdateButton({ checkAtStartup }: { checkAtStartup: boolean }) {
           onClose={close}
           footer={confirmVersion ? (
             <>
-              <button className="btn" autoFocus onClick={() => setConfirmVersion(null)}>{tr('取消')}</button>
+              <button key="cancel" className="btn" autoFocus onClick={() => setConfirmVersion(null)}>{tr('取消')}</button>
               <button className="btn primary" onClick={() => {
                 setConfirmVersion(null);
                 void installUpdate(confirmVersion);
@@ -81,7 +81,7 @@ export function UpdateButton({ checkAtStartup }: { checkAtStartup: boolean }) {
             </>
           ) : (
             <>
-              <button className="btn" autoFocus onClick={close}>{tr('关闭')}</button>
+              <button key="close" className="btn" autoFocus onClick={close}>{tr('关闭')}</button>
               <button className="btn" disabled={checking || !!progress} onClick={() => void checkUpdate()}>{tr('重新检查')}</button>
               {availableVersion && (
                 <button className="btn primary" disabled={checking || !!progress} onClick={() => setConfirmVersion(availableVersion)}>
