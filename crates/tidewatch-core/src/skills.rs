@@ -104,7 +104,11 @@ pub fn parse_frontmatter(text: &str) -> (Option<String>, Option<String>) {
             }
             v = parts.join(" ").trim().to_string();
         }
-        let v = v.trim_matches('"').trim_matches('\'').to_string();
+        let v = if v.starts_with('"') {
+            serde_json::from_str::<String>(&v).unwrap_or_else(|_| v.trim_matches('"').to_string())
+        } else {
+            v.trim_matches('\'').to_string()
+        };
         match k {
             "name" if !v.is_empty() => name = Some(v),
             "description" if !v.is_empty() => desc = Some(v),
@@ -209,7 +213,8 @@ pub fn create_in(
         ));
     }
     let content = format!(
-        "---\nname: {name}\ndescription: {desc}\n---\n\n{}\n",
+        "---\nname: {name}\ndescription: {}\n---\n\n{}\n",
+        serde_json::Value::String(desc),
         body.trim()
     );
     for t in targets {
@@ -494,6 +499,31 @@ pub fn install(source: &str, skill_id: &str, targets: &[SkillTarget]) -> Result<
     install_in(&home_dir()?, source, skill_id, targets)
 }
 
+const ORIGIN_FILE: &str = ".tidewatch-source";
+
+/// 只覆盖从同一来源装的 skill；同名的本地 skill 或其他来源的不动。
+fn check_overwrite(
+    home: &Path,
+    targets: &[SkillTarget],
+    skill_id: &str,
+    origin: &str,
+) -> Result<()> {
+    for t in targets {
+        let dir = installed_dir(home, *t, skill_id)?;
+        if !dir.exists() {
+            continue;
+        }
+        let same = std::fs::read_to_string(dir.join(ORIGIN_FILE)).is_ok_and(|o| o.trim() == origin);
+        if !same {
+            return Err(Error::invalid(format!(
+                "{} 已有同名 skill，且不是从 {origin} 安装的。请先删除或改名后再安装。",
+                dir.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn install_in(
     home: &Path,
     source: &str,
@@ -503,6 +533,8 @@ fn install_in(
     if targets.is_empty() {
         return Err(Error::invalid("至少选择一个安装目标。"));
     }
+    let origin = format!("{source}/{skill_id}");
+    check_overwrite(home, targets, skill_id, &origin)?;
     let l = locate(source, skill_id)?;
     if l.files.len() > MAX_FILES {
         return Err(Error::invalid(format!(
@@ -513,7 +545,11 @@ fn install_in(
     let mut files = Vec::new();
     let mut total = 0usize;
     for rel in &l.files {
-        if rel.split('/').any(|p| p.is_empty() || p == "..") {
+        if rel.contains(['\\', ':'])
+            || rel
+                .split('/')
+                .any(|p| p.is_empty() || p == "." || p == "..")
+        {
             continue;
         }
         let full = if l.dir.is_empty() {
@@ -560,6 +596,7 @@ fn install_in(
             }
             std::fs::write(&p, bytes)?;
         }
+        std::fs::write(dir.join(ORIGIN_FILE), &origin)?;
         dirs.push(dir.to_string_lossy().into_owned());
     }
     Ok(dirs)
@@ -631,6 +668,20 @@ mod tests {
             parse_jsdelivr_files(jd).unwrap(),
             vec!["skills/a/SKILL.md", "README.md"]
         );
+    }
+
+    #[test]
+    fn install_never_overwrites_foreign_skills() {
+        let home = tempfile::tempdir().unwrap();
+        let t = [SkillTarget::ClaudeCode];
+        create_in(home.path(), &t, "pdf", "a: b", "body").unwrap();
+        assert!(check_overwrite(home.path(), &t, "pdf", "o/r/pdf").is_err());
+        let dir = SkillTarget::ClaudeCode.dir_in(home.path()).join("pdf");
+        std::fs::write(dir.join(ORIGIN_FILE), "o/r/pdf").unwrap();
+        assert!(check_overwrite(home.path(), &t, "pdf", "o/r/pdf").is_ok());
+        assert!(check_overwrite(home.path(), &t, "new", "o/r/new").is_ok());
+        let md = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
+        assert_eq!(parse_frontmatter(&md).1.as_deref(), Some("a: b"));
     }
 
     #[test]
