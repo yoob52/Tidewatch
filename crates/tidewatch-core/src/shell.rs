@@ -7,7 +7,7 @@
 //! - 两个都不能把 cmd 当 Shell。
 //!
 //! Microsoft Store 版 PowerShell 在 PATH 上只是 WindowsApps 里的别名，Agent 的沙箱启动它会报
-//! 「拒绝访问」，所以任何选项下都不让 Agent 找到这个别名。
+//! 「拒绝访问」，所以跳过别名，需要时从注册的包找到真正的 pwsh.exe。
 use crate::agent::AgentKind;
 use crate::error::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -28,19 +28,71 @@ pub fn env_for(kind: AgentKind, choice: &str) -> Result<Vec<(String, String)>> {
         return Ok(vec![]);
     }
     let path = std::env::var("PATH").unwrap_or_default();
-    let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
-    let real_pwsh = program_files
-        .as_ref()
-        .map(|p| p.join("PowerShell").join("7"))
-        .filter(|d| d.join("pwsh.exe").is_file());
     plan(
         kind,
         choice,
         &path,
         &|p| p.is_file(),
-        real_pwsh,
+        || {
+            if choice == "pwsh" {
+                let msi = std::env::var_os("ProgramFiles")
+                    .map(|p| PathBuf::from(p).join("PowerShell").join("7"))
+                    .filter(|d| d.join("pwsh.exe").is_file());
+                if msi.is_some() {
+                    return msi;
+                }
+            }
+            store_pwsh_dir()
+        },
         git_bash(&path),
     )
+}
+
+#[cfg(windows)]
+fn store_pwsh_dir() -> Option<PathBuf> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let powershell = PathBuf::from(std::env::var_os("SystemRoot")?)
+        .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let output = Command::new(powershell)
+        .creation_flags(CREATE_NO_WINDOW)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
+             (Appx\\Get-AppxPackage -Name Microsoft.PowerShell).InstallLocation",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let locations = String::from_utf8(output.stdout).ok()?;
+    locations
+        .lines()
+        .map(|line| PathBuf::from(line.trim()))
+        .filter(|dir| dir.is_absolute())
+        .find(|dir| {
+            let pwsh = dir.join("pwsh.exe");
+            pwsh.is_file()
+                && Command::new(pwsh)
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .args(["-NoProfile", "-NonInteractive", "-Version"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+        })
+}
+
+#[cfg(not(windows))]
+fn store_pwsh_dir() -> Option<PathBuf> {
+    None
 }
 
 /// 找 Git for Windows 的 bash.exe：常见安装位置，或者 PATH 上 git.exe 旁边的 `..\bin\bash.exe`。
@@ -65,10 +117,12 @@ fn git_bash(path: &str) -> Option<PathBuf> {
 }
 
 fn is_store_alias_dir(dir: &str) -> bool {
-    dir.trim_end_matches(['/', '\\'])
+    let dir = dir
+        .trim_matches('"')
+        .trim_end_matches(['/', '\\'])
         .to_ascii_lowercase()
-        .replace('/', "\\")
-        .ends_with(r"\microsoft\windowsapps")
+        .replace('/', "\\");
+    dir.ends_with(r"\microsoft\windowsapps") || dir.contains(r"\microsoft\windowsapps\")
 }
 
 pub(crate) fn plan(
@@ -76,33 +130,45 @@ pub(crate) fn plan(
     choice: &str,
     path: &str,
     exists: &dyn Fn(&Path) -> bool,
-    real_pwsh_dir: Option<PathBuf>,
+    real_pwsh_dir: impl FnOnce() -> Option<PathBuf>,
     git_bash: Option<PathBuf>,
 ) -> Result<Vec<(String, String)>> {
     validate(choice)?;
     if !matches!(kind, AgentKind::Codex | AgentKind::ClaudeCode) {
         return Ok(vec![]);
     }
-    let has_pwsh = |d: &str| exists(&Path::new(d).join("pwsh.exe"));
+    let has_pwsh = |d: &str| exists(&Path::new(d.trim_matches('"')).join("pwsh.exe"));
+    let mut has_store_alias = false;
     let mut dirs: Vec<String> = path
         .split(';')
         .filter(|d| !d.is_empty())
-        .filter(|d| !(is_store_alias_dir(d) && has_pwsh(d)))
+        .filter(|d| {
+            let is_alias = is_store_alias_dir(d) && has_pwsh(d);
+            has_store_alias |= is_alias;
+            !is_alias
+        })
         .map(String::from)
         .collect();
     let mut env = vec![];
     match choice {
         "pwsh" => {
             if !dirs.iter().any(|d| has_pwsh(d)) {
-                let Some(d) = real_pwsh_dir else {
+                let Some(d) = real_pwsh_dir() else {
                     return Err(Error::invalid(
-                        "没找到 PowerShell 7。Microsoft Store 版的 pwsh 不能被 Agent 启动，请用 MSI 安装 PowerShell 7，或改选 Windows PowerShell。",
+                        "没找到可启动的 PowerShell 7。请确认已安装且能正常打开 PowerShell 7，或改选 Windows PowerShell。",
                     ));
                 };
                 dirs.insert(0, d.display().to_string());
             }
         }
         "powershell" => dirs.retain(|d| !has_pwsh(d)),
+        "auto" | "git_bash"
+            if kind == AgentKind::Codex && has_store_alias && !dirs.iter().any(|d| has_pwsh(d)) =>
+        {
+            if let Some(d) = real_pwsh_dir() {
+                dirs.insert(0, d.display().to_string());
+            }
+        }
         _ => {}
     }
     if kind == AgentKind::ClaudeCode {
@@ -139,6 +205,8 @@ mod tests {
     use super::*;
 
     const STORE: &str = r"C:\Users\u\AppData\Local\Microsoft\WindowsApps";
+    const STORE_PACKAGE: &str =
+        r"C:\Program Files\WindowsApps\Microsoft.PowerShell_7.7.0.0_x64__8wekyb3d8bbwe";
     const PS7: &str = r"C:\Program Files\PowerShell\7";
 
     fn with_pwsh<'a>(dirs: &'a [&'a str]) -> impl Fn(&Path) -> bool + 'a {
@@ -159,13 +227,21 @@ mod tests {
             "auto",
             &path,
             &with_pwsh(&[STORE]),
-            None,
+            || None,
             None,
         )
         .unwrap();
         assert_eq!(path_of(&env), Some(r"C:\Windows\system32"));
         // 别名目录里没有 pwsh 就不动 PATH
-        let env = plan(AgentKind::Codex, "auto", &path, &with_pwsh(&[]), None, None).unwrap();
+        let env = plan(
+            AgentKind::Codex,
+            "auto",
+            &path,
+            &with_pwsh(&[]),
+            || None,
+            None,
+        )
+        .unwrap();
         assert!(env.is_empty());
     }
 
@@ -177,7 +253,7 @@ mod tests {
             "powershell",
             &path,
             &with_pwsh(&[PS7]),
-            None,
+            || None,
             None,
         )
         .unwrap();
@@ -187,7 +263,7 @@ mod tests {
             "powershell",
             &path,
             &with_pwsh(&[PS7]),
-            None,
+            || None,
             None,
         )
         .unwrap();
@@ -198,13 +274,13 @@ mod tests {
     fn pwsh_needs_a_real_install() {
         let path = format!(r"C:\Windows\system32;{STORE}");
         let only_store = with_pwsh(&[STORE]);
-        assert!(plan(AgentKind::Codex, "pwsh", &path, &only_store, None, None).is_err());
+        assert!(plan(AgentKind::Codex, "pwsh", &path, &only_store, || None, None).is_err());
         let env = plan(
             AgentKind::Codex,
             "pwsh",
             &path,
             &only_store,
-            Some(PS7.into()),
+            || Some(PS7.into()),
             None,
         )
         .unwrap();
@@ -219,11 +295,54 @@ mod tests {
             "pwsh",
             &path,
             &with_pwsh(&[PS7]),
-            Some(PS7.into()),
+            || Some(PS7.into()),
             None,
         )
         .unwrap();
         assert!(env.is_empty());
+    }
+
+    #[test]
+    fn store_package_replaces_both_forms_of_pwsh_alias() {
+        let family_alias = format!(r"{STORE}\Microsoft.PowerShell_8wekyb3d8bbwe");
+        let path = format!(r"{STORE};C:\Windows\system32;{family_alias}");
+        for (kind, choice) in [
+            (AgentKind::Codex, "pwsh"),
+            (AgentKind::Codex, "auto"),
+            (AgentKind::Codex, "git_bash"),
+            (AgentKind::ClaudeCode, "pwsh"),
+        ] {
+            let env = plan(
+                kind,
+                choice,
+                &path,
+                &with_pwsh(&[STORE, &family_alias]),
+                || Some(STORE_PACKAGE.into()),
+                None,
+            )
+            .unwrap();
+            let expected = format!(r"{STORE_PACKAGE};C:\Windows\system32");
+            assert_eq!(path_of(&env), Some(expected.as_str()));
+            if kind == AgentKind::ClaudeCode {
+                assert!(env.contains(&("CLAUDE_CODE_USE_POWERSHELL_TOOL".into(), "1".into())));
+            }
+        }
+    }
+
+    #[test]
+    fn real_pwsh_on_path_does_not_need_package_lookup() {
+        let path = format!(r"{STORE};{STORE_PACKAGE};C:\Windows\system32");
+        let env = plan(
+            AgentKind::Codex,
+            "pwsh",
+            &path,
+            &with_pwsh(&[STORE, STORE_PACKAGE]),
+            || panic!("pwsh already on PATH"),
+            None,
+        )
+        .unwrap();
+        let expected = format!(r"{STORE_PACKAGE};C:\Windows\system32");
+        assert_eq!(path_of(&env), Some(expected.as_str()));
     }
 
     #[test]
@@ -234,7 +353,7 @@ mod tests {
             "git_bash",
             "",
             &with_pwsh(&[]),
-            None,
+            || None,
             Some(bash.clone()),
         )
         .unwrap();
@@ -250,7 +369,7 @@ mod tests {
             "git_bash",
             "",
             &with_pwsh(&[]),
-            None,
+            || None,
             None
         )
         .is_err());
@@ -260,7 +379,7 @@ mod tests {
             "git_bash",
             "",
             &with_pwsh(&[]),
-            None,
+            || None,
             None
         )
         .unwrap()
@@ -275,11 +394,11 @@ mod tests {
             "auto",
             &path,
             &with_pwsh(&[STORE]),
-            None,
+            || None,
             None
         )
         .unwrap()
         .is_empty());
-        assert!(plan(AgentKind::Codex, "cmd", "", &with_pwsh(&[]), None, None).is_err());
+        assert!(plan(AgentKind::Codex, "cmd", "", &with_pwsh(&[]), || None, None).is_err());
     }
 }

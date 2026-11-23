@@ -797,8 +797,8 @@ const SHELL_NAME: Record<Settings['agent_shell'], string> = {
 };
 
 const SHELL_HINT: Record<Settings['agent_shell'], string> = {
-  auto: tr('按 Agent 自己的默认（Codex 用 PowerShell，Claude Code 用 Git Bash），只是避开 Microsoft Store 版 pwsh 的别名，Agent 启动它会被拒绝访问'),
-  pwsh: tr('要求用 MSI 装的 PowerShell 7（Store 版不行）。Claude Code 额外开启 PowerShell 工具'),
+  auto: tr('按 Agent 自己的默认（Codex 用 PowerShell，Claude Code 用 Git Bash）。使用 Microsoft Store 版 PowerShell 时，跳过别名并查找实际安装路径'),
+  pwsh: tr('使用已安装的 PowerShell 7，支持 Microsoft Store 版。Claude Code 额外开启 PowerShell 工具'),
   powershell: tr('系统自带的 powershell.exe。Claude Code 额外开启 PowerShell 工具'),
   git_bash: tr('Claude Code 用 Git for Windows 的 bash。Codex 只能用 PowerShell，不受影响'),
 };
