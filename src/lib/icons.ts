@@ -46,6 +46,13 @@ user:'<circle cx="8" cy="5.4" r="2.6"/><path d="M2.8 13.8c.6-2.6 2.6-4 5.2-4s4.6
 link:'<path d="M6.8 9.2a2.8 2.8 0 0 0 4 0l2-2a2.8 2.8 0 0 0-4-4l-.8.8M9.2 6.8a2.8 2.8 0 0 0-4 0l-2 2a2.8 2.8 0 0 0 4 0l.8-.8"/>',
 min:'<path d="M3.5 8h9"/>',max:'<rect x="3.5" y="3.5" width="9" height="9"/>',
 panel:'<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M6 2.8v10.4"/>',
+grid:'<rect x="2.2" y="2.2" width="5" height="5" rx=".8"/><rect x="8.8" y="2.2" width="5" height="5" rx=".8"/><rect x="2.2" y="8.8" width="5" height="5" rx=".8"/><rect x="8.8" y="8.8" width="5" height="5" rx=".8"/>',
+pane:'<rect x="2.2" y="2.6" width="11.6" height="10.8" rx="1"/><path d="M6 2.6v10.8"/>',
+send:'<path d="M2.4 8L13.6 2.6 10.6 13.4 7.6 9.2zM7.6 9.2l6-6.6"/>',
+puzzle:'<path d="M3 5.2h2.4a1.4 1.4 0 1 1 2.8 0H11v2.6a1.4 1.4 0 1 1 0 2.8v2.6H8.2a1.4 1.4 0 1 0-2.8 0H3v-2.8a1.4 1.4 0 1 0 0-2.8z"/>',
+download:'<path d="M8 2.6v7.7M4.8 7.3L8 10.5l3.2-3.2M2.6 10.8v2.6h10.8v-2.6"/>',
+trash:'<path d="M2.8 4.2h10.4M6.2 4.2V2.6h3.6v1.6M4.2 4.2l.6 9.2h6.4l.6-9.2M6.8 6.6v4.6M9.2 6.6v4.6"/>',
+star:'<path d="M8 2.2l1.8 3.7 4 .6-2.9 2.8.7 4L8 11.4l-3.6 1.9.7-4-2.9-2.8 4-.6z"/>',
 wave:'<path d="M1.5 5c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4 0"/><path d="M1.5 8.5c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4 0"/><path d="M1.5 12c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4 0" opacity=".55"/>',
 drag:'<circle cx="6" cy="4" r=".8"/><circle cx="10" cy="4" r=".8"/><circle cx="6" cy="8" r=".8"/><circle cx="10" cy="8" r=".8"/><circle cx="6" cy="12" r=".8"/><circle cx="10" cy="12" r=".8"/>',
 } as const;

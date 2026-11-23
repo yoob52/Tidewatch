@@ -14,6 +14,7 @@ pub mod prompt;
 pub mod provider;
 pub mod runner;
 pub mod secrets;
+pub mod skills;
 pub mod store;
 pub mod sync;
 pub mod update;

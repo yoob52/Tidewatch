@@ -17,7 +17,7 @@
 | Q13 | 需求方粘贴的截图是否默认标为权威图？ | 默认权威，可改 | 用后再定，见 [PRD 中的图片](../02-workflow/prd-images.md) |
 | Q14 | 是否允许把原始 PRD 图直接标为权威图？ | 允许，但需手动确认 | 待需求方确认 |
 | Q15 | 开发阶段是否默认不发已被取代的参考图？ | 默认不发，预审阶段全部发 | 对比效果后再定 |
-| Q16 | 交互通道怎么接：Codex 用 `codex app-server`（stdio JSON-RPC）；Claude Code 用 CLI 的流式输入 / 权限回调，还是引入 Node 跑 Claude Agent SDK？ | M0/M1 只用 headless CLI；交互通道 M3 再接，Claude 侧优先不引入 Node | M2 结束前分别验证两种 Agent 的审批与引导协议，见 [Agent 管理 §5](../03-agent/agent-management.md) |
+| Q16 | 交互通道怎么接：Codex 用 `codex app-server`（stdio JSON-RPC）；Claude Code 用 CLI 的流式输入 / 权限回调，还是引入 Node 跑 Claude Agent SDK？ | M0/M1 只用 headless CLI；交互通道 M3 再接，Claude 侧优先不引入 Node | 【已定，第一版】Claude Code 用 `--input-format stream-json` 保持 stdin 打开，运行中的追加指令写成一条用户消息；其他 Agent 先降级为排队 / 打断重开。Codex `app-server` 和审批回调后续再接，见 [Agent 管理 §6](../03-agent/agent-management.md) |
 | Q17 | 等待审批 / 回答的 Run 是否占用并发名额？ | 默认不占 | 用后再定 |
 | Q18 | 上下文交接摘要由谁生成：离开的 Agent、接手的 Agent、便宜小模型，还是本地规则拼装？ | 本地规则拼装 + 可选离开的 Agent 总结 | 对比质量与成本 |
 | Q19 | 是否提供一键升级 Agent CLI？ | 不提供，只提示 | 需能识别安装来源（npm / winget / scoop）后再考虑 |

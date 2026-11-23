@@ -224,6 +224,7 @@ fn print_event(ev: &RunnerEvent) {
         RunnerEvent::Spawned { pid, command } => println!("▶ pid {pid}  {command}"),
         RunnerEvent::Stderr(l) => eprintln!("  stderr │ {l}"),
         RunnerEvent::Idle(_) => {}
+        RunnerEvent::Steered(t) => println!("  追加 │ {}", clip(t)),
         RunnerEvent::Agent(a) => match a {
             AgentEvent::SessionStarted { session_id, model } => {
                 println!(

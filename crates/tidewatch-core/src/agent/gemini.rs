@@ -58,6 +58,7 @@ impl AgentAdapter for GeminiAdapter {
             env: spec.env.clone(),
             cwd: spec.cwd.clone(),
             stdin: prompt,
+            interactive: false,
         })
     }
 

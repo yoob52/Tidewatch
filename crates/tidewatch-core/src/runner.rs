@@ -19,6 +19,8 @@ pub struct RunOptions {
     pub timeout: Option<Duration>,
     /// 护栏（预算、卡住、危险命令）置为 true：停掉进程树，结果记为被护栏中止而不是用户停止。
     pub abort: Arc<AtomicBool>,
+    /// 交互模式下的追加指令收件箱（Agent 不支持时忽略）。
+    pub steer: Option<Arc<SteerInbox>>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +33,50 @@ pub enum RunnerEvent {
     Stderr(String),
     /// Agent 已经这么久没有任何输出（每 10 秒报一次）。
     Idle(Duration),
+    /// 一条追加指令已写进运行中 Agent 的 stdin。
+    Steered(String),
+}
+
+/// 运行中追加指令的收件箱：界面投递，运行器写进 Agent 的 stdin。
+/// Agent 答完最后一轮、stdin 关闭之后不再收件，投递失败的指令由调用方改为排队到下一轮。
+#[derive(Debug, Default)]
+pub struct SteerInbox {
+    state: std::sync::Mutex<(Vec<String>, bool)>,
+}
+
+impl SteerInbox {
+    /// 投递成功返回 `true`；通道已关闭返回 `false`。
+    pub fn push(&self, text: String) -> bool {
+        let mut s = self.state.lock().unwrap();
+        if s.1 {
+            return false;
+        }
+        s.0.push(text);
+        true
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.state.lock().unwrap().1
+    }
+
+    /// 关闭后取出还没写进 stdin 的指令。
+    pub fn take_left(&self) -> Vec<String> {
+        let mut s = self.state.lock().unwrap();
+        s.1 = true;
+        std::mem::take(&mut s.0)
+    }
+
+    fn take(&self) -> Vec<String> {
+        std::mem::take(&mut self.state.lock().unwrap().0)
+    }
+
+    fn close_if_empty(&self) -> bool {
+        let mut s = self.state.lock().unwrap();
+        if s.0.is_empty() {
+            s.1 = true;
+        }
+        s.1
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -254,12 +300,43 @@ pub fn run_agent(
         command: command.display(),
     });
 
+    let steer = opts
+        .steer
+        .clone()
+        .filter(|_| command.interactive && adapter.steer_message("").is_some());
+    let mut stdin_tx: Option<mpsc::Sender<String>> = None;
     if let Some(mut stdin) = tree.take_stdin() {
         let prompt = command.stdin.clone();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(prompt.as_bytes());
-        });
+        if steer.is_some() {
+            let (stx, srx) = mpsc::channel::<String>();
+            std::thread::spawn(move || {
+                if stdin
+                    .write_all(prompt.as_bytes())
+                    .and_then(|_| stdin.flush())
+                    .is_err()
+                {
+                    return;
+                }
+                for line in srx {
+                    if stdin
+                        .write_all(line.as_bytes())
+                        .and_then(|_| stdin.flush())
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+            stdin_tx = Some(stx);
+        } else {
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(prompt.as_bytes());
+            });
+        }
     }
+    // 交互模式：每条写进去的消息对应一轮，等这么多个 result 后关闭 stdin 让 Agent 退出
+    let mut pending_turns: u32 = 1;
+    let mut finished_once = false;
 
     let (tx, rx) = mpsc::channel::<Msg>();
     let stdout = tree.take_stdout().expect("stdout piped");
@@ -335,6 +412,10 @@ pub fn run_agent(
                     }
                 }
                 for ev in parser.parse_line(&line) {
+                    if matches!(ev, AgentEvent::Finished { .. }) {
+                        pending_turns = pending_turns.saturating_sub(1);
+                        finished_once = true;
+                    }
                     outcome.absorb(&ev);
                     on_event(RunnerEvent::Agent(ev));
                 }
@@ -352,6 +433,22 @@ pub fn run_agent(
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 out_closed = true;
                 err_closed = true;
+            }
+        }
+
+        if let (Some(inbox), Some(tx)) = (&steer, &stdin_tx) {
+            for text in inbox.take() {
+                if let Some(line) = adapter.steer_message(&text) {
+                    if tx.send(line).is_ok() {
+                        pending_turns += 1;
+                        on_event(RunnerEvent::Steered(text));
+                    }
+                }
+            }
+            // 有的 Agent 会把运行中收到的消息并进当前这一轮：答完后 5 秒没动静也视为结束
+            let quiet = last_msg.elapsed() > Duration::from_secs(5);
+            if finished_once && (pending_turns == 0 || quiet) && inbox.close_if_empty() {
+                stdin_tx = None;
             }
         }
 
@@ -393,6 +490,10 @@ pub fn run_agent(
         }
     }
 
+    drop(stdin_tx);
+    if let Some(inbox) = &opts.steer {
+        let _ = inbox.is_closed() || inbox.close_if_empty();
+    }
     for ev in parser.finish() {
         outcome.absorb(&ev);
         on_event(RunnerEvent::Agent(ev));

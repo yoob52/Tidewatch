@@ -3,7 +3,7 @@
 //!
 //! 提示词里的标记可以改变行为（测试用）：`[mock:steps=5]`、`[mock:delay=800]`、`[mock:fail]`。
 use serde_json::{json, Value};
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::time::Duration;
 
 pub struct MockArgs {
@@ -305,8 +305,19 @@ fn mcp_demo(session: &str, prompt: &str) -> Option<String> {
 }
 
 pub fn run(mut args: MockArgs) -> i32 {
-    let mut prompt = String::new();
-    let _ = std::io::stdin().read_to_string(&mut prompt);
+    // 第一行是 stream-json 用户消息时按交互模式跑：答完一轮后继续读追加指令，直到 stdin 关闭
+    let mut input = std::io::stdin().lock();
+    let mut first = String::new();
+    let _ = input.read_line(&mut first);
+    let interactive = user_text(&first);
+    let prompt = match &interactive {
+        Some(text) => text.clone(),
+        None => {
+            let mut rest = String::new();
+            let _ = input.read_to_string(&mut rest);
+            first + &rest
+        }
+    };
     if let Some(n) = marker(&prompt, "steps") {
         args.steps = n as u32;
     }
@@ -438,7 +449,41 @@ pub fn run(mut args: MockArgs) -> i32 {
         "duration_ms":args.delay_ms*(args.steps as u64+2),"result":summary,"total_cost_usd":0.0,
         "usage":{"input_tokens":chars/2+120,"output_tokens":80+40*args.steps as u64,"cache_read_input_tokens":0}}),
     );
+    if interactive.is_some() {
+        let mut line = String::new();
+        while input.read_line(&mut line).unwrap_or(0) > 0 {
+            if let Some(text) = user_text(&line) {
+                pause();
+                let reply = format!("收到追加指令：{}", text.trim());
+                assistant(&session, json!({"type":"text","text":reply}));
+                emit(
+                    json!({"type":"result","subtype":"success","is_error":false,"session_id":session,
+                    "num_turns":1,"duration_ms":args.delay_ms,"result":reply,"total_cost_usd":0.0,
+                    "usage":{"input_tokens":text.chars().count() as u64/2+20,"output_tokens":20,"cache_read_input_tokens":0}}),
+                );
+            }
+            line.clear();
+        }
+    }
     0
+}
+
+/// stream-json 输入里一条用户消息的文本；不是这种格式时返回 `None`。
+fn user_text(line: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    if v["type"] != "user" {
+        return None;
+    }
+    let content = &v["message"]["content"];
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string());
+    }
+    let parts: Vec<&str> = content
+        .as_array()?
+        .iter()
+        .filter_map(|p| p["text"].as_str())
+        .collect();
+    Some(parts.join("\n"))
 }
 
 #[cfg(test)]

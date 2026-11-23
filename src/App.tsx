@@ -13,6 +13,7 @@ import { RunsPage } from './pages/Runs';
 import { ProjectsPage } from './pages/Projects';
 import { ProvidersPage } from './pages/Providers';
 import { StatsPage } from './pages/Stats';
+import { SkillsPage } from './pages/Skills';
 import { SettingsPage } from './pages/Settings';
 
 type Theme = 'light' | 'dark';
@@ -36,6 +37,7 @@ const TITLES: Record<string, string> = {
   runs: tr('运行'),
   projects: tr('项目'),
   providers: 'Provider',
+  skills: tr('Skill 市场'),
   stats: tr('统计'),
   settings: tr('设置'),
 };
@@ -46,6 +48,7 @@ const PAGES: { id: string; icon: IconName }[] = [
   { id: 'runs', icon: 'zap' },
   { id: 'projects', icon: 'folder' },
   { id: 'providers', icon: 'plug' },
+  { id: 'skills', icon: 'puzzle' },
   { id: 'stats', icon: 'chart' },
   { id: 'settings', icon: 'gear' },
 ];
@@ -220,6 +223,9 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
       break;
     case 'providers':
       view = <ProvidersPage id={a} />;
+      break;
+    case 'skills':
+      view = <SkillsPage />;
       break;
     case 'stats':
       view = <StatsPage />;

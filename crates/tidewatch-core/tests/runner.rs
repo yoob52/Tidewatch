@@ -461,3 +461,69 @@ fn new_agents_follow_the_env_allowlist() {
         ));
     }
 }
+
+const TURN_SCRIPT: &str = r#"n=0
+while IFS= read -r line; do
+  n=$((n+1))
+  case "$line" in *'"type":"user"'*) ;; *) echo "bad input" >&2; exit 3;; esac
+  [ $n -eq 1 ] && echo '{"type":"system","subtype":"init","session_id":"s-1"}'
+  sleep 0.3
+  echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"s-1\",\"result\":\"turn $n\"}"
+done"#;
+
+#[test]
+fn interactive_run_takes_follow_up_instructions() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let bin = script(dir.path(), TURN_SCRIPT);
+    let mut s = spec(dir.path(), bin);
+    s.interactive = true;
+    let inbox = Arc::new(tidewatch_core::runner::SteerInbox::default());
+    assert!(inbox.push("再加一个测试".into()));
+    let opts = RunOptions {
+        steer: Some(inbox.clone()),
+        timeout: Some(Duration::from_secs(20)),
+        ..Default::default()
+    };
+    let mut events = vec![];
+    let out = run_agent(
+        adapter(AgentKind::ClaudeCode).as_ref(),
+        &s,
+        &opts,
+        &mut |e| events.push(e),
+    )
+    .unwrap();
+    assert!(out.succeeded(), "{}", out.stderr_tail);
+    assert!(!out.timed_out);
+    assert_eq!(out.summary, "turn 2");
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, RunnerEvent::Steered(t) if t == "再加一个测试")));
+    // 结束后不再收件，调用方改为排队
+    assert!(!inbox.push("太晚了".into()));
+}
+
+#[test]
+fn interactive_run_exits_after_last_turn() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let bin = script(dir.path(), TURN_SCRIPT);
+    let mut s = spec(dir.path(), bin);
+    s.interactive = true;
+    let opts = RunOptions {
+        steer: Some(Arc::new(Default::default())),
+        timeout: Some(Duration::from_secs(20)),
+        ..Default::default()
+    };
+    let started = Instant::now();
+    let out = run_agent(
+        adapter(AgentKind::ClaudeCode).as_ref(),
+        &s,
+        &opts,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(out.succeeded(), "{}", out.stderr_tail);
+    assert_eq!(out.summary, "turn 1");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
