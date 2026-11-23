@@ -300,6 +300,11 @@ impl Engine {
 
     /// 提交 AI 预审：工单进入"AI 预审中"，预审运行入队。结束后（无论成败）回到人工审核。
     pub fn start_review(&self, ticket_id: &str) -> Result<Run> {
+        self.start_review_as(ticket_id, true)
+    }
+
+    /// `full_auto_ok`：调用方已经确认过可以以 full_auto 运行。没确认而默认权限是 full_auto 就拒绝，检查和入队在同一把锁里。
+    pub fn start_review_as(&self, ticket_id: &str, full_auto_ok: bool) -> Result<Run> {
         let run = {
             let mut conn = lock(&self.inner.db);
             let ticket = tickets::get(&conn, ticket_id)?;
@@ -313,6 +318,11 @@ impl Engine {
                 )));
             }
             let plan = plan_ticket_run(&conn, &ticket)?;
+            if plan.permission == "full_auto" && !full_auto_ok {
+                return Err(Error::invalid(
+                    "默认权限是 full_auto，预审会以 full_auto 运行，需要 owner 确认。",
+                ));
+            }
             let prd = tickets::current_prd(&conn, &ticket.id)?
                 .map(|v| v.content_md)
                 .unwrap_or_default();
