@@ -78,7 +78,7 @@ function Palette({ tickets, onClose }: { tickets: TicketSummary[]; onClose: () =
       .filter((p) => !k || p.title.toLowerCase().includes(k));
     const found = tickets
       .filter((x) => !k || x.key.toLowerCase().includes(k) || x.title.toLowerCase().includes(k))
-      .sort((x, y) => y.updated_at.localeCompare(x.updated_at))
+      .sort((x, y) => Number(y.key.toLowerCase() === k) - Number(x.key.toLowerCase() === k) || y.updated_at.localeCompare(x.updated_at))
       .slice(0, 8)
       .map((x) => ({ group: tr('工单'), icon: 'form' as IconName, key: x.key, title: x.title, meta: STAGE_NAME[x.status], hash: `#/ticket/${x.key}` }));
     return k ? [...found, ...pages] : [...pages, ...found];
