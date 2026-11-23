@@ -379,6 +379,7 @@ pre.plain.boxed{border:1px solid var(--line);border-radius:var(--r);background:v
 
 /* AI 交叉审查 */
 .xrev p { margin: 0 0 6px; font-size: 12.5px; line-height: 1.6; }
+.xrev .btn { max-width: 100%; min-height: 25px; height: auto; padding-block: 4px; white-space: normal; overflow-wrap: anywhere; text-align: start; }
 .xrev-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 8px; }
 .xrev-list li { border-left: 2px solid var(--line); padding: 2px 0 2px 10px; font-size: 12.5px; }
 .xrev-list li.s-blocker { border-left-color: var(--cinnabar); }
