@@ -8,8 +8,9 @@ pub const SEARCH_URL: &str = "https://skills.sh/api/search";
 const SEED_QUERIES: &[&str] = &[
     "react", "design", "test", "git", "docs", "frontend", "python", "review",
 ];
-const MAX_FILES: usize = 40;
+const MAX_FILES: usize = 200;
 const MAX_FILE_BYTES: usize = 512 * 1024;
+const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 
 /// 安装目标：每个 Agent 读取 skill 的用户级目录。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,11 +239,23 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+fn github_token() -> Option<String> {
+    ["GITHUB_TOKEN", "GH_TOKEN"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
+}
+
 fn get_text(url: &str, accept: &str) -> Result<String> {
-    let mut resp = agent()
+    let mut req = agent()
         .get(url)
         .header("User-Agent", "Tidewatch")
-        .header("Accept", accept)
+        .header("Accept", accept);
+    if url.starts_with("https://api.github.com/") {
+        if let Some(t) = github_token() {
+            req = req.header("Authorization", format!("Bearer {t}"));
+        }
+    }
+    let mut resp = req
         .call()
         .map_err(|e| Error::invalid(format!("网络请求失败：{e}")))?;
     let status = resp.status().as_u16();
@@ -377,21 +390,7 @@ fn locate(source: &str, skill_id: &str) -> Result<Located> {
     let (owner, repo) = github_repo(source).ok_or_else(|| {
         Error::invalid(format!("「{source}」不是 GitHub 仓库，暂不支持一键安装。"))
     })?;
-    let tree = get_text(
-        &format!("https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1"),
-        "application/vnd.github+json",
-    )?;
-    let v: serde_json::Value = serde_json::from_str(&tree)
-        .map_err(|e| Error::invalid(format!("GitHub 返回的数据无法解析：{e}")))?;
-    let blobs: Vec<String> = v["tree"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter(|e| e["type"] == "blob")
-                .filter_map(|e| e["path"].as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let blobs = list_files(owner, repo)?;
     for dir in pick_skill_dir(&blobs, skill_id).into_iter().take(30) {
         let md_path = if dir.is_empty() {
             "SKILL.md".to_string()
@@ -429,6 +428,54 @@ fn locate(source: &str, skill_id: &str) -> Result<Located> {
     )))
 }
 
+/// 仓库里的全部文件路径。未登录的 GitHub API 每小时只有 60 次，超限时改用 jsDelivr 的文件列表。
+fn list_files(owner: &str, repo: &str) -> Result<Vec<String>> {
+    let gh = get_text(
+        &format!("https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1"),
+        "application/vnd.github+json",
+    )
+    .and_then(|t| parse_github_tree(&t));
+    match gh {
+        Ok(files) => Ok(files),
+        Err(e) => get_text(
+            &format!("https://data.jsdelivr.com/v1/packages/gh/{owner}/{repo}@HEAD?structure=flat"),
+            "application/json",
+        )
+        .and_then(|t| parse_jsdelivr_files(&t))
+        .map_err(|_| e),
+    }
+}
+
+fn parse_json(text: &str) -> Result<serde_json::Value> {
+    serde_json::from_str(text).map_err(|e| Error::invalid(format!("返回的数据无法解析：{e}")))
+}
+
+pub fn parse_github_tree(text: &str) -> Result<Vec<String>> {
+    let v = parse_json(text)?;
+    Ok(v["tree"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|e| e["type"] == "blob")
+                .filter_map(|e| e["path"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+pub fn parse_jsdelivr_files(text: &str) -> Result<Vec<String>> {
+    let v = parse_json(text)?;
+    Ok(v["files"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e["name"].as_str())
+                .map(|n| n.trim_start_matches('/').to_string())
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 pub fn preview(source: &str, skill_id: &str) -> Result<SkillPreview> {
     let l = locate(source, skill_id)?;
     let (name, desc) = parse_frontmatter(&l.content);
@@ -464,6 +511,7 @@ fn install_in(
         )));
     }
     let mut files = Vec::new();
+    let mut total = 0usize;
     for rel in &l.files {
         if rel.split('/').any(|p| p.is_empty() || p == "..") {
             continue;
@@ -478,12 +526,25 @@ fn install_in(
             .header("User-Agent", "Tidewatch")
             .call()
             .map_err(|e| Error::invalid(format!("下载 {rel} 失败：{e}")))?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(Error::invalid(format!(
+                "下载 {rel} 失败：服务器返回 {status}。"
+            )));
+        }
         let bytes = resp
             .body_mut()
             .with_config()
             .limit(MAX_FILE_BYTES as u64)
             .read_to_vec()
             .map_err(|e| Error::invalid(format!("下载 {rel} 失败：{e}")))?;
+        total += bytes.len();
+        if total > MAX_TOTAL_BYTES {
+            return Err(Error::invalid(format!(
+                "这个 skill 超过 {} MB，未安装。",
+                MAX_TOTAL_BYTES / 1024 / 1024
+            )));
+        }
         files.push((rel.clone(), bytes));
     }
     let mut dirs = Vec::new();
@@ -559,6 +620,17 @@ mod tests {
             vec!["skills/a", "skills/react", "x/react"]
         );
         assert_eq!(pick_skill_dir(&["SKILL.md".to_string()], "solo"), vec![""]);
+    }
+
+    #[test]
+    fn file_lists_from_github_and_jsdelivr() {
+        let gh = r#"{"tree":[{"path":"skills/a/SKILL.md","type":"blob"},{"path":"skills/a","type":"tree"}]}"#;
+        assert_eq!(parse_github_tree(gh).unwrap(), vec!["skills/a/SKILL.md"]);
+        let jd = r#"{"files":[{"name":"/skills/a/SKILL.md","size":3},{"name":"/README.md"}]}"#;
+        assert_eq!(
+            parse_jsdelivr_files(jd).unwrap(),
+            vec!["skills/a/SKILL.md", "README.md"]
+        );
     }
 
     #[test]
