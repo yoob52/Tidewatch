@@ -104,6 +104,7 @@ pub struct RunSpec {
     pub permission: PermissionMode,
     /// 续接已有会话。
     pub resume_session: Option<String>,
+    /// Absolute path for isolated history, outside the Agent's working directory.
     pub isolated_session_dir: Option<PathBuf>,
     /// 这次调用只要一段文字回答：不给 Agent 读文件、跑命令、联网的工具。
     /// 只读模式拦不住读工作目录之外的文件，分析不可信的正文时要用这个。

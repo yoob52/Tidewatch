@@ -1864,6 +1864,11 @@ impl Inner {
         let logs = self.cfg.data_dir.join("logs");
         std::fs::create_dir_all(&logs)?;
         let raw_log = logs.join(format!("{}.jsonl", run.id));
+        let isolated_session_dir = if kind == AgentKind::Aider && run.task_id.is_none() {
+            Some(crate::util::canonical(&logs)?.join(format!("{}.aider", run.id)))
+        } else {
+            None
+        };
         // PRD 里的图片：复制到 worktree 之外，Prompt 里换成路径并加图片清单
         let images = {
             let conn = lock(&self.db);
@@ -1914,8 +1919,7 @@ impl Inner {
                 run.permission.as_deref().unwrap_or("workspace_write"),
             )?,
             resume_session: run.resume_session_id.clone(),
-            isolated_session_dir: (kind == AgentKind::Aider && run.task_id.is_none())
-                .then(|| logs.join(format!("{}.aider", run.id))),
+            isolated_session_dir,
             allowed_tools: project
                 .commands
                 .checks()
