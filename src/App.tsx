@@ -104,6 +104,7 @@ function Palette({ tickets, onClose }: { tickets: TicketSummary[]; onClose: () =
               setAt(0);
             }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === 'Escape') onClose();
               else if (e.key === 'ArrowDown') {
                 e.preventDefault();
