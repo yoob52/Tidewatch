@@ -481,7 +481,7 @@ export function App() {
 }
 
 function WinControls() {
-  const win = getCurrentWindow();
+  const win = useMemo(getCurrentWindow, []);
   const [max, setMax] = useState(false);
   useEffect(() => {
     const sync = () => void win.isMaximized().then(setMax).catch(() => {});
