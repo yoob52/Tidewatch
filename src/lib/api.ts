@@ -35,8 +35,6 @@ export interface Settings {
   auto_fix_attempts: number;
   /** 子任务进入待验收时自动发起 AI 交叉审查。 */
   auto_cross_review: boolean;
-  /** 启动时联网检查新版本；默认关。 */
-  check_updates: boolean;
   merge_mode: 'merge' | 'squash';
   delete_branch_after_merge: boolean;
   notifications: boolean;

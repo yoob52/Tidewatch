@@ -266,7 +266,7 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
           <button className="iconbtn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={tr('切换亮色 / 暗色')}>
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
-          <UpdateButton checkAtStartup={settings.check_updates} />
+          <UpdateButton />
           <a
             className="iconbtn"
             href="https://github.com/yoob52/Tidewatch"

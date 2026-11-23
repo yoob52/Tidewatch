@@ -1231,15 +1231,6 @@ export function SettingsPage({
           </div>
           <div className="srow">
             <div>
-              <b>{tr('启动时检查更新')}</b>
-              <p>{tr('打开后，每次启动联网读一次 GitHub 上的最新版本号，不发送任何本机数据，也不会自动下载或安装（安装要你点「下载并安装」并确认）。默认关闭。')}</p>
-            </div>
-            <div className="sctl">
-              <Switch on={settings.check_updates} onChange={(v) => void save({ check_updates: v })} label={tr('启动时检查更新')} />
-            </div>
-          </div>
-          <div className="srow">
-            <div>
               <b>{tr('数据库')}</b>
               <p className="mono">{info?.db_path ?? '—'}</p>
               {info && (
