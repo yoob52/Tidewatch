@@ -29,7 +29,7 @@ svg{display:block;flex:none}
 .search kbd{margin-left:auto}
 .titlebar .tools{justify-self:end;align-self:stretch;display:flex;align-items:center;gap:6px}
 .titlebar .btn{height:28px}
-.winctl{display:flex;align-self:stretch;margin-left:4px}
+.winctl{display:flex;align-self:stretch;margin-left:4px;position:relative;z-index:70}
 .winctl button{width:46px;display:grid;place-items:center;color:var(--ink-2)}
 .winctl button:hover{background:var(--wash);color:var(--ink)}
 .winctl .close:hover{background:#c42b1c;color:#fff}
