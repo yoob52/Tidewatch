@@ -292,7 +292,7 @@ pub fn run_agent(
 ) -> Result<RunOutcome> {
     adapter.prepare(spec)?;
     let command = adapter.build_command(spec)?;
-    let mut parser = adapter.parser();
+    let mut parser = adapter.parser_for(spec);
     let started = Instant::now();
     let mut tree = process::spawn(to_command(adapter.kind(), &command, &spec.env_passthrough))?;
     on_event(RunnerEvent::Spawned {
@@ -304,6 +304,10 @@ pub fn run_agent(
         .steer
         .clone()
         .filter(|_| command.interactive && adapter.steer_message("").is_some());
+    if let (None, Some(inbox)) = (&steer, &opts.steer) {
+        // 这次是一次性输入，运行中收不了追加指令：让引擎改走排队
+        inbox.close_if_empty();
+    }
     let mut stdin_tx: Option<mpsc::Sender<String>> = None;
     if let Some(mut stdin) = tree.take_stdin() {
         let prompt = command.stdin.clone();
@@ -419,6 +423,11 @@ pub fn run_agent(
                     outcome.absorb(&ev);
                     on_event(RunnerEvent::Agent(ev));
                 }
+                if let Some(tx) = &stdin_tx {
+                    for l in parser.take_input() {
+                        let _ = tx.send(l);
+                    }
+                }
             }
             Ok(Msg::Err(line)) => {
                 on_event(RunnerEvent::Stderr(line.clone()));
@@ -438,7 +447,7 @@ pub fn run_agent(
 
         if let (Some(inbox), Some(tx)) = (&steer, &stdin_tx) {
             for text in inbox.take() {
-                if let Some(line) = adapter.steer_message(&text) {
+                if let Some(line) = parser.steer(&text).or_else(|| adapter.steer_message(&text)) {
                     if tx.send(line).is_ok() {
                         pending_turns += 1;
                         on_event(RunnerEvent::Steered(text));
@@ -447,7 +456,10 @@ pub fn run_agent(
             }
             // 有的 Agent 会把运行中收到的消息并进当前这一轮：答完后 5 秒没动静也视为结束
             let quiet = last_msg.elapsed() > Duration::from_secs(5);
-            if finished_once && (pending_turns == 0 || quiet) && inbox.close_if_empty() {
+            let idle = parser
+                .idle()
+                .unwrap_or(finished_once && (pending_turns == 0 || quiet));
+            if idle && inbox.close_if_empty() {
                 stdin_tx = None;
             }
         }

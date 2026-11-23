@@ -20,7 +20,20 @@ impl AgentAdapter for CodexAdapter {
             PermissionMode::WorkspaceWrite => "workspace-write",
             PermissionMode::FullAuto => "danger-full-access",
         };
-        let mut args: Vec<String> = vec!["exec".into()];
+        let app = app_server(spec);
+        let mut args: Vec<String> = vec![if app { "app-server" } else { "exec" }.into()];
+        if app {
+            push_config(spec, sandbox, &mut args);
+            args.extend(spec.extra_args.iter().cloned());
+            return Ok(CommandSpec {
+                program: self.resolve_binary(spec)?,
+                args,
+                env: spec.env.clone(),
+                cwd: spec.cwd.clone(),
+                stdin: super::codex_app::handshake(spec),
+                interactive: true,
+            });
+        }
         if spec.resume_session.is_some() {
             args.push("resume".into());
         }
@@ -32,6 +45,48 @@ impl AgentAdapter for CodexAdapter {
         if let Some(m) = &spec.model {
             args.extend(["-m".into(), m.clone()]);
         }
+        push_config(spec, sandbox, &mut args);
+        args.extend(spec.extra_args.iter().cloned());
+        if let Some(id) = &spec.resume_session {
+            args.push(id.clone());
+        }
+        args.push("-".into());
+        Ok(CommandSpec {
+            program: self.resolve_binary(spec)?,
+            args,
+            env: spec.env.clone(),
+            cwd: spec.cwd.clone(),
+            stdin: spec.prompt.clone(),
+            interactive: false,
+        })
+    }
+
+    fn parser(&self) -> Box<dyn EventParser> {
+        Box::new(CodexParser::default())
+    }
+
+    fn parser_for(&self, spec: &RunSpec) -> Box<dyn EventParser> {
+        if app_server(spec) {
+            Box::new(super::codex_app::CodexAppParser::new(spec))
+        } else {
+            self.parser()
+        }
+    }
+
+    /// 实际内容由 app-server 解析器生成（要带会话和这一轮的 id）。
+    fn steer_message(&self, text: &str) -> Option<String> {
+        Some(text.to_string())
+    }
+}
+
+/// 子任务运行走 app-server，运行中可以追加指令；只要文字回答的调用仍用一次性的 `codex exec`。
+fn app_server(spec: &RunSpec) -> bool {
+    spec.interactive && !spec.no_tools
+}
+
+/// `exec` 和 `app-server` 共用的 `-c` 覆盖（沙箱、Windows 沙箱、工具开关、MCP、Provider 参数）。
+fn push_config(spec: &RunSpec, sandbox: &str, args: &mut Vec<String>) {
+    {
         args.extend(["-c".into(), format!("sandbox_mode={sandbox}")]);
         if cfg!(windows) && !user_sets_windows_sandbox(spec) {
             // 不指定时 Codex 用旧版受限令牌沙箱，在很多 Windows 上任何命令都被 policy 拒绝、工作区也写不了
@@ -58,23 +113,6 @@ impl AgentAdapter for CodexAdapter {
                 format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\""),
             ]);
         }
-        args.extend(spec.extra_args.iter().cloned());
-        if let Some(id) = &spec.resume_session {
-            args.push(id.clone());
-        }
-        args.push("-".into());
-        Ok(CommandSpec {
-            program: self.resolve_binary(spec)?,
-            args,
-            env: spec.env.clone(),
-            cwd: spec.cwd.clone(),
-            stdin: spec.prompt.clone(),
-            interactive: false,
-        })
-    }
-
-    fn parser(&self) -> Box<dyn EventParser> {
-        Box::new(CodexParser::default())
     }
 }
 
