@@ -82,6 +82,8 @@ impl AgentAdapter for AiderAdapter {
         // 没有会话 id：续接靠 worktree 里的聊天记录文件
         if spec.resume_session.is_some() {
             args.push("--restore-chat-history".into());
+        } else {
+            args.push("--no-restore-chat-history".into());
         }
         for f in &spec.images {
             args.extend(["--read".into(), f.display().to_string()]);

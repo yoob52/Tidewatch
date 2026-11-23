@@ -1,11 +1,12 @@
 import { tr } from '../lib/i18n';
 // 工单详情里的「审核」页：AI 预审结果、问题清单、验收标准、定稿
 import { useState } from 'react';
-import { api, type Issue, type Resolution, type Severity } from '../lib/api';
+import { api, type Issue, type Resolution, type Severity, type TicketRunOptions } from '../lib/api';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
-import { AgentTag, Empty, Inline, Md, Modal, Ripple, fmtCost, fmtDur, go, runActive, runSeconds, useUi } from '../lib/ui';
+import { AgentTag, Empty, Inline, Md, Modal, Ripple, fmtCost, fmtDur, go, runActive, runSeconds, useLoad, useUi } from '../lib/ui';
 import { useConfirmTicketRun } from '../lib/start';
+import { RunOptionsFields, useChooseTicketRun } from '../lib/runOptions';
 import type { TabProps } from './Ticket';
 
 const SEV: Record<Severity, [string, string]> = {
@@ -90,20 +91,27 @@ function PrdEditDialog({
 export function FinalizeDialog({ d, blockers, onClose, onDone }: { d: TabProps['d']; blockers: number; onClose: () => void; onDone: () => Promise<void> }) {
   const ui = useUi();
   const confirmRun = useConfirmTicketRun();
+  const { providers } = useData();
   const t = d.ticket;
   const hasTasks = d.tasks.some((k) => k.status !== 'cancelled');
   const impact = !!t.change_from_version_id && hasTasks;
   const [split, setSplit] = useState(!hasTasks);
+  const [options, setOptions] = useState<TicketRunOptions>({});
   const [busy, setBusy] = useState(false);
   const version = d.versions[d.versions.length - 1]?.version ?? 1;
   const criteria = t.acceptance_criteria.length;
   const needsProject = (split || impact) && t.projects.length === 0;
-  const blocked = blockers > 0 || criteria === 0 || needsProject;
+  const runAi = split || impact;
+  const { data: config, error } = useLoad(
+    () => runAi && !needsProject ? api.ticketRunConfig(t.id, impact ? 'impact' : 'split') : Promise.resolve(null),
+    [t.id, runAi, needsProject, impact],
+  );
+  const blocked = blockers > 0 || criteria === 0 || needsProject || (runAi && !config);
 
   const confirm = async () => {
     if ((split || impact) && !(await confirmRun())) return;
     setBusy(true);
-    const res = await ui.attempt(api.ticketFinalize(t.id, split));
+    const res = await ui.attempt(api.ticketFinalize(t.id, split, runAi ? options : undefined));
     setBusy(false);
     if (!res) return;
     ui.toast(
@@ -166,13 +174,16 @@ export function FinalizeDialog({ d, blockers, onClose, onDone }: { d: TabProps['
           </span>
         </label>
       )}
+      {runAi && config && <RunOptionsFields config={config} providers={providers} value={options} onChange={setOptions} />}
+      {runAi && error && <p className="dim" role="alert">{error}</p>}
     </Modal>
   );
 }
 
-export function ReviewTab({ d, reload }: TabProps) {
+export function ReviewTab({ d, reload, onBind }: TabProps & { onBind?: () => void }) {
   const ui = useUi();
   const confirmRun = useConfirmTicketRun();
+  const chooseRun = useChooseTicketRun();
   const data = useData();
   const t = d.ticket;
   const [dialog, setDialog] = useState<
@@ -197,8 +208,10 @@ export function ReviewTab({ d, reload }: TabProps) {
   const criteria = [...t.acceptance_criteria, ...(lastGood?.criteria_draft ?? []).filter((c) => !t.acceptance_criteria.includes(c))];
 
   const startReview = async () => {
-    if (!(await confirmRun())) return;
-    if (await ui.attempt(api.reviewStart(t.id), tr('已提交预审，有空闲并发时自动开始'))) await refresh();
+    if (!t.projects.length && onBind) return onBind();
+    const options = await chooseRun(t.id, 'review', tr('提交预审'));
+    if (!options || !(await confirmRun())) return;
+    if (await ui.attempt(api.reviewStart(t.id, options), tr('已提交预审，有空闲并发时自动开始'))) await refresh();
   };
   const skipReview = async () => {
     if (!(await ui.confirm(tr('跳过 AI 预审'), tr('工单直接进入人工审核，由你自己检查 PRD。之后仍然可以点「重新预审」。'), tr('跳过预审')))) return;

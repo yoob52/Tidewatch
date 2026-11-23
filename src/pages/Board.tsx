@@ -5,6 +5,7 @@ import { api, type TicketStatus, type TicketSummary } from '../lib/api';
 import { useData } from '../lib/data';
 import { canMove } from '../lib/flow';
 import { useConfirmTicketRun } from '../lib/start';
+import { useChooseDevelopment, useChooseTicketRun } from '../lib/runOptions';
 import { Icon } from '../lib/Icon';
 import { Ripple, STAGES, STAGE_NAME, Seg, Stamp, runActive, useUi } from '../lib/ui';
 
@@ -32,6 +33,8 @@ export function BoardPage() {
   const { tickets, projects, runs, reload } = useData();
   const ui = useUi();
   const confirmRun = useConfirmTicketRun();
+  const chooseRun = useChooseTicketRun();
+  const chooseDevelopment = useChooseDevelopment();
   const [filter, setFilter] = useState('all');
   const [drag, setDrag] = useState<TicketSummary | null>(null);
   const [over, setOver] = useState<TicketStatus | null>(null);
@@ -63,8 +66,19 @@ export function BoardPage() {
       const reason = await ui.prompt(tr('发起变更'), tr('{0} 回到人工审核，PRD 重新可编辑；正在运行的子任务会继续跑完。', t.key), tr('为什么要改需求'), tr('发起变更'), true);
       if (!reason) return;
       job = api.changeRequest(t.id, reason, false);
+    } else if (to === 'ai_review') {
+      if (!t.projects.length) {
+        location.hash = `#/ticket/${t.key}/overview`;
+        return;
+      }
+      const options = await chooseRun(t.id, 'review', tr('提交预审'));
+      if (!options || !(await confirmRun())) return;
+      job = api.reviewStart(t.id, options);
+    } else if (t.status === 'finalized' && to === 'developing') {
+      const options = await chooseDevelopment(t.id);
+      if (!options) return;
+      job = api.developmentStart(t.id, options);
     } else {
-      if (to === 'ai_review' && !(await confirmRun())) return;
       job = api.ticketTransition(t.id, to);
     }
     const done = await ui.attempt(job);

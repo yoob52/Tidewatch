@@ -10,6 +10,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_m3.sql"),
     include_str!("../migrations/0005_m3_review.sql"),
     include_str!("../migrations/0006_m4.sql"),
+    include_str!("../migrations/0007_run_options.sql"),
 ];
 
 /// 多线程共用的连接：调度线程、运行线程和界面命令都经它读写。

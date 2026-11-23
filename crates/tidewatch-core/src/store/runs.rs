@@ -17,6 +17,10 @@ pub struct Run {
     pub agent: String,
     pub provider_id: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub ticket_project_dir: Option<String>,
     pub permission: Option<String>,
     pub agent_session_id: Option<String>,
     pub resume_session_id: Option<String>,
@@ -41,7 +45,7 @@ pub struct Run {
     pub diff_stat: Vec<FileStat>,
 }
 
-const COLS: &str = "id, task_id, ticket_id, number, purpose, parent_run_id, agent, provider_id, model, permission, agent_session_id, resume_session_id, prompt, command_json, status, exit_code, queued_at, started_at, agent_finished_at, finished_at, input_tokens, output_tokens, cache_tokens, cost_usd, cost_source, start_commit, end_commit, summary, raw_log_path, error, diff_stat_json";
+const COLS: &str = "id, task_id, ticket_id, number, purpose, parent_run_id, agent, provider_id, model, permission, agent_session_id, resume_session_id, prompt, command_json, status, exit_code, queued_at, started_at, agent_finished_at, finished_at, input_tokens, output_tokens, cache_tokens, cost_usd, cost_source, start_commit, end_commit, summary, raw_log_path, error, diff_stat_json, reasoning_effort, ticket_project_dir";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Run> {
     Ok(Run {
@@ -78,6 +82,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Run> {
         raw_log_path: r.get(28)?,
         error: r.get(29)?,
         diff_stat: from_json(r.get(30)?),
+        reasoning_effort: r.get(31)?,
+        ticket_project_dir: r.get(32)?,
     })
 }
 
@@ -90,6 +96,8 @@ pub struct NewRun<'a> {
     pub agent: &'a str,
     pub provider_id: Option<&'a str>,
     pub model: Option<&'a str>,
+    pub reasoning_effort: Option<&'a str>,
+    pub ticket_project_dir: Option<&'a str>,
     pub permission: &'a str,
     pub resume_session_id: Option<&'a str>,
     pub prompt: &'a str,
@@ -113,8 +121,8 @@ pub fn enqueue(conn: &Connection, n: NewRun) -> Result<Run> {
     };
     conn.execute(
         "INSERT INTO run (id, task_id, ticket_id, number, purpose, parent_run_id, agent, provider_id, model,
-         permission, resume_session_id, prompt, status, queued_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'queued', ?13)",
+         permission, resume_session_id, prompt, status, queued_at, reasoning_effort, ticket_project_dir)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'queued', ?13, ?14, ?15)",
         rusqlite::params![
             id,
             n.task_id,
@@ -128,7 +136,9 @@ pub fn enqueue(conn: &Connection, n: NewRun) -> Result<Run> {
             n.permission,
             n.resume_session_id,
             n.prompt,
-            crate::util::now()
+            crate::util::now(),
+            n.reasoning_effort,
+            n.ticket_project_dir
         ],
     )?;
     get(conn, &id)

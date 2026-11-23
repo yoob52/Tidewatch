@@ -7,6 +7,7 @@ import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
 import { imageFiles, imageMd, insertAt, parseImages, selectionOf, uploadImage } from '../lib/images';
 import { useConfirmTicketRun } from '../lib/start';
+import { useChooseRun } from '../lib/runOptions';
 import { AGENTS, Field, Md, PRIO, Prio, STAGE_NAME, Seg, Stamp, TYPES, go, useUi } from '../lib/ui';
 
 type Mode = 'paste' | 'file' | 'form';
@@ -14,9 +15,10 @@ type Mode = 'paste' | 'file' | 'form';
 const KIND_NAME: Record<string, string> = { backend: tr('后端'), frontend: tr('前端'), fullstack: tr('全栈'), other: tr('其它') };
 
 export function NewTicketPage() {
-  const { projects, reload } = useData();
+  const { projects, providers, settings, reload } = useData();
   const ui = useUi();
   const confirmRun = useConfirmTicketRun();
+  const chooseRun = useChooseRun();
   const [mode, setMode] = useState<Mode>('paste');
   const [raw, setRaw] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);
@@ -130,13 +132,30 @@ export function NewTicketPage() {
       ui.toast(tr('开始修复前请先绑定一个项目'));
       return;
     }
-    if ((to === 'ai_review' || to === 'developing') && !(await confirmRun())) return;
     if (to === 'ai_review' && picked.length === 0) {
       ui.toast(tr('提交预审前请先绑定一个项目：AI 要在项目目录里只读地查看代码'));
       return;
     }
     setSaving(true);
     try {
+      const bindings = picked.map((project_id) => ({
+        project_id,
+        role: projects.find((p) => p.id === project_id)?.kind === 'frontend' ? 'frontend' : 'backend',
+        subdir: null,
+      }));
+      let options;
+      if (to === 'ai_review' || to === 'developing') {
+        const first = to === 'developing' ? bindings[0] : [...bindings].sort((a, b) =>
+          a.role.localeCompare(b.role) || a.project_id.localeCompare(b.project_id))[0];
+        const project = projects.find((p) => p.id === first?.project_id);
+        const provider_id = project?.default_provider_id ?? settings.default_provider_id;
+        options = await chooseRun({
+          agent: project?.default_agent ?? settings.default_agent,
+          provider_id,
+          model: providers.find((p) => p.id === provider_id)?.default_model ?? null,
+        }, to === 'ai_review' ? tr('提交预审') : tr('配置子任务运行'));
+        if (!options || !(await confirmRun())) return;
+      }
       const t = await api.ticketCreate({
         title: title.trim(),
         type,
@@ -144,11 +163,7 @@ export function NewTicketPage() {
         labels: labels.split(/[,，\s]+/).filter(Boolean),
         due_date: due || null,
         content_md: raw,
-        projects: picked.map((project_id) => ({
-          project_id,
-          role: projects.find((p) => p.id === project_id)?.kind === 'frontend' ? 'frontend' : 'backend',
-          subdir: null,
-        })),
+        projects: bindings,
         acceptance_criteria: [],
         bug_info: type === 'bug' ? bugInfo : null,
         source_kind: mode === 'file' ? 'file' : 'manual',
@@ -159,7 +174,7 @@ export function NewTicketPage() {
       if (to === 'ai_review') {
         // 工单已经建好；预审提交不了（比如 Agent 没配好）就留在草稿，不让用户重复创建
         try {
-          await api.reviewStart(t.id);
+          await api.reviewStart(t.id, options ?? undefined);
           note = tr('AI 预审已入队');
         } catch (e) {
           ui.toast(tr('已创建 {0}（草稿），但没能提交预审：{1}', t.key, String(e)));
@@ -185,7 +200,7 @@ export function NewTicketPage() {
           permission_profile: null,
           depends_on: [],
         });
-        await api.taskStart(task.id);
+        await api.taskStart(task.id, { runtime: options?.runtime });
         note = tr('已开始修复');
       }
       ui.toast(tr('已创建 {0}「{1}」· {2}', t.key, t.title, note));

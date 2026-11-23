@@ -339,6 +339,29 @@ pub fn update(conn: &mut Connection, id: &str, input: TicketInput) -> Result<Tic
     get(conn, id)
 }
 
+pub fn bind_projects(
+    conn: &mut Connection,
+    id: &str,
+    projects: &[TicketProject],
+) -> Result<Ticket> {
+    let ticket = get(conn, id)?;
+    if !matches!(ticket.status.as_str(), "draft" | "human_review")
+        || ticket.finalized_version_id.is_some()
+    {
+        return Err(Error::invalid(
+            "项目绑定只能在首次定稿前的草稿或人工审核中修改。",
+        ));
+    }
+    let tx = conn.transaction()?;
+    set_projects(&tx, &ticket.id, projects)?;
+    tx.execute(
+        "UPDATE ticket SET updated_at = ?2 WHERE id = ?1",
+        rusqlite::params![ticket.id, crate::util::now()],
+    )?;
+    tx.commit()?;
+    get(conn, &ticket.id)
+}
+
 pub fn type_label(kind: &str) -> &str {
     match kind {
         "feature_backend" => "后端需求",

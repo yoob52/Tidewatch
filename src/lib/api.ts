@@ -520,10 +520,34 @@ export interface TestReport {
 }
 
 export interface StartOptions {
+  runtime?: RunOverrides;
   instruction?: string | null;
   fresh_session?: boolean;
   prompt_override?: string | null;
   command_id?: string | null;
+}
+
+export interface RunOverrides {
+  model?: string;
+  reasoning_effort?: string;
+}
+
+export interface TicketRunOptions {
+  runtime?: RunOverrides;
+  resume_run_id?: string;
+}
+
+export interface TicketRunConfig {
+  agent: string;
+  provider_id: string | null;
+  model: string | null;
+  reusable_run?: { id: string; number: number; purpose: string } | null;
+}
+
+export interface DevelopmentTaskPlan {
+  id: string;
+  title: string;
+  config: TicketRunConfig;
 }
 
 export interface RunPlan {
@@ -709,7 +733,7 @@ export interface CodeFinding {
   suggestion: string;
 }
 
-/** AI 交叉审查：另一个 Agent 只读看完子任务的 Diff 后给的问题列表，只供参考。 */
+/** AI 交叉审查：新会话只读看完子任务的 Diff 后给的问题列表，只供参考。 */
 export interface CodeReview {
   id: string;
   task_id: string;
@@ -868,6 +892,7 @@ export const api = {
   ticketGet: (id: string) => invoke<TicketDetail>('ticket_get', { id }),
   ticketCreate: (input: TicketInput) => invoke<Ticket>('ticket_create', { input }),
   ticketUpdate: (id: string, input: TicketInput) => invoke<Ticket>('ticket_update', { id, input }),
+  ticketBindProjects: (id: string, projects: TicketProject[]) => invoke<Ticket>('ticket_bind_projects', { id, projects }),
   /** origin：image 表示这一版只动了图片（贴图、替换、改效力、移除）。 */
   ticketSavePrd: (id: string, content: string, note?: string, origin?: 'edit' | 'image') =>
     invoke<PrdVersion>('ticket_save_prd', { id, content, note: note ?? null, origin: origin ?? null }),
@@ -888,7 +913,8 @@ export const api = {
   attachmentDescribe: (id: string, description: string) =>
     invoke<Attachment>('attachment_describe', { id, description }),
 
-  reviewStart: (id: string) => invoke<Run>('review_start', { id }),
+  reviewStart: (id: string, options?: TicketRunOptions) => invoke<Run>('review_start', { id, options }),
+  ticketRunConfig: (id: string, purpose: 'review' | 'split' | 'impact') => invoke<TicketRunConfig>('ticket_run_config', { id, purpose }),
   reviewSkip: (id: string) => invoke<Ticket>('review_skip', { id }),
   issuePreview: (id: string, action: 'accept' | 'ignore', note?: string) =>
     invoke<string>('issue_preview', { id, action, note: note ?? null }),
@@ -897,13 +923,14 @@ export const api = {
     invoke<Issue>('issue_resolve', { id, action, note: note ?? null, content: content ?? null }),
   questionsExport: (id: string) => invoke<string>('questions_export', { id }),
   criteriaSet: (id: string, criteria: string[]) => invoke<Ticket>('criteria_set', { id, criteria }),
-  ticketFinalize: (id: string, split: boolean) => invoke<{ ticket: Ticket; run: Run | null }>('ticket_finalize', { id, split }),
-  proposalRegenerate: (ticketId: string) => invoke<Run>('proposal_regenerate', { id: ticketId }),
+  ticketFinalize: (id: string, split: boolean, options?: TicketRunOptions) => invoke<{ ticket: Ticket; run: Run | null }>('ticket_finalize', { id, split, options }),
+  proposalRegenerate: (ticketId: string, options?: TicketRunOptions) => invoke<Run>('proposal_regenerate', { id: ticketId, options }),
   proposalDiscard: (proposalId: string) => invoke<void>('proposal_discard', { id: proposalId }),
   splitApply: (ticketId: string, tasks: TaskDraft[]) => invoke<Task[]>('split_apply', { id: ticketId, tasks }),
   impactApply: (ticketId: string, impacts: TaskImpact[], newTasks: TaskDraft[]) =>
     invoke<Task[]>('impact_apply', { id: ticketId, impacts, newTasks }),
-  developmentStart: (ticketId: string) => invoke<Run[]>('development_start', { id: ticketId }),
+  developmentPlan: (ticketId: string) => invoke<DevelopmentTaskPlan[]>('development_plan', { id: ticketId }),
+  developmentStart: (ticketId: string, runtime?: Record<string, RunOverrides>) => invoke<Run[]>('development_start', { id: ticketId, runtime }),
   changeRequest: (ticketId: string, reason: string, stopRunning: boolean) =>
     invoke<Ticket>('change_request', { id: ticketId, reason, stopRunning }),
 
@@ -929,7 +956,7 @@ export const api = {
   taskPrDraft: (id: string) => invoke<PrInput>('task_pr_draft', { id }),
   /** 分支没推过（或推过后又有新提交）会先推送，再用 gh pr create 开 PR。 */
   taskPrCreate: (id: string, input: PrInput) => invoke<Task>('task_pr_create', { id, input }),
-  /** 不指定 agent 时换一个和写代码的不同的 Agent。 */
+  /** 始终开新会话；不指定 agent 时默认换一种 Agent。 */
   codeReviewStart: (taskId: string, agent?: string | null, providerId?: string | null) =>
     invoke<Run>('code_review_start', { taskId, agent: agent ?? null, providerId: providerId ?? null }),
 

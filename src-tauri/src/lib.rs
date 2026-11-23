@@ -11,8 +11,8 @@ use tidewatch_core::api::ApiServer;
 use tidewatch_core::backup;
 use tidewatch_core::db::{self, lock};
 use tidewatch_core::engine::{
-    CodeReviewOptions, Engine, EngineConfig, EngineEvent, Finalized, PrInput, RejectInput, RunPlan,
-    StartOptions, TaskDiff,
+    CodeReviewOptions, DevelopmentTaskPlan, Engine, EngineConfig, EngineEvent, Finalized, PrInput,
+    RejectInput, RunOverrides, RunPlan, StartOptions, TaskDiff, TicketRunConfig, TicketRunOptions,
 };
 use tidewatch_core::git;
 use tidewatch_core::prompt;
@@ -698,6 +698,15 @@ fn ticket_update(
 }
 
 #[tauri::command]
+fn ticket_bind_projects(
+    state: State,
+    id: String,
+    projects: Vec<tickets::TicketProject>,
+) -> CmdResult<tickets::Ticket> {
+    tickets::bind_projects(&mut lock(state.engine.db()), &id, &projects).map_err(err)
+}
+
+#[tauri::command]
 fn ticket_save_prd(
     state: State,
     id: String,
@@ -771,8 +780,20 @@ fn ticket_transition(state: State, id: String, to: String) -> CmdResult<tickets:
 
 /// 提交 AI 预审。
 #[tauri::command]
-fn review_start(state: State, id: String) -> CmdResult<runs::Run> {
-    state.engine.start_review(&id).map_err(err)
+fn review_start(
+    state: State,
+    id: String,
+    options: Option<TicketRunOptions>,
+) -> CmdResult<runs::Run> {
+    state
+        .engine
+        .start_review_with(&id, true, options.unwrap_or_default())
+        .map_err(err)
+}
+
+#[tauri::command]
+fn ticket_run_config(state: State, id: String, purpose: String) -> CmdResult<TicketRunConfig> {
+    state.engine.ticket_run_config(&id, &purpose).map_err(err)
 }
 
 /// 不跑 AI，直接进入人工审核（没有可用的 Agent，或者这份需求不需要预审）。
@@ -834,13 +855,28 @@ fn criteria_set(state: State, id: String, criteria: Vec<String>) -> CmdResult<ti
 
 /// 定稿；`split` 为真时让 AI 给出拆分建议（变更后再次定稿且已有子任务时，改为影响分析）。
 #[tauri::command]
-fn ticket_finalize(state: State, id: String, split: bool) -> CmdResult<Finalized> {
-    state.engine.finalize(&id, split).map_err(err)
+fn ticket_finalize(
+    state: State,
+    id: String,
+    split: bool,
+    options: Option<TicketRunOptions>,
+) -> CmdResult<Finalized> {
+    state
+        .engine
+        .finalize_with(&id, split, options.unwrap_or_default())
+        .map_err(err)
 }
 
 #[tauri::command]
-fn proposal_regenerate(state: State, id: String) -> CmdResult<runs::Run> {
-    state.engine.regenerate_proposal(&id).map_err(err)
+fn proposal_regenerate(
+    state: State,
+    id: String,
+    options: Option<TicketRunOptions>,
+) -> CmdResult<runs::Run> {
+    state
+        .engine
+        .regenerate_proposal_with(&id, options.unwrap_or_default())
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -872,8 +908,20 @@ fn impact_apply(
 
 /// 开始开发：能开始的子任务全部入队。
 #[tauri::command]
-fn development_start(state: State, id: String) -> CmdResult<Vec<runs::Run>> {
-    state.engine.start_development(&id).map_err(err)
+fn development_start(
+    state: State,
+    id: String,
+    runtime: Option<std::collections::HashMap<String, RunOverrides>>,
+) -> CmdResult<Vec<runs::Run>> {
+    state
+        .engine
+        .start_development_with(&id, runtime.unwrap_or_default())
+        .map_err(err)
+}
+
+#[tauri::command]
+fn development_plan(state: State, id: String) -> CmdResult<Vec<DevelopmentTaskPlan>> {
+    state.engine.development_plan(&id).map_err(err)
 }
 
 /// 发起变更：定稿后的工单回到人工审核。
@@ -999,7 +1047,7 @@ fn task_reject(state: State, id: String, input: RejectInput) -> CmdResult<tasks:
     state.engine.reject_task_with(&id, input).map_err(err)
 }
 
-/// AI 交叉审查：让另一个 Agent 只读审查这个子任务的 Diff。
+/// AI 交叉审查：开一个新会话只读审查这个子任务的 Diff。
 #[tauri::command]
 fn code_review_start(
     state: State,
@@ -1598,9 +1646,11 @@ pub fn run() {
             ticket_get,
             ticket_create,
             ticket_update,
+            ticket_bind_projects,
             ticket_save_prd,
             ticket_transition,
             review_start,
+            ticket_run_config,
             review_skip,
             issue_preview,
             issue_resolve,
@@ -1612,6 +1662,7 @@ pub fn run() {
             split_apply,
             impact_apply,
             development_start,
+            development_plan,
             change_request,
             prompt_templates,
             prompt_preview,

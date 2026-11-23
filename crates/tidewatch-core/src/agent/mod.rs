@@ -100,6 +100,7 @@ pub struct RunSpec {
     pub prompt: String,
     pub cwd: PathBuf,
     pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub permission: PermissionMode,
     /// 续接已有会话。
     pub resume_session: Option<String>,

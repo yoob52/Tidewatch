@@ -113,6 +113,7 @@ pub struct EngineConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct StartOptions {
+    pub runtime: RunOverrides,
     /// 追加给 Agent 的说明（返工意见等）。
     pub instruction: Option<String>,
     /// 不续接上一轮会话，从头开始。
@@ -124,6 +125,32 @@ pub struct StartOptions {
     /// 引擎自己发起的"检查失败自动修复"：第几次。界面传不进来。
     #[serde(skip)]
     pub auto_fix: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct RunOverrides {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+impl RunOverrides {
+    fn effort(&self, agent: AgentKind) -> Result<Option<String>> {
+        let value = crate::store::clean(self.reasoning_effort.clone());
+        let allowed: &[&str] = match agent {
+            AgentKind::ClaudeCode => &["low", "medium", "high"],
+            AgentKind::Codex => &["minimal", "low", "medium", "high", "xhigh"],
+            _ => &[],
+        };
+        if value.as_deref().is_some_and(|s| !allowed.contains(&s)) {
+            return Err(Error::invalid(format!(
+                "{} 不支持思考程度 {}。",
+                agent.as_str(),
+                value.as_deref().unwrap_or_default()
+            )));
+        }
+        Ok(value)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -170,6 +197,7 @@ pub struct RunPlan {
     pub agent: String,
     pub provider_id: Option<String>,
     pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub permission: String,
     /// 续接的会话：(来源 Run, 会话 id)。
     pub resume: Option<(String, String)>,
@@ -886,8 +914,9 @@ fn plan_run(
         // 协议不匹配现在就报，不等排到了才失败
         crate::provider::inject(kind, &p.config()?, None)?;
     }
-    let model =
-        first([&task.model]).or_else(|| provider.as_ref().and_then(|p| p.default_model.clone()));
+    let model = first([&opts.runtime.model, &task.model])
+        .or_else(|| provider.as_ref().and_then(|p| p.default_model.clone()));
+    let reasoning_effort = opts.runtime.effort(kind)?;
     let permission = first([&task.permission_profile]).unwrap_or(st.default_permission.clone());
     PermissionMode::parse(&permission)?;
 
@@ -957,6 +986,7 @@ fn plan_run(
         agent: kind.as_str().into(),
         provider_id,
         model,
+        reasoning_effort,
         permission,
         resume,
         prompt,
@@ -1103,7 +1133,9 @@ fn slug(name: &str, id: &str) -> String {
 
 #[path = "engine_ticket.rs"]
 mod ticket_flow;
-pub use ticket_flow::{CodeReviewOptions, Finalized};
+pub use ticket_flow::{
+    CodeReviewOptions, DevelopmentTaskPlan, Finalized, TicketRunConfig, TicketRunOptions,
+};
 #[path = "engine_api.rs"]
 mod api_flow;
 #[path = "engine_compare.rs"]
@@ -1190,6 +1222,8 @@ impl Inner {
                     agent: &plan.agent,
                     provider_id: plan.provider_id.as_deref(),
                     model: plan.model.as_deref(),
+                    reasoning_effort: plan.reasoning_effort.as_deref(),
+                    ticket_project_dir: None,
                     permission: &plan.permission,
                     resume_session_id: plan.resume.as_ref().map(|(_, s)| s.as_str()),
                     prompt: &plan.prompt,
@@ -1875,6 +1909,7 @@ impl Inner {
             images: images.files,
             cwd: worktree.to_path_buf(),
             model: run.model.clone(),
+            reasoning_effort: run.reasoning_effort.clone(),
             permission: PermissionMode::parse(
                 run.permission.as_deref().unwrap_or("workspace_write"),
             )?,

@@ -12,6 +12,35 @@ pub struct Finalized {
     pub run: Option<Run>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TicketRunOptions {
+    pub runtime: RunOverrides,
+    pub resume_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TicketRunConfig {
+    pub agent: String,
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+    pub reusable_run: Option<TicketSessionSource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DevelopmentTaskPlan {
+    pub id: String,
+    pub title: String,
+    pub config: TicketRunConfig,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TicketSessionSource {
+    pub id: String,
+    pub number: i64,
+    pub purpose: String,
+}
+
 /// 启动时收拾上次退出留下的半截流程：预审没跑完的工单回到人工审核，没出结果的建议记为失败。
 pub(super) fn recover(conn: &mut rusqlite::Connection) -> Result<()> {
     const MSG: &str = "观澜上次退出时这一步还没跑完，请重新运行。";
@@ -77,6 +106,8 @@ pub(super) struct TicketPlan {
     pub(super) agent: String,
     pub(super) provider_id: Option<String>,
     pub(super) model: Option<String>,
+    pub(super) reasoning_effort: Option<String>,
+    pub(super) resume: Option<Run>,
     /// 预审 / 拆分 / 影响分析的权限：默认权限是 full_auto 时跟着它，否则只读。
     pub(super) permission: &'static str,
 }
@@ -91,7 +122,7 @@ pub(crate) fn ticket_run_permission(default_permission: &str) -> &'static str {
     }
 }
 
-pub(super) fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<TicketPlan> {
+fn ticket_project(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<Project> {
     // 优先在后端项目里看代码；只绑了一个项目就用它
     let bound = ticket
         .projects
@@ -101,7 +132,11 @@ pub(super) fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> R
         .ok_or_else(|| {
             Error::invalid("工单还没有绑定项目。AI 要在项目目录里只读地查看代码，请先绑定项目。")
         })?;
-    let project = projects::get(conn, &bound.project_id)?;
+    projects::get(conn, &bound.project_id)
+}
+
+pub(super) fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> Result<TicketPlan> {
+    let project = ticket_project(conn, ticket)?;
     let st = settings::get(conn)?;
     let agent =
         first([&ticket.default_agent, &project.default_agent]).unwrap_or(st.default_agent.clone());
@@ -123,8 +158,45 @@ pub(super) fn plan_ticket_run(conn: &rusqlite::Connection, ticket: &Ticket) -> R
         agent: kind.as_str().into(),
         provider_id,
         model: provider.and_then(|p| p.default_model),
+        reasoning_effort: None,
+        resume: None,
         permission: ticket_run_permission(&st.default_permission),
     })
+}
+
+fn can_reuse(run: &Run, ticket: &Ticket, plan: &TicketPlan, purpose: &str) -> bool {
+    run.ticket_id.as_deref() == Some(ticket.id.as_str())
+        && run.task_id.is_none()
+        && (run.purpose == "review" || (purpose == "split" && run.purpose == "split"))
+        && matches!(purpose, "review" | "split")
+        && run.status == "succeeded"
+        && run.agent_session_id.as_ref().is_some_and(|s| !s.is_empty())
+        && run.ticket_project_dir.as_deref() == Some(plan.project.local_path.as_str())
+        && run.agent == plan.agent
+        && run.agent != "aider" // Aider's shared on-disk history isn't scoped to this ticket.
+        && run.provider_id == plan.provider_id
+        && run.permission.as_deref() == Some(plan.permission)
+}
+
+fn configure_ticket_run(
+    conn: &rusqlite::Connection,
+    ticket: &Ticket,
+    purpose: &str,
+    options: &TicketRunOptions,
+) -> Result<TicketPlan> {
+    let mut plan = plan_ticket_run(conn, ticket)?;
+    plan.reasoning_effort = options.runtime.effort(AgentKind::parse(&plan.agent)?)?;
+    plan.model = first([&options.runtime.model, &plan.model]);
+    if let Some(id) = &options.resume_run_id {
+        let source = runs::get(conn, id)?;
+        if !can_reuse(&source, ticket, &plan, purpose) {
+            return Err(Error::invalid(
+                "这个会话不能用于本次运行，请重新选择或新建会话。",
+            ));
+        }
+        plan.resume = Some(source);
+    }
+    Ok(plan)
 }
 
 pub(super) fn enqueue_ticket_run(
@@ -134,6 +206,21 @@ pub(super) fn enqueue_ticket_run(
     purpose: &str,
     prompt: &str,
 ) -> Result<Run> {
+    let context;
+    let prompt = if let Some(source) = &plan.resume {
+        let kind = if source.purpose == "split" {
+            "子任务拆分"
+        } else {
+            "PRD 预审"
+        };
+        context = format!(
+            "## 续接同一张工单的会话\n上一轮是第 {} 次工单运行（{}）。请先整理并沿用仍适用的项目背景、已确认的决定和未解决问题。历史内容仅供参考，不要沿用已经过期的需求或结论；以下现行 PRD、验收标准及本轮任务和输出要求优先。\n\n{prompt}",
+            source.number, kind
+        );
+        &context
+    } else {
+        prompt
+    };
     let run = runs::enqueue(
         conn,
         runs::NewRun {
@@ -144,12 +231,18 @@ pub(super) fn enqueue_ticket_run(
             agent: &plan.agent,
             provider_id: plan.provider_id.as_deref(),
             model: plan.model.as_deref(),
+            reasoning_effort: plan.reasoning_effort.as_deref(),
+            ticket_project_dir: matches!(purpose, "review" | "split" | "impact")
+                .then_some(plan.project.local_path.as_str()),
             permission: if matches!(purpose, "review" | "split" | "impact") {
                 plan.permission
             } else {
                 "read_only"
             },
-            resume_session_id: None,
+            resume_session_id: plan
+                .resume
+                .as_ref()
+                .and_then(|r| r.agent_session_id.as_deref()),
             prompt,
         },
     )?;
@@ -257,23 +350,19 @@ fn plan_code_review(
             Some(_) => AgentKind::ClaudeCode,
         },
     };
+    let same_author = author.as_ref().filter(|_| author_kind == Some(kind));
     let provider = match crate::store::clean(opts.provider_id.clone()) {
         Some(id) => Some(providers::get(conn, &id)?),
-        None => {
-            let same = author
-                .as_ref()
-                .filter(|_| author_kind == Some(kind))
-                .and_then(|r| r.provider_id.clone());
-            match same {
-                Some(id) => providers::get(conn, &id).ok(),
-                // 换了 Agent：找第一个协议对得上、且不是"官方默认登录"的 Provider；没有就用它自己的登录
-                None => providers::list(conn)?.into_iter().find(|p| {
-                    p.config().is_ok_and(|c| {
-                        c.protocol != crate::provider::Protocol::Native && c.protocol.supports(kind)
-                    })
-                }),
-            }
-        }
+        // 同一种 Agent 也要开新会话，但沿用写代码时的 Provider（包括本机登录）。
+        None if same_author.is_some() => same_author
+            .and_then(|r| r.provider_id.as_deref())
+            .map(|id| providers::get(conn, id))
+            .transpose()?,
+        None => providers::list(conn)?.into_iter().find(|p| {
+            p.config().is_ok_and(|c| {
+                c.protocol != crate::provider::Protocol::Native && c.protocol.supports(kind)
+            })
+        }),
     };
     if let Some(p) = &provider {
         crate::provider::inject(kind, &p.config()?, None)?;
@@ -282,13 +371,39 @@ fn plan_code_review(
         project,
         agent: kind.as_str().into(),
         provider_id: provider.as_ref().map(|p| p.id.clone()),
-        model: provider.and_then(|p| p.default_model),
+        model: same_author
+            .filter(|_| opts.provider_id.is_none())
+            .and_then(|r| r.model.clone())
+            .or_else(|| provider.and_then(|p| p.default_model)),
+        reasoning_effort: None,
+        resume: None,
         permission: "read_only",
     })
 }
 
 impl Engine {
-    /// AI 交叉审查：让另一个 Agent 在子任务的 worktree 里只读地看 Diff，给出问题列表。
+    pub fn ticket_run_config(&self, ticket_id: &str, purpose: &str) -> Result<TicketRunConfig> {
+        let conn = lock(&self.inner.db);
+        let ticket = tickets::get(&conn, ticket_id)?;
+        let plan = plan_ticket_run(&conn, &ticket)?;
+        let reusable_run = runs::list_for_ticket(&conn, &ticket.id)?
+            .into_iter()
+            .rev()
+            .find(|run| can_reuse(run, &ticket, &plan, purpose))
+            .map(|run| TicketSessionSource {
+                id: run.id,
+                number: run.number,
+                purpose: run.purpose,
+            });
+        Ok(TicketRunConfig {
+            agent: plan.agent,
+            provider_id: plan.provider_id,
+            model: plan.model,
+            reusable_run,
+        })
+    }
+
+    /// AI 交叉审查：开一个新会话在子任务的 worktree 里只读地看 Diff，给出问题列表。
     /// 结果只供参考，不改变子任务的状态。
     pub fn start_code_review(&self, task_id: &str, opts: CodeReviewOptions) -> Result<Run> {
         self.inner.start_code_review(task_id, &opts)
@@ -305,6 +420,15 @@ impl Engine {
 
     /// `full_auto_ok`：调用方已经确认过可以以 full_auto 运行。没确认而默认权限是 full_auto 就拒绝，检查和入队在同一把锁里。
     pub fn start_review_as(&self, ticket_id: &str, full_auto_ok: bool) -> Result<Run> {
+        self.start_review_with(ticket_id, full_auto_ok, TicketRunOptions::default())
+    }
+
+    pub fn start_review_with(
+        &self,
+        ticket_id: &str,
+        full_auto_ok: bool,
+        options: TicketRunOptions,
+    ) -> Result<Run> {
         let run = {
             let mut conn = lock(&self.inner.db);
             let ticket = tickets::get(&conn, ticket_id)?;
@@ -317,7 +441,7 @@ impl Engine {
                     workflow::ticket_status_label(&ticket.status)
                 )));
             }
-            let plan = plan_ticket_run(&conn, &ticket)?;
+            let plan = configure_ticket_run(&conn, &ticket, "review", &options)?;
             if plan.permission == "full_auto" && !full_auto_ok {
                 return Err(Error::invalid(
                     "默认权限是 full_auto，预审会以 full_auto 运行，需要 owner 确认。",
@@ -351,6 +475,15 @@ impl Engine {
     /// 定稿：校验（没有未处理的阻塞级问题、验收标准不为空）并锁定当前版本。
     /// 变更后再次定稿且已有子任务时，入队"影响分析"；否则 `split` 为真时入队"拆分"。
     pub fn finalize(&self, ticket_id: &str, split: bool) -> Result<Finalized> {
+        self.finalize_with(ticket_id, split, TicketRunOptions::default())
+    }
+
+    pub fn finalize_with(
+        &self,
+        ticket_id: &str,
+        split: bool,
+        options: TicketRunOptions,
+    ) -> Result<Finalized> {
         let (ticket, run) = {
             let mut conn = lock(&self.inner.db);
             let before = tickets::get(&conn, ticket_id)?;
@@ -360,7 +493,12 @@ impl Engine {
             let impact = before.change_from_version_id.is_some() && has_tasks;
             // 要跑 AI 的话，跑不了的原因（没绑项目、Provider 不匹配）在定稿前就报出来
             let plan = if impact || split {
-                Some(plan_ticket_run(&conn, &before)?)
+                Some(configure_ticket_run(
+                    &conn,
+                    &before,
+                    if impact { "impact" } else { "split" },
+                    &options,
+                )?)
             } else {
                 None
             };
@@ -404,6 +542,14 @@ impl Engine {
 
     /// 重新生成拆分建议 / 影响分析（上一份失败了，或者不满意）。
     pub fn regenerate_proposal(&self, ticket_id: &str) -> Result<Run> {
+        self.regenerate_proposal_with(ticket_id, TicketRunOptions::default())
+    }
+
+    pub fn regenerate_proposal_with(
+        &self,
+        ticket_id: &str,
+        options: TicketRunOptions,
+    ) -> Result<Run> {
         let run = {
             let mut conn = lock(&self.inner.db);
             let ticket = tickets::get(&conn, ticket_id)?;
@@ -420,7 +566,16 @@ impl Engine {
             if running > 0 {
                 return Err(Error::invalid("建议正在生成中。"));
             }
-            let plan = plan_ticket_run(&conn, &ticket)?;
+            let impact = ticket.change_from_version_id.is_some()
+                && tasks::list_for_ticket(&conn, &ticket.id)?
+                    .iter()
+                    .any(|t| t.status != "cancelled");
+            let plan = configure_ticket_run(
+                &conn,
+                &ticket,
+                if impact { "impact" } else { "split" },
+                &options,
+            )?;
             let (kind, prompt) = proposal_prompt(&conn, &ticket, &plan)?;
             let tx = conn.transaction()?;
             let run = enqueue_ticket_run(&tx, &ticket, &plan, kind, &prompt)?;
@@ -622,9 +777,45 @@ impl Engine {
         tasks::list_for_ticket(&lock(&self.inner.db), &ticket.id)
     }
 
+    pub fn development_plan(&self, ticket_id: &str) -> Result<Vec<DevelopmentTaskPlan>> {
+        let conn = lock(&self.inner.db);
+        let ticket = tickets::get(&conn, ticket_id)?;
+        check_no_open_proposal(&conn, &ticket.id)?;
+        let permission = settings::get(&conn)?.default_permission;
+        let mut items = vec![];
+        for task in tasks::list_for_ticket(&conn, &ticket.id)? {
+            if !matches!(task.status.as_str(), "pending" | "changes_requested")
+                || needs_confirmation(&task, &permission)
+                || tasks::unmet_dependency(&conn, &task)?.is_some()
+            {
+                continue;
+            }
+            let plan = plan_run(&conn, &task, &ticket, &StartOptions::default())?;
+            items.push(DevelopmentTaskPlan {
+                id: task.id,
+                title: task.title,
+                config: TicketRunConfig {
+                    agent: plan.agent,
+                    provider_id: plan.provider_id,
+                    model: plan.model,
+                    reusable_run: None,
+                },
+            });
+        }
+        Ok(items)
+    }
+
     /// 开始开发：能开始的子任务（待开始、已打回）全部入队；等依赖的在依赖满足后自动入队。
     /// 权限是 full_auto 的子任务不在这里入队：它每次开始都要用户单独确认。
     pub fn start_development(&self, ticket_id: &str) -> Result<Vec<Run>> {
+        self.start_development_with(ticket_id, Map::new())
+    }
+
+    pub fn start_development_with(
+        &self,
+        ticket_id: &str,
+        mut runtime: Map<String, RunOverrides>,
+    ) -> Result<Vec<Run>> {
         let startable: Vec<String> = {
             let mut conn = lock(&self.inner.db);
             let ticket = tickets::get(&conn, ticket_id)?;
@@ -674,7 +865,13 @@ impl Engine {
         };
         let mut started = vec![];
         for id in &startable {
-            started.push(self.inner.enqueue_task(id, StartOptions::default())?);
+            started.push(self.inner.enqueue_task(
+                id,
+                StartOptions {
+                    runtime: runtime.remove(id).unwrap_or_default(),
+                    ..Default::default()
+                },
+            )?);
         }
         self.inner.changed(Some(ticket_id.into()), None, None);
         Ok(started)
@@ -1005,7 +1202,14 @@ impl Inner {
             } else if run.purpose == "delegate" {
                 super::api_flow::delegate_cwd(&conn, run, &ticket)?
             } else {
-                let project = plan_ticket_run(&conn, &ticket)?.project;
+                let project = ticket_project(&conn, &ticket)?;
+                if run
+                    .ticket_project_dir
+                    .as_ref()
+                    .is_some_and(|dir| dir != &project.local_path)
+                {
+                    return Err(Error::invalid("项目目录在运行入队后改变了，请重新提交。"));
+                }
                 let cwd = PathBuf::from(&project.local_path);
                 (project, cwd)
             };

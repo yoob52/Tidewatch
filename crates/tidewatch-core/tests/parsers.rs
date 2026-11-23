@@ -210,6 +210,25 @@ fn codex_real_unauthorized() {
 }
 
 #[test]
+fn reasoning_effort_reaches_claude_and_codex_commands() {
+    let spec = RunSpec {
+        reasoning_effort: Some("high".into()),
+        ..Default::default()
+    };
+    for (kind, flag, value) in [
+        (AgentKind::ClaudeCode, "--effort", "high"),
+        (AgentKind::Codex, "-c", "model_reasoning_effort=high"),
+    ] {
+        let spec = RunSpec {
+            binary: Some("/bin/agent".into()),
+            ..spec.clone()
+        };
+        let command = adapter(kind).build_command(&spec).unwrap();
+        assert!(command.args.windows(2).any(|args| args == [flag, value]));
+    }
+}
+
+#[test]
 fn command_lines() {
     let spec = |resume: Option<&str>, permission| RunSpec {
         prompt: "改一下".into(),
