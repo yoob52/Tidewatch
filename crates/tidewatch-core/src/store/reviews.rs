@@ -88,7 +88,7 @@ fn parse_object(s: &str) -> Option<Value> {
 }
 
 /// 模型常在中文字符串里直接用半角引号（`可明确写"仅支持 number"。`）。
-/// 字符串里的 `"` 后面（跳过空白）不是 `,` `:` `}` `]` 或结尾时，当作内容转义掉。
+/// 字符串里的 `"` 后面（跳过空白）不是 `,` `"` `:` `}` `]` 或结尾时，当作内容转义掉。
 fn escape_stray_quotes(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len() + 8);
@@ -109,7 +109,7 @@ fn escape_stray_quotes(s: &str) -> String {
                 in_str = true;
             } else {
                 let next = chars[i + 1..].iter().find(|c| !c.is_whitespace());
-                if matches!(next, None | Some(',' | ':' | '}' | ']')) {
+                if matches!(next, None | Some(',' | '"' | ':' | '}' | ']')) {
                     in_str = false;
                 } else {
                     out.push('\\');
@@ -724,6 +724,8 @@ mod tests {
         assert_eq!(v["issues"][0]["question"], "可明确写\"仅支持 number\"。");
         assert_eq!(v["issues"][0]["n"], 1);
         assert!(extract_json("没有 JSON").is_err());
+        // 漏了逗号不能把两条合成一条
+        assert!(extract_json(r#"{"c": ["a" "b"]}"#).is_err());
     }
 
     #[test]
