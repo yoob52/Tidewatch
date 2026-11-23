@@ -269,6 +269,15 @@ export function RunsPage({ id }: { id?: string }) {
               <Icon name="stop" size={14} />
               {r.status === 'queued' ? '取消排队' : '停止'}
             </button>
+          ) : !r.task_id ? (
+            // 预审、拆分、智能创建这类工单级运行没有会话可续接，只能回工单重新发起
+            r.ticket_key &&
+            ['stopped', 'failed', 'orphaned'].includes(r.status) && (
+              <a className="btn" href={`#/ticket/${r.ticket_key}`}>
+                <Icon name="resume" size={14} />
+                回工单重新发起
+              </a>
+            )
           ) : (
             ['stopped', 'failed', 'orphaned'].includes(r.status) && (
               <button className="btn" onClick={() => void resume(false)}>
@@ -277,7 +286,7 @@ export function RunsPage({ id }: { id?: string }) {
               </button>
             )
           )}
-          {!active && r.status !== 'queued' && (
+          {r.task_id && !active && r.status !== 'queued' && (
             <button className="btn" onClick={() => void resume(true)}>
               <Icon name="msg" size={14} />
               追加指令
