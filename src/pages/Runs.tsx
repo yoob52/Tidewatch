@@ -142,7 +142,7 @@ export function RunsPage({ id }: { id?: string }) {
   const runId = id ?? runs[0]?.id;
   // 列表只装最近的运行；链接指向更早的一轮时，用单独取回的那一轮，不拿别的运行顶替
   const current: RunRow | undefined =
-    runs.find((r) => r.id === runId) ?? (detail?.run.id === runId ? detail.run : undefined);
+    runs.find((r) => r.id === runId) ?? (runId && detail?.run.id === runId ? detail.run : undefined);
   const [raw, setRaw] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -204,7 +204,7 @@ export function RunsPage({ id }: { id?: string }) {
 
   const act = runs.filter((r) => runActive(r.status) || r.status === 'queued');
   const hist = runs.filter((r) => !act.includes(r));
-  const r = { ...current, ...(detail?.run.id === current.id ? { prompt: detail.run.prompt } : {}) };
+  const r = { ...current, ...(detail && detail.run.id === current.id ? { prompt: detail.run.prompt } : {}) };
   const active = runActive(r.status);
   const start = parseTs(r.started_at ?? r.queued_at);
 
