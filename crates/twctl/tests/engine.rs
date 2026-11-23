@@ -1464,12 +1464,13 @@ fn failed_review_keeps_the_error_and_can_be_retried() {
         .unwrap();
     assert!(review.error.is_some());
     assert!(reviews::issues(&lock(f.db()), &ticket).unwrap().is_empty());
-    assert!(f
-        .events
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|e| matches!(e, EngineEvent::ReviewFinished { error: Some(_), .. })));
+    f.wait_for("预审失败的事件", || {
+        f.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, EngineEvent::ReviewFinished { error: Some(_), .. }))
+    });
 
     // 改掉正文后重试成功
     tickets::save_prd(&mut lock(f.db()), &ticket, "正文", None).unwrap();
