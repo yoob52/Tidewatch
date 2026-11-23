@@ -946,6 +946,7 @@ export const api = {
   readLog: (path: string) => invoke<string>('read_log', { path }),
 
   statsGet: () => invoke<Stats>('stats_get'),
+  uiLangSet: (lang: string) => invoke<void>('ui_lang_set', { lang }),
 };
 
 /** 订阅引擎事件；返回取消订阅的函数。 */

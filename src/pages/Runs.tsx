@@ -528,11 +528,8 @@ function RunGrid({ focus, switcher, onSingle }: { focus?: string; switcher: Reac
   const live = runs.filter((r) => runActive(r.status) || r.status === 'queued');
   const panes = useMemo(() => {
     const out = [0, 1, 2, 3].map((i) => picked[i] ?? null);
-    if (focus && !out.includes(focus)) {
-      const k = out.indexOf(null);
-      out[k >= 0 ? k : 0] = focus;
-    }
-    const pool = [...live, ...runs.filter((r) => !live.includes(r))].map((r) => r.id);
+    // 进行中的运行优先，其次是从单栏带过来的那一条，再其次是最近的。
+    const pool = [...live.map((r) => r.id), ...(focus ? [focus] : []), ...runs.filter((r) => !live.includes(r)).map((r) => r.id)];
     for (let i = 0; i < 4; i++) if (!out[i]) out[i] = pool.find((x) => !out.includes(x)) ?? null;
     return out;
   }, [picked, runs, live, focus]);

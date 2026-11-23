@@ -1284,8 +1284,18 @@ fn stats_get(state: State) -> CmdResult<stats::Stats> {
     stats::compute(&lock(state.engine.db())).map_err(err)
 }
 
+static NOTIFY_EN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 界面语言：系统通知跟着界面走。
+#[tauri::command]
+fn ui_lang_set(lang: String) {
+    NOTIFY_EN.store(lang == "en", std::sync::atomic::Ordering::Relaxed);
+}
+
 fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
     use tauri_plugin_notification::NotificationExt;
+    let en = NOTIFY_EN.load(std::sync::atomic::Ordering::Relaxed);
+    let t = |zh: &'static str, e: &'static str| if en { e } else { zh };
     let (title, body): (&str, String) = match ev {
         EngineEvent::RunFinished {
             ticket_key,
@@ -1294,17 +1304,35 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
             failed_checks,
             ..
         } => match status.as_str() {
-            "succeeded" if failed_checks.is_empty() => {
-                ("等你验收", format!("{ticket_key} {task_title} 已完成"))
-            }
-            "succeeded" => (
-                "等你验收（检查未通过）",
-                format!(
-                    "{ticket_key} {task_title}：{} 没通过",
-                    failed_checks.join("、")
-                ),
+            "succeeded" if failed_checks.is_empty() => (
+                t("等你验收", "Ready for acceptance"),
+                if en {
+                    format!("{ticket_key} {task_title} finished")
+                } else {
+                    format!("{ticket_key} {task_title} 已完成")
+                },
             ),
-            "failed" => ("运行失败", format!("{ticket_key} {task_title}")),
+            "succeeded" => (
+                t(
+                    "等你验收（检查未通过）",
+                    "Ready for acceptance (checks failed)",
+                ),
+                if en {
+                    format!(
+                        "{ticket_key} {task_title}: {} failed",
+                        failed_checks.join(", ")
+                    )
+                } else {
+                    format!(
+                        "{ticket_key} {task_title}：{} 没通过",
+                        failed_checks.join("、")
+                    )
+                },
+            ),
+            "failed" => (
+                t("运行失败", "Run failed"),
+                format!("{ticket_key} {task_title}"),
+            ),
             _ => return,
         },
         EngineEvent::ReviewFinished {
@@ -1315,14 +1343,25 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
             error,
             ..
         } => match error {
-            Some(_) => ("预审没有完成", format!("{ticket_key} {ticket_title}")),
+            Some(_) => (
+                t("预审没有完成", "Pre-check did not finish"),
+                format!("{ticket_key} {ticket_title}"),
+            ),
             None if *issues == 0 => (
-                "预审完成",
-                format!("{ticket_key} {ticket_title}：没有发现问题"),
+                t("预审完成", "Pre-check done"),
+                if en {
+                    format!("{ticket_key} {ticket_title}: no issues found")
+                } else {
+                    format!("{ticket_key} {ticket_title}：没有发现问题")
+                },
             ),
             None => (
-                "预审完成，等你处理",
-                format!("{ticket_key} {ticket_title}：{issues} 个问题，其中 {blockers} 个阻塞"),
+                t("预审完成，等你处理", "Pre-check done, needs you"),
+                if en {
+                    format!("{ticket_key} {ticket_title}: {issues} issue(s), {blockers} blocking")
+                } else {
+                    format!("{ticket_key} {ticket_title}：{issues} 个问题，其中 {blockers} 个阻塞")
+                },
             ),
         },
         EngineEvent::CodeReviewFinished {
@@ -1333,13 +1372,21 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
             error,
             ..
         } => match error {
-            Some(_) => ("交叉审查没有完成", format!("{ticket_key} {task_title}")),
-            None if *findings == 0 => {
-                ("交叉审查没有发现问题", format!("{ticket_key} {task_title}"))
-            }
+            Some(_) => (
+                t("交叉审查没有完成", "Cross-review did not finish"),
+                format!("{ticket_key} {task_title}"),
+            ),
+            None if *findings == 0 => (
+                t("交叉审查没有发现问题", "Cross-review found no issues"),
+                format!("{ticket_key} {task_title}"),
+            ),
             None => (
-                "交叉审查完成",
-                format!("{ticket_key} {task_title}：{findings} 个问题，其中 {blockers} 个阻塞"),
+                t("交叉审查完成", "Cross-review done"),
+                if en {
+                    format!("{ticket_key} {task_title}: {findings} issue(s), {blockers} blocking")
+                } else {
+                    format!("{ticket_key} {task_title}：{findings} 个问题，其中 {blockers} 个阻塞")
+                },
             ),
         },
         EngineEvent::ProposalReady {
@@ -1350,25 +1397,33 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
             ..
         } => {
             let what = if kind == "impact" {
-                "变更影响分析"
+                t("变更影响分析", "change impact analysis")
             } else {
-                "拆分建议"
+                t("拆分建议", "split proposal")
             };
             match error {
                 Some(_) => (
-                    "没有生成出来",
-                    format!("{ticket_key} {ticket_title} 的{what}"),
+                    t("没有生成出来", "Could not be generated"),
+                    if en {
+                        format!("The {what} for {ticket_key} {ticket_title}")
+                    } else {
+                        format!("{ticket_key} {ticket_title} 的{what}")
+                    },
                 ),
                 None => (
-                    "等你确认",
-                    format!("{ticket_key} {ticket_title} 的{what}出来了"),
+                    t("等你确认", "Waiting for your confirmation"),
+                    if en {
+                        format!("The {what} for {ticket_key} {ticket_title} is ready")
+                    } else {
+                        format!("{ticket_key} {ticket_title} 的{what}出来了")
+                    },
                 ),
             }
         }
         EngineEvent::QuestionAsked {
             ticket_key, body, ..
         } => (
-            "Agent 有问题要问你",
+            t("Agent 有问题要问你", "The agent has a question"),
             format!("{ticket_key} {}", body.chars().take(80).collect::<String>()),
         ),
         EngineEvent::ApiDocReady {
@@ -1377,8 +1432,12 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
             unblocked,
             ..
         } if *unblocked > 0 => (
-            "接口文档已产出",
-            format!("{ticket_key} {task_title}：{unblocked} 个等文档的子任务可以开始了"),
+            t("接口文档已产出", "API doc is ready"),
+            if en {
+                format!("{ticket_key} {task_title}: {unblocked} subtask(s) waiting on the doc can start")
+            } else {
+                format!("{ticket_key} {task_title}：{unblocked} 个等文档的子任务可以开始了")
+            },
         ),
         EngineEvent::Guard {
             ticket_key,
@@ -1387,9 +1446,9 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
             ..
         } => (
             match kind.as_str() {
-                "stuck" => "Agent 可能卡住了",
-                "budget" => "超出预算，已停止",
-                _ => "危险命令",
+                "stuck" => t("Agent 可能卡住了", "The agent may be stuck"),
+                "budget" => t("超出预算，已停止", "Over budget, stopped"),
+                _ => t("危险命令", "Dangerous command"),
             },
             format!("{ticket_key} {message}"),
         ),
@@ -1404,7 +1463,7 @@ fn notify(app: &tauri::AppHandle, db: &db::Db, ev: &EngineEvent) {
     let _ = app
         .notification()
         .builder()
-        .title(format!("观澜 · {title}"))
+        .title(format!("{} · {title}", t("观澜", "Tidewatch")))
         .body(body)
         .show();
 }
@@ -1581,7 +1640,8 @@ pub fn run() {
             skills_remove,
             skills_create,
             read_log,
-            stats_get
+            stats_get,
+            ui_lang_set
         ])
         .run(tauri::generate_context!())
         .expect("启动观澜失败");
