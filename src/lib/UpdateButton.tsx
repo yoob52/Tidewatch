@@ -27,7 +27,7 @@ export function UpdateButton({ checkAtStartup }: { checkAtStartup: boolean }) {
   const ui = useUi();
   const { info, checking, progress, error } = useUpdate();
   const [open, setOpen] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  const [confirmVersion, setConfirmVersion] = useState<string | null>(null);
   const button = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -43,11 +43,12 @@ export function UpdateButton({ checkAtStartup }: { checkAtStartup: boolean }) {
 
   const close = () => {
     setOpen(false);
-    setConfirming(false);
+    setConfirmVersion(null);
     button.current?.focus();
   };
   const label = progress ? tr('正在更新…') : info?.newer ? tr('有新版本：{0}', info.latest) : tr('检查更新');
   const releaseUrl = info?.url;
+  const availableVersion = info?.newer && !info.install_blocked ? info.latest : null;
 
   return (
     <>
@@ -67,30 +68,30 @@ export function UpdateButton({ checkAtStartup }: { checkAtStartup: boolean }) {
       </button>
       {open && (
         <Modal
-          title={confirming ? tr('安装 {0}', info?.latest) : tr('检查更新')}
+          title={confirmVersion ? tr('安装 {0}', confirmVersion) : tr('检查更新')}
           width={500}
           onClose={close}
-          footer={confirming ? (
+          footer={confirmVersion ? (
             <>
-              <button className="btn" autoFocus onClick={() => setConfirming(false)}>{tr('取消')}</button>
+              <button className="btn" autoFocus onClick={() => setConfirmVersion(null)}>{tr('取消')}</button>
               <button className="btn primary" onClick={() => {
-                setConfirming(false);
-                void installUpdate();
+                setConfirmVersion(null);
+                void installUpdate(confirmVersion);
               }}>{tr('下载并安装')}</button>
             </>
           ) : (
             <>
               <button className="btn" autoFocus onClick={close}>{tr('关闭')}</button>
               <button className="btn" disabled={checking || !!progress} onClick={() => void checkUpdate()}>{tr('重新检查')}</button>
-              {info?.newer && !info.install_blocked && (
-                <button className="btn primary" disabled={checking || !!progress} onClick={() => setConfirming(true)}>
+              {availableVersion && (
+                <button className="btn primary" disabled={checking || !!progress} onClick={() => setConfirmVersion(availableVersion)}>
                   {progress ? tr('正在更新…') : tr('下载并安装')}
                 </button>
               )}
             </>
           )}
         >
-          {confirming ? (
+          {confirmVersion ? (
             <>
               <p>{tr('观澜会下载安装包，校验签名通过后安装，然后自动重启。校验不过不会安装。')}</p>
               <p>{tr('有运行在进行时不能安装；排队中的运行会在重启后继续。')}</p>

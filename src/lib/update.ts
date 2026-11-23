@@ -55,11 +55,11 @@ export function checkUpdate() {
   return pendingCheck;
 }
 
-export async function installUpdate() {
+export async function installUpdate(expectedVersion: string) {
   if (state.checking || state.progress || !state.info?.newer || state.info.install_blocked) return;
   set({ error: null, progress: { phase: 'checking' } });
   try {
-    await api.updateInstall();
+    await api.updateInstall(expectedVersion);
   } catch (e) {
     set({ error: String(e) });
   }

@@ -62,19 +62,19 @@ fn readable(e: Error) -> String {
 }
 
 /// 下载、校验并安装最新版本。成功时不返回：Windows 上进程退出交给安装程序，其它平台直接重启。
-pub async fn install(app: &AppHandle) -> Result<(), String> {
+pub async fn install(app: &AppHandle, expected_version: &str) -> Result<(), String> {
     if let Some(why) = blocked(app) {
         return Err(why);
     }
     if BUSY.swap(true, Ordering::SeqCst) {
         return Err("更新已经在进行中。".into());
     }
-    let res = run(app).await;
+    let res = run(app, expected_version).await;
     BUSY.store(false, Ordering::SeqCst);
     res
 }
 
-async fn run(app: &AppHandle) -> Result<(), String> {
+async fn run(app: &AppHandle, expected_version: &str) -> Result<(), String> {
     let emit = |p: Progress| {
         let _ = app.emit(PROGRESS_EVENT, p);
     };
@@ -89,6 +89,12 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         .await
         .map_err(readable)?
         .ok_or("更新源里没有比当前版本更新的安装包。")?;
+    if update.version != expected_version {
+        return Err(format!(
+            "更新源提供的是 {}，不是你确认的 {}。请重新检查更新后再安装。",
+            update.version, expected_version
+        ));
+    }
     update.timeout = Some(DOWNLOAD_TIMEOUT);
 
     let mut downloaded = 0u64;

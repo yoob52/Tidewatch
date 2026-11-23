@@ -1088,13 +1088,17 @@ async fn update_check(app: tauri::AppHandle) -> CmdResult<UpdateStatus> {
 /// 下载、校验并安装最新版本，然后重启。只在用户点了「下载并安装」并确认之后调用；
 /// 有运行在进行时不装，下载和安装期间也不开始新的运行，免得把 Agent 留成孤儿进程。
 #[tauri::command]
-async fn update_install(app: tauri::AppHandle, state: State<'_>) -> CmdResult<()> {
+async fn update_install(
+    app: tauri::AppHandle,
+    state: State<'_>,
+    expected_version: String,
+) -> CmdResult<()> {
     if let Some(why) = updater::blocked(&app) {
         return Err(why);
     }
     // 下载要几分钟：这期间不派发新的运行，装完进程就退出了
     let hold = state.engine.hold().map_err(err)?;
-    let res = updater::install(&app).await;
+    let res = updater::install(&app, &expected_version).await;
     drop(hold);
     res
 }
