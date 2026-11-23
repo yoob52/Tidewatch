@@ -2,6 +2,7 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 pub const SEARCH_URL: &str = "https://skills.sh/api/search";
@@ -259,6 +260,11 @@ fn github_token() -> Option<String> {
 }
 
 fn get_text(url: &str, accept: &str) -> Result<String> {
+    let bytes = get_bytes(url, accept, 8 * 1024 * 1024)?;
+    String::from_utf8(bytes).map_err(|e| Error::invalid(format!("读取响应失败：{e}")))
+}
+
+fn get_bytes(url: &str, accept: &str, limit: usize) -> Result<Vec<u8>> {
     let mut req = agent()
         .get(url)
         .header("User-Agent", "Tidewatch")
@@ -279,8 +285,8 @@ fn get_text(url: &str, accept: &str) -> Result<String> {
     }
     resp.body_mut()
         .with_config()
-        .limit(8 * 1024 * 1024)
-        .read_to_string()
+        .limit(limit as u64)
+        .read_to_vec()
         .map_err(|e| Error::invalid(format!("读取响应失败：{e}")))
 }
 
@@ -400,6 +406,48 @@ fn raw_url(owner: &str, repo: &str, commit: &str, path: &str) -> String {
     )
 }
 
+/// raw.githubusercontent.com 在部分网络下连不上，jsDelivr 镜像同一提交的文件。
+fn cdn_url(owner: &str, repo: &str, commit: &str, path: &str) -> String {
+    let path: Vec<String> = path.split('/').map(encode).collect();
+    format!(
+        "https://cdn.jsdelivr.net/gh/{owner}/{repo}@{commit}/{}",
+        path.join("/")
+    )
+}
+
+/// 上次 GitHub raw 失败而 jsDelivr 成功的时间（unix 秒）；之后一段时间直接走 jsDelivr，
+/// 免得每个文件都等一次 raw 超时。
+static RAW_FAILED_AT: AtomicU64 = AtomicU64::new(0);
+const RAW_SKIP_SECS: u64 = 600;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// 下载仓库里某个提交的文件：先 GitHub raw，失败再走 jsDelivr。
+fn fetch_file(owner: &str, repo: &str, commit: &str, path: &str) -> Result<Vec<u8>> {
+    let cdn = || get_bytes(&cdn_url(owner, repo, commit, path), "*/*", MAX_FILE_BYTES);
+    let failed_at = RAW_FAILED_AT.load(Ordering::Relaxed);
+    if failed_at != 0 && now_secs().saturating_sub(failed_at) < RAW_SKIP_SECS {
+        if let Ok(b) = cdn() {
+            return Ok(b);
+        }
+    }
+    match get_bytes(&raw_url(owner, repo, commit, path), "*/*", MAX_FILE_BYTES) {
+        Ok(b) => {
+            RAW_FAILED_AT.store(0, Ordering::Relaxed);
+            Ok(b)
+        }
+        Err(e) => {
+            let b = cdn().map_err(|_| e)?;
+            RAW_FAILED_AT.store(now_secs(), Ordering::Relaxed);
+            Ok(b)
+        }
+    }
+}
+
 pub fn valid_commit(c: &str) -> bool {
     c.len() == 40 && c.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -450,14 +498,19 @@ fn locate(source: &str, skill_id: &str, commit: Option<&str>) -> Result<Located>
         None => resolve_head(owner, repo)?,
     };
     let blobs = list_files(owner, repo, &commit)?;
+    let mut fetch_err = None;
     for dir in pick_skill_dir(&blobs, skill_id).into_iter().take(30) {
         let md_path = if dir.is_empty() {
             "SKILL.md".to_string()
         } else {
             format!("{dir}/SKILL.md")
         };
-        let Ok(content) = get_text(&raw_url(owner, repo, &commit, &md_path), "text/plain") else {
-            continue;
+        let content = match fetch_file(owner, repo, &commit, &md_path) {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            Err(e) => {
+                fetch_err.get_or_insert(e);
+                continue;
+            }
         };
         let (name, _) = parse_frontmatter(&content);
         let dir_name = dir.rsplit('/').next().unwrap_or("");
@@ -482,6 +535,11 @@ fn locate(source: &str, skill_id: &str, commit: Option<&str>) -> Result<Located>
             files,
             content,
         });
+    }
+    if let Some(e) = fetch_err {
+        return Err(Error::invalid(format!(
+            "读取 {source} 的 SKILL.md 失败，请检查网络或代理：{e}"
+        )));
     }
     Err(Error::invalid(format!(
         "在 {source} 里没有找到 skill「{skill_id}」。"
@@ -622,22 +680,7 @@ fn install_in(
         } else {
             format!("{}/{rel}", l.dir)
         };
-        let mut resp = agent()
-            .get(&raw_url(&l.owner, &l.repo, &l.commit, &full))
-            .header("User-Agent", "Tidewatch")
-            .call()
-            .map_err(|e| Error::invalid(format!("下载 {rel} 失败：{e}")))?;
-        let status = resp.status().as_u16();
-        if !(200..300).contains(&status) {
-            return Err(Error::invalid(format!(
-                "下载 {rel} 失败：服务器返回 {status}。"
-            )));
-        }
-        let bytes = resp
-            .body_mut()
-            .with_config()
-            .limit(MAX_FILE_BYTES as u64)
-            .read_to_vec()
+        let bytes = fetch_file(&l.owner, &l.repo, &l.commit, &full)
             .map_err(|e| Error::invalid(format!("下载 {rel} 失败：{e}")))?;
         total += bytes.len();
         if total > MAX_TOTAL_BYTES {
@@ -749,6 +792,10 @@ mod tests {
         assert_eq!(
             raw_url("o", "r", "abc", "a b/SKILL.md"),
             "https://raw.githubusercontent.com/o/r/abc/a%20b/SKILL.md"
+        );
+        assert_eq!(
+            cdn_url("o", "r", "abc", "a b/SKILL.md"),
+            "https://cdn.jsdelivr.net/gh/o/r@abc/a%20b/SKILL.md"
         );
     }
 
