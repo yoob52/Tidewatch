@@ -1,3 +1,4 @@
+import { tr } from './i18n';
 // 全局数据：列表类的数据整个应用共用一份，引擎报告变化时整体刷新。
 import { createContext, useContext, type ReactNode } from 'react';
 import { api, type Project, type Provider, type RunRow, type Settings, type Stats, type TicketSummary } from './api';
@@ -17,7 +18,7 @@ const DataContext = createContext<AppData | null>(null);
 
 export function useData(): AppData {
   const d = useContext(DataContext);
-  if (!d) throw new Error('DataProvider 未挂载');
+  if (!d) throw new Error(tr('DataProvider 未挂载'));
   return d;
 }
 
@@ -38,14 +39,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
       <div className="empty" style={{ height: '100vh' }}>
         {error ? (
           <>
-            <b>读取本地数据失败</b>
+            <b>{tr('读取本地数据失败')}</b>
             <p>{error}</p>
             <button className="btn" onClick={() => void reload()}>
-              重试
+              {tr('重试')}
             </button>
           </>
         ) : (
-          <p className="dim">读取中…</p>
+          <p className="dim">{tr('读取中…')}</p>
         )}
       </div>
     );

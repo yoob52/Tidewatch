@@ -1,3 +1,4 @@
+import { tr } from './i18n';
 // 共享常量与小组件；类名沿用 prototype-v2 的样式表。
 import {
   createContext,
@@ -15,24 +16,24 @@ import { parseImages, PrdImage, type ImageActions } from './images';
 import { onEngine, type EngineEvent, type Priority, type RunStatus, type TaskStatus, type TicketStatus, type TicketType } from './api';
 
 export const STAGES: { id: TicketStatus; name: string; num: string; hint: string; mine?: boolean }[] = [
-  { id: 'draft', name: '草稿', num: '一', hint: '随意编辑' },
-  { id: 'ai_review', name: 'AI 预审', num: '二', hint: 'Agent 读 PRD' },
-  { id: 'human_review', name: '人工审核', num: '三', hint: '等你处理问题', mine: true },
-  { id: 'finalized', name: '已定稿', num: '四', hint: 'PRD 已锁定' },
-  { id: 'developing', name: '开发中', num: '五', hint: 'Agent 执行' },
-  { id: 'acceptance', name: '验收中', num: '六', hint: '等你看 Diff', mine: true },
-  { id: 'done', name: '已完成', num: '七', hint: '已合并' },
+  { id: 'draft', name: tr('草稿'), num: tr('一'), hint: tr('随意编辑') },
+  { id: 'ai_review', name: tr('AI 预审'), num: tr('二'), hint: tr('Agent 读 PRD') },
+  { id: 'human_review', name: tr('人工审核'), num: tr('三'), hint: tr('等你处理问题'), mine: true },
+  { id: 'finalized', name: tr('已定稿'), num: tr('四'), hint: tr('PRD 已锁定') },
+  { id: 'developing', name: tr('开发中'), num: tr('五'), hint: tr('Agent 执行') },
+  { id: 'acceptance', name: tr('验收中'), num: tr('六'), hint: tr('等你看 Diff'), mine: true },
+  { id: 'done', name: tr('已完成'), num: tr('七'), hint: tr('已合并') },
 ];
 
 export const STAGE_NAME: Record<TicketStatus, string> = {
-  draft: '草稿',
-  ai_review: 'AI 预审',
-  human_review: '人工审核',
-  finalized: '已定稿',
-  developing: '开发中',
-  acceptance: '验收中',
-  done: '已完成',
-  cancelled: '已取消',
+  draft: tr('草稿'),
+  ai_review: tr('AI 预审'),
+  human_review: tr('人工审核'),
+  finalized: tr('已定稿'),
+  developing: tr('开发中'),
+  acceptance: tr('验收中'),
+  done: tr('已完成'),
+  cancelled: tr('已取消'),
 };
 
 export function stageTone(s: TicketStatus): string {
@@ -43,14 +44,14 @@ export function stageTone(s: TicketStatus): string {
 }
 
 export const TYPES: Record<TicketType, { ch: string; cls: string; name: string }> = {
-  feature_backend: { ch: '后', cls: 'be', name: '后端需求' },
-  feature_frontend: { ch: '前', cls: 'fe', name: '前端需求' },
-  feature_mixed: { ch: '混', cls: 'mix', name: '前后端混合' },
-  bug: { ch: '虫', cls: 'bug', name: 'Bug' },
-  chore: { ch: '杂', cls: 'chore', name: '杂项' },
+  feature_backend: { ch: tr('后'), cls: 'be', name: tr('后端需求') },
+  feature_frontend: { ch: tr('前'), cls: 'fe', name: tr('前端需求') },
+  feature_mixed: { ch: tr('混'), cls: 'mix', name: tr('前后端混合') },
+  bug: { ch: tr('虫'), cls: 'bug', name: 'Bug' },
+  chore: { ch: tr('杂'), cls: 'chore', name: tr('杂项') },
 };
 
-export const PRIO: Record<Priority, string> = { urgent: '紧急', high: '高', medium: '中', low: '低' };
+export const PRIO: Record<Priority, string> = { urgent: tr('紧急'), high: tr('高'), medium: tr('中'), low: tr('低') };
 
 /** `install`：命令行版的安装命令。观澜调用的是 CLI，桌面版 App（如 Codex Desktop）不会把命令放进 PATH。 */
 export const AGENTS: Record<string, { name: string; g: string; short: string; install?: string }> = {
@@ -59,59 +60,59 @@ export const AGENTS: Record<string, { name: string; g: string; short: string; in
   opencode: { name: 'OpenCode', g: 'oc', short: 'OC', install: 'npm i -g opencode-ai' },
   gemini: { name: 'Gemini CLI', g: 'gm', short: 'GM', install: 'npm i -g @google/gemini-cli' },
   aider: { name: 'Aider', g: 'ad', short: 'AD', install: 'pip install aider-chat' },
-  mock: { name: '演示 Agent', g: 'ds', short: '演' },
+  mock: { name: tr('演示 Agent'), g: 'ds', short: tr('演') },
 };
 
 export const TASK_KIND: Record<string, { ch: string; cls: string; name: string; short: string }> = {
-  backend: { ch: '后', cls: 'be', name: '后端', short: 'BE' },
-  frontend: { ch: '前', cls: 'fe', name: '前端', short: 'FE' },
-  bug: { ch: '虫', cls: 'bug', name: 'Bug', short: 'BUG' },
-  doc: { ch: '文', cls: 'chore', name: '文档', short: 'DOC' },
+  backend: { ch: tr('后'), cls: 'be', name: tr('后端'), short: 'BE' },
+  frontend: { ch: tr('前'), cls: 'fe', name: tr('前端'), short: 'FE' },
+  bug: { ch: tr('虫'), cls: 'bug', name: 'Bug', short: 'BUG' },
+  doc: { ch: tr('文'), cls: 'chore', name: tr('文档'), short: 'DOC' },
 };
 
 export const TASK_STATUS: Record<TaskStatus, [string, string]> = {
-  pending: ['待开始', 'dim'],
-  blocked: ['等依赖', 'dim'],
-  queued: ['排队', 'dim'],
-  running: ['运行中', 'tide'],
-  review: ['待验收', 'cin'],
-  changes_requested: ['已打回', 'amber'],
-  accepted: ['已通过', 'moss'],
-  merged: ['已合并', 'moss'],
-  failed: ['失败', 'cin'],
-  stopped: ['已停止', 'amber'],
-  cancelled: ['已取消', 'dim'],
+  pending: [tr('待开始'), 'dim'],
+  blocked: [tr('等依赖'), 'dim'],
+  queued: [tr('排队'), 'dim'],
+  running: [tr('运行中'), 'tide'],
+  review: [tr('待验收'), 'cin'],
+  changes_requested: [tr('已打回'), 'amber'],
+  accepted: [tr('已通过'), 'moss'],
+  merged: [tr('已合并'), 'moss'],
+  failed: [tr('失败'), 'cin'],
+  stopped: [tr('已停止'), 'amber'],
+  cancelled: [tr('已取消'), 'dim'],
 };
 
 export const RUN_STATUS: Record<RunStatus, [string, string]> = {
-  queued: ['排队', ''],
-  starting: ['启动中', 'tide'],
-  running: ['运行中', 'tide'],
-  finalizing: ['收尾中', 'tide'],
-  stopping: ['停止中', 'amber'],
-  succeeded: ['完成', 'moss'],
-  failed: ['失败', 'cin'],
-  stopped: ['已停止', 'amber'],
-  orphaned: ['中断', 'amber'],
+  queued: [tr('排队'), ''],
+  starting: [tr('启动中'), 'tide'],
+  running: [tr('运行中'), 'tide'],
+  finalizing: [tr('收尾中'), 'tide'],
+  stopping: [tr('停止中'), 'amber'],
+  succeeded: [tr('完成'), 'moss'],
+  failed: [tr('失败'), 'cin'],
+  stopped: [tr('已停止'), 'amber'],
+  orphaned: [tr('中断'), 'amber'],
 };
 
 export const PERMISSIONS = ['read_only', 'workspace_write', 'full_auto'] as const;
 
 /** 运行的用途。预审 / 拆分 / 影响分析是工单级的，不属于某个子任务。 */
 export const PURPOSE: Record<string, string> = {
-  dev: '开发',
-  rework: '返工',
-  test_fix: '自动修复',
-  code_review: 'AI 交叉审查',
-  review: 'AI 预审',
-  split: '拆分子任务',
-  impact: '变更影响分析',
+  dev: tr('开发'),
+  rework: tr('返工'),
+  test_fix: tr('自动修复'),
+  code_review: tr('AI 交叉审查'),
+  review: tr('AI 预审'),
+  split: tr('拆分子任务'),
+  impact: tr('变更影响分析'),
 };
 
 /** 运行在列表里显示的名字：子任务标题；工单级运行显示「用途 · 工单标题」。 */
 export function runTitle(r: { task_id: string | null; purpose: string; task_title?: string | null; ticket_title?: string | null }): string {
-  if (r.task_id) return r.task_title ?? r.ticket_title ?? '已删除的子任务';
-  return `${PURPOSE[r.purpose] ?? r.purpose} · ${r.ticket_title ?? '已删除的工单'}`;
+  if (r.task_id) return r.task_title ?? r.ticket_title ?? tr('已删除的子任务');
+  return `${PURPOSE[r.purpose] ?? r.purpose} · ${r.ticket_title ?? tr('已删除的工单')}`;
 }
 
 export const runActive = (s: RunStatus) => ['starting', 'running', 'finalizing', 'stopping'].includes(s);
@@ -128,7 +129,7 @@ export function Stamp({ type, lg }: { type: TicketType; lg?: boolean }) {
 export function KindStamp({ kind, lg }: { kind: string; lg?: boolean }) {
   const k = TASK_KIND[kind] ?? TASK_KIND.doc;
   return (
-    <span className={`stamp ${k.cls}${lg ? ' lg' : ''}`} title={`${k.name}子任务`}>
+    <span className={`stamp ${k.cls}${lg ? ' lg' : ''}`} title={tr('{0}子任务', k.name)}>
       {k.ch}
     </span>
   );
@@ -289,10 +290,10 @@ export function fmtAgo(ts: string | null | undefined, now = Date.now()): string 
   const t = parseTs(ts);
   if (t == null) return '—';
   const s = Math.max(0, (now - t) / 1000);
-  if (s < 60) return '刚刚';
-  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
-  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
-  if (s < 86400 * 7) return `${Math.floor(s / 86400)} 天前`;
+  if (s < 60) return tr('刚刚');
+  if (s < 3600) return tr('{0} 分钟前', Math.floor(s / 60));
+  if (s < 86400) return tr('{0} 小时前', Math.floor(s / 3600));
+  if (s < 86400 * 7) return tr('{0} 天前', Math.floor(s / 86400));
   const d = new Date(t);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -466,7 +467,7 @@ const UiContext = createContext<UiApi | null>(null);
 
 export function useUi(): UiApi {
   const ui = useContext(UiContext);
-  if (!ui) throw new Error('UiProvider 未挂载');
+  if (!ui) throw new Error(tr('UiProvider 未挂载'));
   return ui;
 }
 
@@ -497,7 +498,7 @@ export function UiProvider({ children }: { children: ReactNode }) {
       },
       confirm: (title, body, ok, danger) =>
         new Promise((resolve) => setDialog({ title, body, ok, danger, resolve: (v) => resolve(v !== null) })),
-      prompt: (title, body, placeholder, ok = '确定', required = false, initial = '') =>
+      prompt: (title, body, placeholder, ok = tr('确定'), required = false, initial = '') =>
         new Promise((resolve) => {
           setText(initial);
           setDialog({ title, body, ok, prompt: { placeholder, required }, resolve });
@@ -544,7 +545,7 @@ export function UiProvider({ children }: { children: ReactNode }) {
             </div>
             <div className="pop-f">
               <button className="btn" onClick={() => close(null)}>
-                取消
+                {tr('取消')}
               </button>
               <button
                 className={`btn ${dialog.danger ? 'danger' : 'primary'}`}

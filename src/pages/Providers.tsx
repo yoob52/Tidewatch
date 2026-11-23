@@ -1,3 +1,4 @@
+import { tr } from '../lib/i18n';
 // Provider：协议、Base URL、密钥（只进系统凭据管理器）、模型与价格
 import { useEffect, useState } from 'react';
 import { api, type Provider, type ProviderCompat, type ProviderInput } from '../lib/api';
@@ -6,18 +7,18 @@ import { Icon } from '../lib/Icon';
 import { Empty, Field, Md, Modal, Switch, go, useUi } from '../lib/ui';
 
 const PROTOCOLS: [ProviderInput['protocol'], string, string][] = [
-  ['native', '本机登录态', '不注入任何变量，用 Agent 自己登录的账号'],
-  ['anthropic', 'Anthropic 兼容', '给 Claude Code、OpenCode、Aider 用：注入 Base URL 和密钥'],
-  ['openai_responses', 'OpenAI Responses', '给 Codex、OpenCode、Aider 用：Responses 接口'],
-  ['openai_chat', 'OpenAI Chat', '给 Codex、OpenCode、Aider 用：Chat Completions 接口'],
-  ['gemini', 'Gemini', '给 Gemini CLI 用：注入 GEMINI_API_KEY'],
+  ['native', tr('本机登录态'), tr('不注入任何变量，用 Agent 自己登录的账号')],
+  ['anthropic', tr('Anthropic 兼容'), tr('给 Claude Code、OpenCode、Aider 用：注入 Base URL 和密钥')],
+  ['openai_responses', 'OpenAI Responses', tr('给 Codex、OpenCode、Aider 用：Responses 接口')],
+  ['openai_chat', 'OpenAI Chat', tr('给 Codex、OpenCode、Aider 用：Chat Completions 接口')],
+  ['gemini', 'Gemini', tr('给 Gemini CLI 用：注入 GEMINI_API_KEY')],
 ];
 
 const TEMPLATES: [string, Partial<ProviderInput>][] = [
-  ['Anthropic 官方', { protocol: 'anthropic', base_url: 'https://api.anthropic.com' }],
+  [tr('Anthropic 官方'), { protocol: 'anthropic', base_url: 'https://api.anthropic.com' }],
   ['DeepSeek', { protocol: 'anthropic', base_url: 'https://api.deepseek.com/anthropic', models: ['deepseek-chat'], default_model: 'deepseek-chat' }],
-  ['OpenAI 官方', { protocol: 'openai_responses', base_url: 'https://api.openai.com/v1' }],
-  ['自定义', {}],
+  [tr('OpenAI 官方'), { protocol: 'openai_responses', base_url: 'https://api.openai.com/v1' }],
+  [tr('自定义'), {}],
 ];
 
 const blank: ProviderInput = {
@@ -62,7 +63,7 @@ export function ProvidersPage({ id }: { id?: string }) {
 
   useEffect(() => {
     let live = true;
-    api.providerCompat(f.name || '这个 Provider', f.protocol, f.base_url, f.default_model).then(
+    api.providerCompat(f.name || tr('这个 Provider'), f.protocol, f.base_url, f.default_model).then(
       (c) => live && setCompat(c),
       () => live && setCompat([]),
     );
@@ -91,7 +92,7 @@ export function ProvidersPage({ id }: { id?: string }) {
       .map((l) => l.trim())
       .filter((l) => l.includes('='))
       .map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1)] as [string, string]);
-    const p = await ui.attempt(api.providerSave(current?.id ?? null, { ...f, extra_env }, secret ? secret : undefined), '已保存');
+    const p = await ui.attempt(api.providerSave(current?.id ?? null, { ...f, extra_env }, secret ? secret : undefined), tr('已保存'));
     if (!p) return;
     setSecret('');
     await reload();
@@ -101,14 +102,14 @@ export function ProvidersPage({ id }: { id?: string }) {
 
   const clearSecret = async () => {
     if (!current) return;
-    if (!(await ui.confirm('清除密钥', `从系统凭据管理器里删除「${current.name}」的密钥。之后用它的运行会因为没有密钥而失败。`, '清除', true))) return;
-    if (await ui.attempt(api.providerSave(current.id, toInput(current), ''), '已清除密钥')) await reload();
+    if (!(await ui.confirm(tr('清除密钥'), tr('从系统凭据管理器里删除「{0}」的密钥。之后用它的运行会因为没有密钥而失败。', current.name), tr('清除'), true))) return;
+    if (await ui.attempt(api.providerSave(current.id, toInput(current), ''), tr('已清除密钥'))) await reload();
   };
 
   const remove = async () => {
     if (!current) return;
-    if (!(await ui.confirm('删除 Provider', `删除「${current.name}」和它保存的密钥。历史运行记录保留。`, '删除', true))) return;
-    if ((await ui.attempt(api.providerDelete(current.id), '已删除')) !== undefined) {
+    if (!(await ui.confirm(tr('删除 Provider'), tr('删除「{0}」和它保存的密钥。历史运行记录保留。', current.name), tr('删除'), true))) return;
+    if ((await ui.attempt(api.providerDelete(current.id), tr('已删除'))) !== undefined) {
       await reload();
       go('#/providers');
     }
@@ -121,10 +122,10 @@ export function ProvidersPage({ id }: { id?: string }) {
     <div className="page flush split">
       <aside className="plist wide">
         <div className="row" style={{ padding: '14px 14px 8px' }}>
-          <b className="grow">{providers.length} 个 Provider</b>
+          <b className="grow">{providers.length} {tr('个 Provider')}</b>
           <a className="btn sm" href="#/providers/new">
             <Icon name="plus" size={13} />
-            添加
+            {tr('添加')}
           </a>
         </div>
         {providers.map((x) => (
@@ -133,60 +134,60 @@ export function ProvidersPage({ id }: { id?: string }) {
               <b>{x.name}</b>
               <span className="grow" />
               {x.protocol === 'native' ? (
-                <span className="tag line">登录态</span>
+                <span className="tag line">{tr('登录态')}</span>
               ) : x.secret_ref ? (
-                <span className="tag moss">已存密钥</span>
+                <span className="tag moss">{tr('已存密钥')}</span>
               ) : (
-                <span className="tag amber">缺密钥</span>
+                <span className="tag amber">{tr('缺密钥')}</span>
               )}
             </div>
             <small className="mono ell">{x.base_url ?? PROTOCOLS.find(([k]) => k === x.protocol)?.[1]}</small>
-            <small className="mono ell">{x.default_model ?? '默认模型'}</small>
+            <small className="mono ell">{x.default_model ?? tr('默认模型')}</small>
           </a>
         ))}
-        {providers.length === 0 && <Empty icon="plug" title="还没有 Provider" body="不添加也可以运行：Agent 会用它自己在本机登录的账号。" />}
+        {providers.length === 0 && <Empty icon="plug" title={tr('还没有 Provider')} body={tr('不添加也可以运行：Agent 会用它自己在本机登录的账号。')} />}
       </aside>
       <section className="pdetail narrow">
         <div className="row" style={{ marginBottom: 12 }}>
-          <h2>{current ? current.name : '添加 Provider'}</h2>
+          <h2>{current ? current.name : tr('添加 Provider')}</h2>
           <span className="grow" />
           {current && (
             <button className="btn danger sm" onClick={() => void remove()}>
-              删除
+              {tr('删除')}
             </button>
           )}
           <button className="btn primary sm" disabled={!dirty && !secret} onClick={() => void save()}>
-            保存
+            {tr('保存')}
           </button>
         </div>
         {current && used.length > 0 && (
           <div className="kpis" style={{ marginBottom: 14 }}>
             <div>
-              <span>最近运行</span>
+              <span>{tr('最近运行')}</span>
               <b>{used.length}</b>
             </div>
             <div>
-              <span>费用</span>
+              <span>{tr('费用')}</span>
               <b>${cost.toFixed(2)}</b>
             </div>
           </div>
         )}
         <div className="form">
           {!current && (
-            <Field label="从模板开始">
+            <Field label={tr('从模板开始')}>
               <div className="pick">
                 {TEMPLATES.map(([n, patch]) => (
-                  <button key={n} onClick={() => set({ ...blank, ...patch, name: n === '自定义' ? f.name : n })}>
+                  <button key={n} onClick={() => set({ ...blank, ...patch, name: n === tr('自定义') ? f.name : n })}>
                     {n}
                   </button>
                 ))}
               </div>
             </Field>
           )}
-          <Field label="名称">
-            <input className="input" value={f.name} onChange={(e) => set({ name: e.target.value })} placeholder="例如：DeepSeek" />
+          <Field label={tr('名称')}>
+            <input className="input" value={f.name} onChange={(e) => set({ name: e.target.value })} placeholder={tr('例如：DeepSeek')} />
           </Field>
-          <Field label="协议" hint={PROTOCOLS.find(([k]) => k === f.protocol)?.[2]}>
+          <Field label={tr('协议')} hint={PROTOCOLS.find(([k]) => k === f.protocol)?.[2]}>
             <div className="seg">
               {PROTOCOLS.map(([k, n]) => (
                 <button key={k} className={k === f.protocol ? 'on' : ''} onClick={() => set({ protocol: k })}>
@@ -196,21 +197,21 @@ export function ProvidersPage({ id }: { id?: string }) {
             </div>
           </Field>
           {compat.length > 0 && (
-            <Field label="适用的 Agent" hint={compat.some((c) => c.bridge_guide) ? '协议不匹配的 Agent 要经 LiteLLM 之类的代理桥接' : undefined}>
+            <Field label={tr('适用的 Agent')} hint={compat.some((c) => c.bridge_guide) ? tr('协议不匹配的 Agent 要经 LiteLLM 之类的代理桥接') : undefined}>
               <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
                 {compat.map((c) =>
                   c.compatible ? (
                     <span key={c.agent} className="tag moss">
-                      {c.agent_name} 可直接使用
+                      {c.agent_name} {tr('可直接使用')}
                     </span>
                   ) : c.bridge_guide ? (
                     <button key={c.agent} className="btn sm" onClick={() => setGuide(c)}>
-                      {c.agent_name} 不能直接用 · 看桥接配置
+                      {c.agent_name} {tr('不能直接用 · 看桥接配置')}
                     </button>
                   ) : (
                     // 没有桥接办法的（Gemini CLI 只说 Gemini 协议）不给按钮
                     <span key={c.agent} className="tag line">
-                      {c.agent_name} 不能用这个协议
+                      {c.agent_name} {tr('不能用这个协议')}
                     </span>
                   ),
                 )}
@@ -222,7 +223,7 @@ export function ProvidersPage({ id }: { id?: string }) {
               <Field label="Base URL">
                 <input className="input mono" value={f.base_url ?? ''} onChange={(e) => set({ base_url: e.target.value || null })} placeholder="https://…" />
               </Field>
-              <Field label="API Key" hint={current?.secret_ref ? '已保存；留空表示不改' : '只写入系统凭据管理器，不进数据库'}>
+              <Field label="API Key" hint={current?.secret_ref ? tr('已保存；留空表示不改') : tr('只写入系统凭据管理器，不进数据库')}>
                 <div className="row">
                   <input
                     className="input mono grow"
@@ -230,11 +231,11 @@ export function ProvidersPage({ id }: { id?: string }) {
                     autoComplete="off"
                     value={secret}
                     onChange={(e) => setSecret(e.target.value)}
-                    placeholder={current?.secret_ref ? '••••••••（已保存）' : 'sk-…'}
+                    placeholder={current?.secret_ref ? tr('••••••••（已保存）') : 'sk-…'}
                   />
                   {current?.secret_ref && (
                     <button className="btn sm" onClick={() => void clearSecret()}>
-                      清除
+                      {tr('清除')}
                     </button>
                   )}
                 </div>
@@ -242,27 +243,27 @@ export function ProvidersPage({ id }: { id?: string }) {
             </>
           )}
           <div className="form-grid">
-            <Field label="默认模型">
+            <Field label={tr('默认模型')}>
               <input className="input mono" value={f.default_model ?? ''} onChange={(e) => set({ default_model: e.target.value || null })} />
             </Field>
-            <Field label="小模型" hint="可选，Claude Code 的后台任务用">
+            <Field label={tr('小模型')} hint={tr('可选，Claude Code 的后台任务用')}>
               <input className="input mono" value={f.small_model ?? ''} onChange={(e) => set({ small_model: e.target.value || null })} />
             </Field>
           </div>
-          <Field label="可选模型" hint="逗号或空格分隔">
+          <Field label={tr('可选模型')} hint={tr('逗号或空格分隔')}>
             <input
               className="input mono"
               value={f.models.join(', ')}
               onChange={(e) => set({ models: e.target.value.split(/[,，\s]+/).filter(Boolean) })}
             />
           </Field>
-          <Field label="价格（美元 / 百万 Token）" hint="Agent 不自报费用时用它估算；全部留 0 表示不估算">
+          <Field label={tr('价格（美元 / 百万 Token）')} hint={tr('Agent 不自报费用时用它估算；全部留 0 表示不估算')}>
             <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
               {(
                 [
-                  ['input_per_mtok', '输入'],
-                  ['output_per_mtok', '输出'],
-                  ['cache_per_mtok', '缓存读取'],
+                  ['input_per_mtok', tr('输入')],
+                  ['output_per_mtok', tr('输出')],
+                  ['cache_per_mtok', tr('缓存读取')],
                 ] as const
               ).map(([k, n]) => (
                 <label key={k} className="row">
@@ -281,14 +282,14 @@ export function ProvidersPage({ id }: { id?: string }) {
             </div>
           </Field>
           <div className="form-grid">
-            <Field label="代理" hint="可选">
+            <Field label={tr('代理')} hint={tr('可选')}>
               <input className="input mono" value={f.proxy ?? ''} onChange={(e) => set({ proxy: e.target.value || null })} placeholder="http://127.0.0.1:7890" />
             </Field>
           </div>
-          <Field label="图片" hint="模型看不了图时打开：PRD 里的图片改发文字描述">
-            <Switch on={f.text_only} onChange={(v) => set({ text_only: v })} label="只能处理文字" />
+          <Field label={tr('图片')} hint={tr('模型看不了图时打开：PRD 里的图片改发文字描述')}>
+            <Switch on={f.text_only} onChange={(v) => set({ text_only: v })} label={tr('只能处理文字')} />
           </Field>
-          <Field label="额外环境变量" hint="每行一条 NAME=value；不要在这里放密钥">
+          <Field label={tr('额外环境变量')} hint={tr('每行一条 NAME=value；不要在这里放密钥')}>
             <textarea
               className="textarea mono"
               rows={3}
@@ -301,18 +302,18 @@ export function ProvidersPage({ id }: { id?: string }) {
           </Field>
           <div className="callout tide">
             <Icon name="shield" size={15} />
-            <div>密钥只在启动对应的 Agent 进程时注入，不会写进数据库、日志或 Prompt。</div>
+            <div>{tr('密钥只在启动对应的 Agent 进程时注入，不会写进数据库、日志或 Prompt。')}</div>
           </div>
         </div>
       </section>
       {guide?.bridge_guide && (
         <Modal
-          title={`经 LiteLLM 让 ${guide.agent_name} 使用这个 Provider`}
-          hint="示例里不含密钥：LiteLLM 从环境变量读上游密钥。"
+          title={tr('经 LiteLLM 让 {0} 使用这个 Provider', guide.agent_name)}
+          hint={tr('示例里不含密钥：LiteLLM 从环境变量读上游密钥。')}
           onClose={() => setGuide(null)}
           footer={
             <button className="btn" onClick={() => setGuide(null)}>
-              关闭
+              {tr('关闭')}
             </button>
           }
         >

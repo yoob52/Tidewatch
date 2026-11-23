@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Icon } from './lib/Icon';
 import type { IconName } from './lib/icons';
 import { api, type Detection, type SystemInfo, type TicketSummary } from './lib/api';
-import { lang, setLang, t } from './lib/i18n';
+import { lang, setLang, tr } from './lib/i18n';
 import { DataProvider, useData } from './lib/data';
 import { STAGE_NAME, UiProvider, fmtAgo, fmtCost, fmtDur, go, runActive, runSeconds, runTitle, useNow, useUi } from './lib/ui';
 import { BoardPage } from './pages/Board';
@@ -30,14 +30,14 @@ function parseHash(): Route {
 }
 
 const TITLES: Record<string, string> = {
-  board: '看板',
-  tickets: '工单',
-  new: '新建工单',
-  runs: '运行',
-  projects: '项目',
+  board: tr('看板'),
+  tickets: tr('工单'),
+  new: tr('新建工单'),
+  runs: tr('运行'),
+  projects: tr('项目'),
   providers: 'Provider',
-  stats: '统计',
-  settings: '设置',
+  stats: tr('统计'),
+  settings: tr('设置'),
 };
 
 const PAGES: { id: string; icon: IconName }[] = [
@@ -74,13 +74,13 @@ function Palette({ tickets, onClose }: { tickets: TicketSummary[]; onClose: () =
   const items = useMemo(() => {
     const k = q.trim().toLowerCase();
     const pages = [{ id: 'new', icon: 'plus' as IconName }, ...PAGES]
-      .map((p) => ({ group: '跳转', icon: p.icon, key: '', title: TITLES[p.id], meta: '', hash: `#/${p.id}` }))
+      .map((p) => ({ group: tr('跳转'), icon: p.icon, key: '', title: TITLES[p.id], meta: '', hash: `#/${p.id}` }))
       .filter((p) => !k || p.title.toLowerCase().includes(k));
     const found = tickets
       .filter((x) => !k || x.key.toLowerCase().includes(k) || x.title.toLowerCase().includes(k))
       .sort((x, y) => y.updated_at.localeCompare(x.updated_at))
       .slice(0, 8)
-      .map((x) => ({ group: '工单', icon: 'form' as IconName, key: x.key, title: x.title, meta: STAGE_NAME[x.status], hash: `#/ticket/${x.key}` }));
+      .map((x) => ({ group: tr('工单'), icon: 'form' as IconName, key: x.key, title: x.title, meta: STAGE_NAME[x.status], hash: `#/ticket/${x.key}` }));
     return k ? [...found, ...pages] : [...pages, ...found];
   }, [q, tickets]);
   const open = (hash: string) => {
@@ -92,13 +92,13 @@ function Palette({ tickets, onClose }: { tickets: TicketSummary[]; onClose: () =
   }, [at]);
   return (
     <div className="palette-bg" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="palette" role="dialog" aria-modal="true" aria-label="搜索工单或跳转页面">
+      <div className="palette" role="dialog" aria-modal="true" aria-label={tr('搜索工单或跳转页面')}>
         <div className="palette-in">
           <Icon name="search" size={15} />
           <input
             autoFocus
             value={q}
-            placeholder="搜索工单编号、标题，或输入页面名称"
+            placeholder={tr('搜索工单编号、标题，或输入页面名称')}
             onChange={(e) => {
               setQ(e.target.value);
               setAt(0);
@@ -117,7 +117,7 @@ function Palette({ tickets, onClose }: { tickets: TicketSummary[]; onClose: () =
           <kbd>Esc</kbd>
         </div>
         <div className="palette-list" ref={list}>
-          {items.length === 0 && <div className="palette-none">没有匹配的工单或页面</div>}
+          {items.length === 0 && <div className="palette-none">{tr('没有匹配的工单或页面')}</div>}
           {items.map((it, i) => (
             <div key={it.hash}>
               {(i === 0 || items[i - 1].group !== it.group) && <div className="palette-group">{it.group}</div>}
@@ -171,7 +171,7 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
   useEffect(() => {
     if (!checkUpdates) return;
     api.updateCheck().then(
-      (u) => u.newer && ui.toast(`观澜有新版本 ${u.latest}（当前 ${u.current}），到 设置 › 本机环境 查看。`),
+      (u) => u.newer && ui.toast(tr('观澜有新版本 {0}（当前 {1}），到 设置 › 本机环境 查看。', u.latest, u.current)),
       () => undefined,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -189,7 +189,7 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
   const { page, a, b } = route;
   const active = page === 'ticket' ? 'tickets' : page === 'new' ? 'board' : TITLES[page] ? page : 'board';
   const ticket = page === 'ticket' ? tickets.find((x) => x.key === a) : undefined;
-  const title = page === 'ticket' ? (a ?? '工单') : (TITLES[page] ?? '看板');
+  const title = page === 'ticket' ? (a ?? tr('工单')) : (TITLES[page] ?? tr('看板'));
 
   const byRecent = [...tickets].sort((x, y) => y.updated_at.localeCompare(x.updated_at));
   const liveTickets = new Set(live.map((r) => r.ticket_id));
@@ -237,30 +237,30 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
           <span className="mark">
             <Icon name="wave" size={18} />
           </span>
-          <b>观澜</b>
-          <small>Tidewatch</small>
+          <b>{tr('观澜')}</b>
+          {lang === 'zh' && <small>Tidewatch</small>}
         </a>
         <button className="omni" onClick={() => setPalette(true)}>
           <Icon name="search" size={14} />
-          <span>搜索工单，或跳转到页面</span>
+          <span>{tr('搜索工单，或跳转到页面')}</span>
           <kbd>Ctrl K</kbd>
         </button>
         <div className="tools">
           <a className="btn primary" href="#/new">
             <Icon name="plus" size={14} />
-            新建工单
+            {tr('新建工单')}
           </a>
-          <button className="langbtn" onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')} title="切换语言 / Switch language">
-            {lang === 'zh' ? 'EN' : '中'}
+          <button className="langbtn" onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')} title={tr('切换语言 / Switch language')}>
+            {lang === 'zh' ? 'EN' : '中文'}
           </button>
-          <button className="iconbtn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="切换亮色 / 暗色">
+          <button className="iconbtn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={tr('切换亮色 / 暗色')}>
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
         </div>
       </header>
 
       <nav className="actbar">
-        <button onClick={() => setNarrow((v) => !v)} title={narrow ? '展开资源栏' : '收起资源栏'}>
+        <button onClick={() => setNarrow((v) => !v)} title={narrow ? tr('展开资源栏') : tr('收起资源栏')}>
           <Icon name="panel" />
         </button>
         {PAGES.slice(0, 5).map((p) => (
@@ -279,17 +279,17 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
 
       <aside className="explorer">
         <div className="ex-head">
-          <b>工单与会话</b>
-          <a className="iconbtn" href="#/new" title="新建工单">
+          <b>{tr('工单与会话')}</b>
+          <a className="iconbtn" href="#/new" title={tr('新建工单')}>
             <Icon name="plus" size={14} />
           </a>
         </div>
         <div className="ex-scroll">
           <div className="ex-group">
-            <span>进行中</span>
+            <span>{tr('进行中')}</span>
             <i>Active · {String(activeTickets.length).padStart(2, '0')}</i>
           </div>
-          {activeTickets.length === 0 && <div className="ex-empty">没有进行中的工单</div>}
+          {activeTickets.length === 0 && <div className="ex-empty">{tr('没有进行中的工单')}</div>}
           {activeTickets.map((x) => {
             const sessions = live.filter((r) => r.ticket_id === x.id);
             return (
@@ -301,24 +301,24 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
                   {sessions.some((r) => r.status !== 'queued') ? (
                     <span className="pulse" />
                   ) : (
-                    <span className={`m ${MINE_STAGES.includes(x.status) ? 'need' : ''}`}>{MINE_STAGES.includes(x.status) ? '待你' : STAGE_NAME[x.status]}</span>
+                    <span className={`m ${MINE_STAGES.includes(x.status) ? 'need' : ''}`}>{MINE_STAGES.includes(x.status) ? tr('待你') : STAGE_NAME[x.status]}</span>
                   )}
                 </a>
                 {sessions.map((r) => (
                   <a key={r.id} href={`#/runs/${r.id}`} className={`ex-row sub ${page === 'runs' && a === r.id ? 'on' : ''}`} title={runTitle(r)}>
                     <Icon name="zap" size={13} />
                     <span className="t">{runTitle(r)}</span>
-                    <span className="m">{r.status === 'queued' ? '排队' : fmtDur(runSeconds(r, now))}</span>
+                    <span className="m">{r.status === 'queued' ? tr('排队') : fmtDur(runSeconds(r, now))}</span>
                   </a>
                 ))}
               </div>
             );
           })}
           <div className="ex-group">
-            <span>最近工单</span>
+            <span>{tr('最近工单')}</span>
             <i>Recent</i>
           </div>
-          {recentTickets.length === 0 && <div className="ex-empty">还没有其他工单</div>}
+          {recentTickets.length === 0 && <div className="ex-empty">{tr('还没有其他工单')}</div>}
           {recentTickets.map((x) => (
             <a key={x.id} href={`#/ticket/${x.key}`} className={`ex-row ${ticket?.id === x.id ? 'on' : ''}`} title={x.title}>
               <Icon name={x.status === 'done' ? 'check' : 'form'} size={14} />
@@ -328,13 +328,13 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
             </a>
           ))}
           <div className="ex-group">
-            <span>项目</span>
+            <span>{tr('项目')}</span>
             <i>Projects</i>
           </div>
           {projects.length === 0 && (
             <a className="ex-row" href="#/projects">
               <Icon name="plus" size={14} />
-              <span className="t">添加第一个项目</span>
+              <span className="t">{tr('添加第一个项目')}</span>
             </a>
           )}
           {projects.map((p) => (
@@ -346,9 +346,9 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
           ))}
         </div>
         <div className="ex-foot">
-          <a className="gauge" href="#/runs" title="打开运行面板">
+          <a className="gauge" href="#/runs" title={tr('打开运行面板')}>
             <div className="gauge-head">
-              <span>运行队列</span>
+              <span>{tr('运行队列')}</span>
               <b>
                 {running}
                 <i> / {limit}</i>
@@ -357,11 +357,11 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
             <Wave level={Math.min(1, running / limit)} />
             <div className="gauge-rows">
               <div>
-                <span>排队</span>
+                <span>{tr('排队')}</span>
                 <b>{queued}</b>
               </div>
               <div>
-                <span>今日费用</span>
+                <span>{tr('今日费用')}</span>
                 <b>{fmtCost(todayCost)}</b>
               </div>
             </div>
@@ -373,22 +373,22 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
         <header className="top">
           {page === 'ticket' && (
             <span className="crumb">
-              <a href="#/tickets">工单</a>
+              <a href="#/tickets">{tr('工单')}</a>
               <Icon name="right" size={11} />
             </span>
           )}
           {page === 'new' && (
             <span className="crumb">
-              <a href="#/board">看板</a>
+              <a href="#/board">{tr('看板')}</a>
               <Icon name="right" size={11} />
             </span>
           )}
           <h1>{title}</h1>
           {ticket && <span className="sub">{ticket.title}</span>}
           <span className="spacer" />
-          <a className="runchip" href="#/runs" title="打开运行面板">
+          <a className="runchip" href="#/runs" title={tr('打开运行面板')}>
             {running > 0 && <span className="pulse" />}
-            运行中{' '}
+            {tr('运行中')}{' '}
             <b>
               {running}/{limit}
             </b>
@@ -400,9 +400,9 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
       </div>
 
       <footer className="statusbar">
-        <a href="#/settings" className="lead" title="数据都存在这台电脑上">
+        <a href="#/settings" className="lead" title={tr('数据都存在这台电脑上')}>
           <Icon name="shield" size={12} />
-          本机存储
+          {tr('本机存储')}
         </a>
         {sys && (
           <span title={sys.data_dir}>
@@ -410,11 +410,11 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
             <span className="path">{settings.workspace_dir ?? sys.data_dir}</span>
           </span>
         )}
-        <a className="env" href="#/settings" title="环境检测，点击查看详情">
+        <a className="env" href="#/settings" title={tr('环境检测，点击查看详情')}>
           {agents
             .filter((d) => d.kind !== 'mock')
             .map((d) => (
-              <span key={d.kind} className={d.installed ? '' : 'off'} title={d.installed ? (d.version ?? '已安装') : '未安装，或不在 PATH 里'}>
+              <span key={d.kind} className={d.installed ? '' : 'off'} title={d.installed ? (d.version ?? tr('已安装')) : tr('未安装，或不在 PATH 里')}>
                 <i />
                 {d.kind === 'claude_code' ? 'claude' : d.kind}
               </span>
@@ -423,7 +423,7 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
         <span className="spacer" />
         <a href="#/runs">
           {running > 0 && <span className="pulse" />}
-          运行中{' '}
+          {tr('运行中')}{' '}
           <b>
             {running}/{limit}
           </b>

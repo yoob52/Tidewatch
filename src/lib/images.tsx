@@ -1,3 +1,4 @@
+import { tr } from './i18n';
 // PRD 里的图片：`![说明](attachment:<id> "authoritative | reference[; superseded-by=<id>]")`。
 // 效力只写在 Markdown 里，这里的函数都是对正文做文本改写，再由调用方保存成新版本。
 import { useEffect, useState } from 'react';
@@ -78,7 +79,7 @@ export function replaceImage(md: string, oldId: string, newId: string, alt: stri
   return rewrite(
     next,
     oldId,
-    (r) => `${imageMd(alt, newId, 'authoritative')}\n\n${imageMd(r.alt || '原 PRD 图', r.id, 'reference', newId)}`,
+    (r) => `${imageMd(alt, newId, 'authoritative')}\n\n${imageMd(r.alt || tr('原 PRD 图'), r.id, 'reference', newId)}`,
   );
 }
 
@@ -86,13 +87,13 @@ const toBase64 = (file: Blob) =>
   new Promise<string>((resolve, reject) => {
     const fr = new FileReader();
     fr.onload = () => resolve(String(fr.result));
-    fr.onerror = () => reject(new Error('读取图片失败'));
+    fr.onerror = () => reject(new Error(tr('读取图片失败')));
     fr.readAsDataURL(file);
   });
 
 /** 存成用户图，返回附件 id。 */
 export async function uploadImage(ticketId: string | null, file: File): Promise<string> {
-  const a = await api.attachmentAdd(ticketId, file.name || '粘贴的截图.png', await toBase64(file), 'user');
+  const a = await api.attachmentAdd(ticketId, file.name || tr('粘贴的截图.png'), await toBase64(file), 'user');
   return a.id;
 }
 
@@ -161,41 +162,41 @@ export function PrdImage({ img, actions, added }: { img: ImageRef; actions?: Ima
       <figcaption>
         <span className={`tag ${auth ? 'moss' : 'amber'}`}>
           <Icon name={auth ? 'check' : 'info'} size={11} />
-          {auth ? '权威图' : '仅参考'}
+          {auth ? tr('权威图') : tr('仅参考')}
         </span>
-        {img.supersededBy && <span className="tag">已被取代</span>}
-        <span className="grow alt">{img.alt || '未命名图片'}</span>
+        {img.supersededBy && <span className="tag">{tr('已被取代')}</span>}
+        <span className="grow alt">{img.alt || tr('未命名图片')}</span>
         {img.supersededBy && (
           <button className="btn ghost sm" onClick={() => setOpen(!open)}>
-            {open ? '收起' : '展开'}
+            {open ? tr('收起') : tr('展开')}
           </button>
         )}
         {actions && (
           <>
             <button className="btn ghost sm" onClick={() => actions.setAuthority(img.id, auth ? 'reference' : 'authoritative')}>
-              {auth ? '改为仅参考' : '设为权威'}
+              {auth ? tr('改为仅参考') : tr('设为权威')}
             </button>
             {!img.supersededBy && (
               <button className="btn ghost sm" onClick={() => actions.replace(img.id)}>
-                替换
+                {tr('替换')}
               </button>
             )}
             <button className="btn ghost sm" onClick={() => actions.describe(img.id)}>
-              文字描述
+              {tr('文字描述')}
             </button>
             <button className="btn ghost sm" onClick={() => actions.remove(img.id)}>
-              移除
+              {tr('移除')}
             </button>
           </>
         )}
       </figcaption>
       {open &&
         (failed ? (
-          <div className="prdimg-miss">图片文件不在了（{img.id}）</div>
+          <div className="prdimg-miss">{tr('图片文件不在了（')}{img.id}{tr('）')}</div>
         ) : src ? (
           <img src={src} alt={img.alt} />
         ) : (
-          <div className="prdimg-miss">加载中…</div>
+          <div className="prdimg-miss">{tr('加载中…')}</div>
         ))}
     </figure>
   );

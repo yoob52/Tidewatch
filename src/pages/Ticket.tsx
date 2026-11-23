@@ -1,3 +1,4 @@
+import { tr } from '../lib/i18n';
 // 工单详情：概览 / PRD / 子任务 / 验收 / 运行记录
 import { useMemo, useRef, useState } from 'react';
 import { api, type TicketDetail, type TicketStatus, type TimelineEvent } from '../lib/api';
@@ -58,7 +59,7 @@ function Rail({ status, skipped }: { status: TicketStatus; skipped: TicketStatus
         <div
           key={s.id}
           className={`rail-s ${skipped.includes(s.id) ? '' : i < idx ? 'past' : i === idx ? 'now' : ''}`}
-          title={skipped.includes(s.id) ? 'Bug 快速通道跳过了这一步' : undefined}
+          title={skipped.includes(s.id) ? tr('Bug 快速通道跳过了这一步') : undefined}
         >
           <i>{i < idx && !skipped.includes(s.id) ? <Icon name="check" size={10} /> : s.num}</i>
           <span>{s.name}</span>
@@ -78,15 +79,15 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
     return (
       <div className="page">
         <div className="card">
-          <Empty icon="alert" title="打不开这张工单" body={error}>
+          <Empty icon="alert" title={tr('打不开这张工单')} body={error}>
             <a className="btn" href="#/tickets">
-              回到工单列表
+              {tr('回到工单列表')}
             </a>
           </Empty>
         </div>
       </div>
     );
-  if (!d) return <div className="page dim">读取中…</div>;
+  if (!d) return <div className="page dim">{tr('读取中…')}</div>;
 
   const t = d.ticket;
   const live = d.tasks.filter((k) => k.status !== 'cancelled');
@@ -96,12 +97,12 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
   const reviewing = t.status === 'human_review' || t.status === 'ai_review';
   const current = tab || (reviewing ? 'review' : t.status === 'acceptance' ? 'accept' : 'overview');
   const tabs: [string, string, string | number, boolean?][] = [
-    ['overview', '概览', ''],
+    ['overview', tr('概览'), ''],
     ['prd', 'PRD', d.versions.length ? `v${d.versions[d.versions.length - 1].version}` : ''],
-    ['review', '审核', t.status === 'human_review' && openIssues.length ? openIssues.length : '', true],
-    ['tasks', '子任务', live.length || ''],
-    ['accept', '验收', toAccept || '', true],
-    ['runs', '运行记录', d.runs.length || ''],
+    ['review', tr('审核'), t.status === 'human_review' && openIssues.length ? openIssues.length : '', true],
+    ['tasks', tr('子任务'), live.length || ''],
+    ['accept', tr('验收'), toAccept || '', true],
+    ['runs', tr('运行记录'), d.runs.length || ''],
   ];
 
   const move = async (to: TicketStatus, label: string) => {
@@ -110,25 +111,25 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
       setFinalizing(true);
       return;
     }
-    if (to === 'cancelled' && !(await ui.confirm('取消工单', `${t.key} 会从看板移走，之后可以恢复到取消前的状态。`, '取消工单', true))) return;
+    if (to === 'cancelled' && !(await ui.confirm(tr('取消工单'), tr('{0} 会从看板移走，之后可以恢复到取消前的状态。', t.key), tr('取消工单'), true))) return;
     let job: Promise<unknown>;
     if (to === 'human_review' && (t.status === 'finalized' || t.status === 'developing')) {
       // 发起变更：要写原因；有子任务在跑时问要不要停
       const reason = await ui.prompt(
-        '发起变更',
-        `${t.key} 回到人工审核，PRD 重新可编辑。改完再次定稿时，AI 会分析这次变更对已有子任务的影响。`,
-        '为什么要改需求',
-        '发起变更',
+        tr('发起变更'),
+        tr('{0} 回到人工审核，PRD 重新可编辑。改完再次定稿时，AI 会分析这次变更对已有子任务的影响。', t.key),
+        tr('为什么要改需求'),
+        tr('发起变更'),
         true,
       );
       if (!reason) return;
       const busy = d.runs.some((r) => r.task_id && (runActive(r.status) || r.status === 'queued'));
-      const stop = busy && (await ui.confirm('有子任务正在运行', '要现在停掉它们吗？不停的话它们会按旧需求跑完，之后再按影响分析返工。', '停掉正在运行的'));
+      const stop = busy && (await ui.confirm(tr('有子任务正在运行'), tr('要现在停掉它们吗？不停的话它们会按旧需求跑完，之后再按影响分析返工。'), tr('停掉正在运行的')));
       job = api.changeRequest(t.id, reason, stop);
     } else {
       job = api.ticketTransition(t.id, to);
     }
-    if (await ui.attempt(job, `${t.key} → ${STAGE_NAME[to]}（${label}）`)) {
+    if (await ui.attempt(job, tr('{0} → {1}（{2}）', t.key, STAGE_NAME[to], label))) {
       await Promise.all([reload(), data.reload()]);
     }
   };
@@ -155,15 +156,15 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
               <span className="key">{t.key}</span>
               <span className={`tag ${stageTone(t.status)}`}>{STAGE_NAME[t.status]}</span>
               <Prio p={t.priority} />
-              {t.due_date && <span className="dim">截止 {t.due_date}</span>}
+              {t.due_date && <span className="dim">{tr('截止')} {t.due_date}</span>}
             </div>
             <h2>{t.title}</h2>
           </div>
           <div className="row">
             {t.status === 'cancelled' && t.cancelled_from && (
-              <button className="btn" onClick={() => void move(t.cancelled_from!, '恢复')}>
+              <button className="btn" onClick={() => void move(t.cancelled_from!, tr('恢复'))}>
                 <Icon name="undo" size={14} />
-                恢复到「{STAGE_NAME[t.cancelled_from]}」
+                {tr('恢复到「')}{STAGE_NAME[t.cancelled_from]}{tr('」')}
               </button>
             )}
             {flow
@@ -181,9 +182,9 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
                 </button>
               ))}
             {['draft', 'human_review', 'developing'].includes(t.status) && (
-              <button className="btn ghost" onClick={() => void move('cancelled', '取消')} title="取消工单">
+              <button className="btn ghost" onClick={() => void move('cancelled', tr('取消'))} title={tr('取消工单')}>
                 <Icon name="x" size={14} />
-                取消工单
+                {tr('取消工单')}
               </button>
             )}
           </div>
@@ -231,101 +232,101 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
 function describe(e: TimelineEvent, d: TicketDetail): [IconName, string, string] {
   const p = e.payload as Record<string, string | number | string[] | null | undefined>;
   const task = d.tasks.find((k) => k.id === p.task_id);
-  const name = task ? `${TASK_KIND[task.kind]?.name ?? task.kind}子任务「${task.title}」` : '子任务';
+  const name = task ? tr('{0}子任务「{1}」', TASK_KIND[task.kind]?.name ?? task.kind, task.title) : tr('子任务');
   switch (e.type) {
     case 'created':
-      return ['plus', '你', `创建了工单 ${p.key ?? ''}`];
+      return ['plus', tr('你'), tr('创建了工单 {0}', p.key ?? '')];
     case 'prd_version':
-      return ['file', '你', `保存 PRD v${p.version}${p.note ? `：${p.note}` : ''}`];
+      return ['file', tr('你'), tr('保存 PRD v{0}{1}', p.version, p.note ? tr('：{0}', p.note) : '')];
     case 'status':
-      return ['arrow', '你', `工单从「${STAGE_NAME[p.from as TicketStatus] ?? p.from}」进入「${STAGE_NAME[p.to as TicketStatus] ?? p.to}」`];
+      return ['arrow', tr('你'), tr('工单从「{0}」进入「{1}」', STAGE_NAME[p.from as TicketStatus] ?? p.from, STAGE_NAME[p.to as TicketStatus] ?? p.to)];
     case 'task_created':
-      return ['branch', '你', `创建${name}`];
+      return ['branch', tr('你'), tr('创建{0}', name)];
     case 'run_queued':
       return p.purpose && !p.task_id
-        ? ['runs', '系统', `${PURPOSE[p.purpose as string] ?? p.purpose}已入队`]
-        : ['runs', '系统', `${name}第 ${p.number} 次运行已入队`];
+        ? ['runs', tr('系统'), tr('{0}已入队', PURPOSE[p.purpose as string] ?? p.purpose)]
+        : ['runs', tr('系统'), tr('{0}第 {1} 次运行已入队', name, p.number)];
     case 'run_finished': {
       const failed = (p.failed_checks as string[] | undefined) ?? [];
-      const st = { succeeded: '运行完成', failed: '运行失败', stopped: '已停止', orphaned: '被中断' }[p.status as string] ?? String(p.status);
-      return [p.status === 'succeeded' ? 'check' : 'alert', 'Agent', `${name}${st}${failed.length ? `，${failed.join('、')} 没通过` : ''}`];
+      const st = { succeeded: tr('运行完成'), failed: tr('运行失败'), stopped: tr('已停止'), orphaned: tr('被中断') }[p.status as string] ?? String(p.status);
+      return [p.status === 'succeeded' ? 'check' : 'alert', 'Agent', `${name}${st}${failed.length ? tr('，{0} 没通过', failed.join(tr('、'))) : ''}`];
     }
     case 'task_accepted':
-      return ['check', '你', `验收通过${name}`];
+      return ['check', tr('你'), tr('验收通过{0}', name)];
     case 'task_rejected':
       return p.reason === 'change'
-        ? ['undo', '系统', `需求变更，${name}需要追加工作：${p.note ?? ''}`]
-        : ['undo', '你', `打回${name}：${p.note ?? ''}${p.comments ? `（${p.comments} 条行内评论）` : ''}`];
+        ? ['undo', tr('系统'), tr('需求变更，{0}需要追加工作：{1}', name, p.note ?? '')]
+        : ['undo', tr('你'), tr('打回{0}：{1}{2}', name, p.note ?? '', p.comments ? tr('（{0} 条行内评论）', p.comments) : '')];
     case 'review_finished':
       return p.error
-        ? ['alert', 'AI', `预审没有完成：${p.error}`]
-        : ['spark', 'AI', `预审完成，发现 ${p.issues} 个问题${p.blockers ? `，其中 ${p.blockers} 个阻塞` : ''}`];
+        ? ['alert', 'AI', tr('预审没有完成：{0}', p.error)]
+        : ['spark', 'AI', tr('预审完成，发现 {0} 个问题{1}', p.issues, p.blockers ? tr('，其中 {0} 个阻塞', p.blockers) : '')];
     case 'code_review_finished':
       return p.error
-        ? ['alert', 'AI', `${name}的交叉审查没有完成：${p.error}`]
-        : ['spark', 'AI', `${name}的交叉审查完成，${p.findings ? `发现 ${p.findings} 个问题${p.blockers ? `，其中 ${p.blockers} 个阻塞` : ''}` : '没有发现问题'}`];
+        ? ['alert', 'AI', tr('{0}的交叉审查没有完成：{1}', name, p.error)]
+        : ['spark', 'AI', tr('{0}的交叉审查完成，{1}', name, p.findings ? tr('发现 {0} 个问题{1}', p.findings, p.blockers ? tr('，其中 {0} 个阻塞', p.blockers) : '') : tr('没有发现问题'))];
     case 'task_pushed':
-      return ['branch', '你', `把${name}的分支 ${p.branch} 推到了 ${p.remote}（${String(p.commit ?? '').slice(0, 8)}）`];
+      return ['branch', tr('你'), tr('把{0}的分支 {1} 推到了 {2}（{3}）', name, p.branch, p.remote, String(p.commit ?? '').slice(0, 8))];
     case 'pr_created':
-      return ['merge', '你', `给${name}开了 PR：${p.url}`];
+      return ['merge', tr('你'), tr('给{0}开了 PR：{1}', name, p.url)];
     case 'auto_fix':
-      return ['undo', '系统', `${name}的自动检查没过，交回 Agent 自动修复（第 ${p.attempt} 次）`];
+      return ['undo', tr('系统'), tr('{0}的自动检查没过，交回 Agent 自动修复（第 {1} 次）', name, p.attempt)];
     case 'issue_resolved': {
-      const how = { accepted: '采纳了', manual: '手动处理了', ignored: '忽略了', pending_confirm: '把', open: '重新打开了' }[p.resolution as string] ?? '处理了';
-      return ['check', '你', `${how}问题 ${p.code}${p.resolution === 'pending_confirm' ? ' 标为待确认' : ''}${p.note ? `：${p.note}` : ''}`];
+      const how = { accepted: tr('采纳了'), manual: tr('手动处理了'), ignored: tr('忽略了'), pending_confirm: tr('把'), open: tr('重新打开了') }[p.resolution as string] ?? tr('处理了');
+      return ['check', tr('你'), tr('{0}问题 {1}{2}{3}', how, p.code, p.resolution === 'pending_confirm' ? tr(' 标为待确认') : '', p.note ? tr('：{0}', p.note) : '')];
     }
     case 'finalized':
-      return ['lock', '你', '定稿，PRD 已锁定'];
+      return ['lock', tr('你'), tr('定稿，PRD 已锁定')];
     case 'proposal_ready': {
-      const what = p.kind === 'impact' ? '变更影响分析' : '拆分建议';
-      return p.error ? ['alert', 'AI', `${what}没有生成出来：${p.error}`] : ['spark', 'AI', `${what}出来了，等你确认`];
+      const what = p.kind === 'impact' ? tr('变更影响分析') : tr('拆分建议');
+      return p.error ? ['alert', 'AI', tr('{0}没有生成出来：{1}', what, p.error)] : ['spark', 'AI', tr('{0}出来了，等你确认', what)];
     }
     case 'proposal_discarded':
-      return ['x', '你', `放弃了${p.kind === 'impact' ? '变更影响分析' : '拆分建议'}`];
+      return ['x', tr('你'), tr('放弃了{0}', p.kind === 'impact' ? tr('变更影响分析') : tr('拆分建议'))];
     case 'split_applied':
-      return ['branch', '你', `确认拆分，创建了 ${(p.tasks as string[] | undefined)?.length ?? 0} 个子任务`];
+      return ['branch', tr('你'), tr('确认拆分，创建了 {0} 个子任务', (p.tasks as string[] | undefined)?.length ?? 0)];
     case 'impact_applied':
-      return ['check', '你', `确认影响分析：${(p.rework as string[] | undefined)?.length ?? 0} 个子任务要追加工作，新增 ${p.new_tasks ?? 0} 个`];
+      return ['check', tr('你'), tr('确认影响分析：{0} 个子任务要追加工作，新增 {1} 个', (p.rework as string[] | undefined)?.length ?? 0, p.new_tasks ?? 0)];
     case 'change_requested':
-      return ['undo', '你', `发起变更：${p.reason ?? ''}`];
+      return ['undo', tr('你'), tr('发起变更：{0}', p.reason ?? '')];
     case 'api_doc_ready':
-      return ['file', 'Agent', `${name}写出了接口文档 ${p.path}${(p.unblocked as string[] | undefined)?.length ? '，等它的子任务已解锁' : ''}`];
+      return ['file', 'Agent', tr('{0}写出了接口文档 {1}{2}', name, p.path, (p.unblocked as string[] | undefined)?.length ? tr('，等它的子任务已解锁') : '')];
     case 'task_merged':
-      return ['merge', '系统', `${name}已合并（${String(p.commit ?? '').slice(0, 8)}）${p.note ? `；${p.note}` : ''}`];
+      return ['merge', tr('系统'), tr('{0}已合并（{1}）{2}', name, String(p.commit ?? '').slice(0, 8), p.note ? tr('；{0}', p.note) : '')];
     case 'compare_started':
-      return ['branch', '你', `发起多 Agent 对比：${name}另外交给 ${(p.candidates as string[] | undefined)?.length ?? 0} 个 Agent 各做一遍`];
+      return ['branch', tr('你'), tr('发起多 Agent 对比：{0}另外交给 {1} 个 Agent 各做一遍', name, (p.candidates as string[] | undefined)?.length ?? 0)];
     case 'compare_start_failed':
-      return ['alert', '系统', `对比候选「${p.title ?? ''}」没有入队：${p.error ?? ''}`];
+      return ['alert', tr('系统'), tr('对比候选「{0}」没有入队：{1}', p.title ?? '', p.error ?? '')];
     case 'compare_adopted':
-      return ['check', '你', `采用了${name}的结果，其余 ${(p.dropped as string[] | undefined)?.length ?? 0} 个候选已取消`];
+      return ['check', tr('你'), tr('采用了{0}的结果，其余 {1} 个候选已取消', name, (p.dropped as string[] | undefined)?.length ?? 0)];
     case 'task_cancelled':
-      return ['x', '你', `取消${name}`];
+      return ['x', tr('你'), tr('取消{0}', name)];
     case 'question_asked':
-      return ['info', 'Agent', `提了一个问题：${p.body ?? ''}`];
+      return ['info', 'Agent', tr('提了一个问题：{0}', p.body ?? '')];
     case 'question_answered':
-      return ['check', '你', `回答了「${p.body ?? ''}」：${p.answer ?? ''}`];
+      return ['check', tr('你'), tr('回答了「{0}」：{1}', p.body ?? '', p.answer ?? '')];
     case 'delegate_finished':
-      return [p.error ? 'alert' : 'spark', 'Agent', `委派给 ${AGENTS[p.agent as string]?.name ?? p.agent} 的只读检查${p.error ? `没有完成：${p.error}` : '完成'}`];
+      return [p.error ? 'alert' : 'spark', 'Agent', tr('委派给 {0} 的只读检查{1}', AGENTS[p.agent as string]?.name ?? p.agent, p.error ? tr('没有完成：{0}', p.error) : tr('完成'))];
     case 'comment':
-      return ['edit', '你', `评论：${p.body ?? ''}`];
+      return ['edit', tr('你'), tr('评论：{0}', p.body ?? '')];
     case 'stage_passed':
-      return ['check', '你', `通过了环节「${p.stage ?? ''}」${p.note ? `：${p.note}` : ''}`];
+      return ['check', tr('你'), tr('通过了环节「{0}」{1}', p.stage ?? '', p.note ? tr('：{0}', p.note) : '')];
     case 'source_linked':
-      return ['upload', '系统', `从${p.kind === 'github' ? ' GitHub Issue ' : '飞书文档'}导入（${p.source ?? ''}）`];
+      return ['upload', tr('系统'), tr('从{0}导入（{1}）', p.kind === 'github' ? ' GitHub Issue ' : tr('飞书文档'), p.source ?? '')];
     case 'source_comment':
-      return ['edit', `${p.author ?? '有人'}（GitHub）`, `评论：${p.body ?? ''}`];
+      return ['edit', tr('{0}（GitHub）', p.author ?? tr('有人')), tr('评论：{0}', p.body ?? '')];
     case 'source_changed':
-      return ['info', '系统', '外部来源的内容变了，等你决定要不要导入'];
+      return ['info', tr('系统'), tr('外部来源的内容变了，等你决定要不要导入')];
     case 'source_applied':
-      return ['check', '你', p.version ? `把外部来源的新内容导入为 PRD v${p.version}` : '同步了外部来源的新标题'];
+      return ['check', tr('你'), p.version ? tr('把外部来源的新内容导入为 PRD v{0}', p.version) : tr('同步了外部来源的新标题')];
     case 'source_dismissed':
-      return ['x', '你', '忽略了外部来源的这次变更'];
+      return ['x', tr('你'), tr('忽略了外部来源的这次变更')];
     case 'source_written_back':
-      return ['check', '系统', `已在 GitHub Issue #${p.number ?? ''} 下评论并关闭`];
+      return ['check', tr('系统'), tr('已在 GitHub Issue #{0} 下评论并关闭', p.number ?? '')];
     case 'assigned':
-      return ['info', '你', p.assignee ? `指派给 ${p.assignee}` : '取消了指派'];
+      return ['info', tr('你'), p.assignee ? tr('指派给 {0}', p.assignee) : tr('取消了指派')];
     default:
-      return ['info', '系统', e.type];
+      return ['info', tr('系统'), e.type];
   }
 }
 
@@ -337,7 +338,7 @@ function StageGate({ d }: { d: TicketDetail }) {
   if (!cur) return null;
   const same = d.stages.filter((s) => s.gate === cur.gate);
   const pass = async () => {
-    const done = await ui.attempt(api.ticketStagePass(d.ticket.id, cur.id, note), `「${cur.name}」已通过`);
+    const done = await ui.attempt(api.ticketStagePass(d.ticket.id, cur.id, note), tr('「{0}」已通过', cur.name));
     if (done) setNote('');
   };
   return (
@@ -345,14 +346,14 @@ function StageGate({ d }: { d: TicketDetail }) {
       <Icon name="info" size={15} />
       <div style={{ flex: 1 }}>
         <b>
-          等待环节：{cur.name}（{same.indexOf(cur) + 1}/{same.length}）
+          {tr('等待环节：')}{cur.name}{tr('（')}{same.indexOf(cur) + 1}/{same.length}{tr('）')}
         </b>{' '}
-        通过之后才能{cur.gate === 'finalized' ? '定稿' : '完成这张工单'}。
+        {tr('通过之后才能')}{cur.gate === 'finalized' ? tr('定稿') : tr('完成这张工单')}{tr('。')}
         {cur.hint && <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{cur.hint}</div>}
         <div className="row" style={{ gap: 6, marginTop: 8 }}>
-          <input className="input" style={{ flex: 1, minWidth: 180 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="备注（可选）" aria-label="环节备注" />
+          <input className="input" style={{ flex: 1, minWidth: 180 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder={tr('备注（可选）')} aria-label={tr('环节备注')} />
           <button className="btn sm primary" onClick={() => void pass()}>
-            通过
+            {tr('通过')}
           </button>
         </div>
       </div>
@@ -367,36 +368,36 @@ function SourceChanged({ d }: { d: TicketDetail }) {
   const src = d.source;
   if (!src?.pending_rev) return null;
   const t = d.ticket;
-  const what = src.kind === 'github' ? 'GitHub Issue' : '飞书文档';
+  const what = src.kind === 'github' ? 'GitHub Issue' : tr('飞书文档');
   const locked = !(['draft', 'human_review'].includes(t.status) || (t.type === 'bug' && ['developing', 'acceptance'].includes(t.status)));
   const apply = async () => {
     if (
       locked &&
       !(await ui.confirm(
-        '导入会先发起变更',
-        '这张工单的需求已经定稿。导入外部的新内容会让它回到人工审核，正在跑的子任务会跑完当前这一轮；之后要重新定稿。',
-        '发起变更并导入',
+        tr('导入会先发起变更'),
+        tr('这张工单的需求已经定稿。导入外部的新内容会让它回到人工审核，正在跑的子任务会跑完当前这一轮；之后要重新定稿。'),
+        tr('发起变更并导入'),
       ))
     )
       return;
-    await ui.attempt(api.syncApply(t.id), '已导入为新的 PRD 版本');
+    await ui.attempt(api.syncApply(t.id), tr('已导入为新的 PRD 版本'));
   };
   const titleChanged = src.pending_title && src.pending_title !== t.title;
   return (
     <div className="callout cin">
       <Icon name="info" size={15} />
       <div style={{ flex: 1 }}>
-        <b>源已变更：</b>
-        {what}在导入之后有改动{titleChanged ? `（标题改成了「${src.pending_title}」）` : ''}。现在的 PRD 没有动。
+        <b>{tr('源已变更：')}</b>
+        {what}{tr('在导入之后有改动')}{titleChanged ? tr('（标题改成了「{0}」）', src.pending_title) : ''}{tr('。现在的 PRD 没有动。')}
         <div className="row" style={{ gap: 6, marginTop: 8 }}>
           <button className="btn sm primary" onClick={() => void apply()}>
-            导入为新版本
+            {tr('导入为新版本')}
           </button>
           <button className="btn sm" onClick={() => setOpen((x) => !x)}>
-            {open ? '收起' : '看新内容'}
+            {open ? tr('收起') : tr('看新内容')}
           </button>
-          <button className="btn sm ghost" onClick={() => void ui.attempt(api.syncDismiss(t.id), '已忽略这次变更')}>
-            忽略
+          <button className="btn sm ghost" onClick={() => void ui.attempt(api.syncDismiss(t.id), tr('已忽略这次变更'))}>
+            {tr('忽略')}
           </button>
         </div>
         {open && (
@@ -416,7 +417,7 @@ function Questions({ d }: { d: TicketDetail }) {
   const open = d.questions.filter((q) => q.status === 'open');
   if (!open.length) return null;
   // 回答 / 忽略之后，引擎的变更事件会让工单重新加载
-  const answer = (id: string, text: string) => void ui.attempt(api.questionAnswer(id, text), '已回答，下一轮运行会带上');
+  const answer = (id: string, text: string) => void ui.attempt(api.questionAnswer(id, text), tr('已回答，下一轮运行会带上'));
   return (
     <>
       {open.map((q) => {
@@ -426,7 +427,7 @@ function Questions({ d }: { d: TicketDetail }) {
           <div className="callout cin" key={q.id}>
             <Icon name="info" size={15} />
             <div style={{ flex: 1 }}>
-              <b>Agent 有个问题要你回答{task ? `（${task.title}）` : ''}：</b>
+              <b>{tr('Agent 有个问题要你回答')}{task ? tr('（{0}）', task.title) : ''}{tr('：')}</b>
               <div style={{ whiteSpace: 'pre-wrap', margin: '4px 0 8px' }}>{q.body}</div>
               <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
                 {q.options.map((o) => (
@@ -439,14 +440,14 @@ function Questions({ d }: { d: TicketDetail }) {
                   style={{ flex: 1, minWidth: 180 }}
                   value={draft}
                   onChange={(e) => setDrafts((x) => ({ ...x, [q.id]: e.target.value }))}
-                  placeholder="写下回答…"
-                  aria-label="回答"
+                  placeholder={tr('写下回答…')}
+                  aria-label={tr('回答')}
                 />
                 <button className="btn sm primary" disabled={!draft.trim()} onClick={() => answer(q.id, draft)}>
-                  回答
+                  {tr('回答')}
                 </button>
                 <button className="btn sm ghost" onClick={() => void ui.attempt(api.questionDismiss(q.id))}>
-                  忽略
+                  {tr('忽略')}
                 </button>
               </div>
             </div>
@@ -484,9 +485,9 @@ function OverviewTab({ d }: { d: TicketDetail }) {
           <div className="callout tide">
             <Icon name="spark" size={15} />
             <div>
-              <b>AI 正在预审这份 PRD。</b> 结束后工单进入人工审核。{' '}
+              <b>{tr('AI 正在预审这份 PRD。')}</b> {tr('结束后工单进入人工审核。')}{' '}
               <a className="lnk" href={`#/ticket/${t.key}/review`}>
-                看进度 →
+                {tr('看进度 →')}
               </a>
             </div>
           </div>
@@ -497,13 +498,13 @@ function OverviewTab({ d }: { d: TicketDetail }) {
             <div>
               <b>
                 {t.change_from_version_id
-                  ? `变更进行中：${t.change_reason}`
+                  ? tr('变更进行中：{0}', t.change_reason)
                   : openIssues.length
-                    ? `预审提出的问题还有 ${openIssues.length} 个没处理${blockers ? `，其中 ${blockers} 个阻塞定稿` : ''}。`
-                    : '等你审核并定稿。'}
+                    ? tr('预审提出的问题还有 {0} 个没处理{1}。', openIssues.length, blockers ? tr('，其中 {0} 个阻塞定稿', blockers) : '')
+                    : tr('等你审核并定稿。')}
               </b>{' '}
               <a className="lnk" href={`#/ticket/${t.key}/review`}>
-                去审核 →
+                {tr('去审核 →')}
               </a>
             </div>
           </div>
@@ -513,11 +514,11 @@ function OverviewTab({ d }: { d: TicketDetail }) {
             <Icon name="spark" size={15} />
             <div>
               <b>
-                {proposal.kind === 'impact' ? '变更影响分析' : '拆分建议'}
-                {proposal.status === 'running' ? '正在生成。' : proposal.status === 'failed' ? '没有生成出来。' : '等你确认。'}
+                {proposal.kind === 'impact' ? tr('变更影响分析') : tr('拆分建议')}
+                {proposal.status === 'running' ? tr('正在生成。') : proposal.status === 'failed' ? tr('没有生成出来。') : tr('等你确认。')}
               </b>{' '}
               <a className="lnk" href={`#/ticket/${t.key}/tasks`}>
-                去子任务页 →
+                {tr('去子任务页 →')}
               </a>
             </div>
           </div>
@@ -526,15 +527,15 @@ function OverviewTab({ d }: { d: TicketDetail }) {
           <div className="callout cin">
             <Icon name="check" size={15} />
             <div>
-              <b>{wait.map((k) => TASK_KIND[k.kind]?.name ?? k.kind).join('、')}子任务已跑完，等你验收。</b>{' '}
+              <b>{wait.map((k) => TASK_KIND[k.kind]?.name ?? k.kind).join(tr('、'))}{tr('子任务已跑完，等你验收。')}</b>{' '}
               <a className="lnk" href={`#/ticket/${t.key}/accept`}>
-                去验收 →
+                {tr('去验收 →')}
               </a>
             </div>
           </div>
         )}
         <div className="sec-title" style={{ marginTop: 18 }}>
-          子任务
+          {tr('子任务')}
         </div>
         {live.length ? (
           <div className="tgrid">
@@ -546,7 +547,7 @@ function OverviewTab({ d }: { d: TicketDetail }) {
                   <TaskStatusTag status={k.status} />
                 </div>
                 <div className="row dim" style={{ marginTop: 8, fontSize: 12 }}>
-                  <span>{projects.find((p) => p.id === k.project_id)?.name ?? '已删除的项目'}</span>
+                  <span>{projects.find((p) => p.id === k.project_id)?.name ?? tr('已删除的项目')}</span>
                   {k.branch && <span className="mono">{k.branch}</span>}
                 </div>
               </a>
@@ -554,15 +555,15 @@ function OverviewTab({ d }: { d: TicketDetail }) {
           </div>
         ) : (
           <div className="card">
-            <Empty icon="branch" title="还没有子任务" body="定稿时可以让 AI 拆分，也可以在「子任务」页自己添加。每个子任务有自己的分支和 worktree。">
+            <Empty icon="branch" title={tr('还没有子任务')} body={tr('定稿时可以让 AI 拆分，也可以在「子任务」页自己添加。每个子任务有自己的分支和 worktree。')}>
               <a className="btn" href={`#/ticket/${t.key}/tasks`}>
-                打开子任务
+                {tr('打开子任务')}
               </a>
             </Empty>
           </div>
         )}
         <div className="sec-title" style={{ marginTop: 22 }}>
-          时间线
+          {tr('时间线')}
         </div>
         <ol className="tl">
           {[...d.timeline].reverse().map((e) => {
@@ -574,7 +575,7 @@ function OverviewTab({ d }: { d: TicketDetail }) {
                 </i>
                 <div>
                   {/* 经接口操作的显示成员名 */}
-                  <b>{who === '你' && e.actor ? e.actor : who}</b> {what}
+                  <b>{who === tr('你') && e.actor ? e.actor : who}</b> {what}
                 </div>
                 <time>{fmtAgo(e.ts)}</time>
               </li>
@@ -586,15 +587,15 @@ function OverviewTab({ d }: { d: TicketDetail }) {
         <dl className="props">
           {(d.assignee || assignable.length > 0) && (
             <>
-              <dt>负责人</dt>
+              <dt>{tr('负责人')}</dt>
               <dd>
                 <select
                   className="input"
-                  aria-label="负责人"
+                  aria-label={tr('负责人')}
                   value={t.assignee_id ?? ''}
                   onChange={(e) => void ui.attempt(api.ticketAssign(t.id, e.target.value || null))}
                 >
-                  <option value="">未指派</option>
+                  <option value="">{tr('未指派')}</option>
                   {assignable.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.name}
@@ -604,13 +605,13 @@ function OverviewTab({ d }: { d: TicketDetail }) {
               </dd>
             </>
           )}
-          <dt>类型</dt>
+          <dt>{tr('类型')}</dt>
           <dd>
             <Stamp type={t.type} /> {TYPES[t.type]?.name}
           </dd>
           {d.stages.length > 0 && (
             <>
-              <dt>环节</dt>
+              <dt>{tr('环节')}</dt>
               <dd>
                 {d.stages.map((s) => (
                   <div key={s.id} className={s.passed_at ? '' : 'dim'} title={s.note ?? undefined}>
@@ -622,41 +623,41 @@ function OverviewTab({ d }: { d: TicketDetail }) {
           )}
           {d.source && (
             <>
-              <dt>来源</dt>
+              <dt>{tr('来源')}</dt>
               <dd>
-                {d.source.kind === 'github' ? `GitHub Issue #${d.source.external_id}` : '飞书文档'}
-                {d.source.remote_state === 'closed' && '（已关闭）'}
+                {d.source.kind === 'github' ? `GitHub Issue #${d.source.external_id}` : tr('飞书文档')}
+                {d.source.remote_state === 'closed' && tr('（已关闭）')}
                 <div className="mono dim" style={{ wordBreak: 'break-all', userSelect: 'text' }}>
                   {d.source.url}
                 </div>
               </dd>
             </>
           )}
-          <dt>绑定项目</dt>
+          <dt>{tr('绑定项目')}</dt>
           <dd>
             {t.projects.length ? (
               t.projects.map((p) => (
                 <a key={p.project_id} className="tag line" href={`#/projects/${p.project_id}`} style={{ marginRight: 4 }}>
                   <Icon name="folder" size={11} />
-                  {projects.find((x) => x.id === p.project_id)?.name ?? '已删除'}
+                  {projects.find((x) => x.id === p.project_id)?.name ?? tr('已删除')}
                 </a>
               ))
             ) : (
-              <span className="dim">未绑定</span>
+              <span className="dim">{tr('未绑定')}</span>
             )}
           </dd>
-          <dt>当前 PRD</dt>
+          <dt>{tr('当前 PRD')}</dt>
           <dd>
             v{d.versions[d.versions.length - 1]?.version ?? 1}
-            {t.finalized_version_id ? ' · 已定稿' : ''}
+            {t.finalized_version_id ? tr(' · 已定稿') : ''}
           </dd>
-          <dt>默认 Agent</dt>
+          <dt>{tr('默认 Agent')}</dt>
           <dd>
             <AgentTag agent={agent} />
           </dd>
           <dt>Provider</dt>
-          <dd>{providers.find((p) => p.id === providerId)?.name ?? '本机登录态'}</dd>
-          <dt>标签</dt>
+          <dd>{providers.find((p) => p.id === providerId)?.name ?? tr('本机登录态')}</dd>
+          <dt>{tr('标签')}</dt>
           <dd>
             {t.labels.length ? (
               t.labels.map((l) => (
@@ -665,12 +666,12 @@ function OverviewTab({ d }: { d: TicketDetail }) {
                 </span>
               ))
             ) : (
-              <span className="dim">无</span>
+              <span className="dim">{tr('无')}</span>
             )}
           </dd>
-          <dt>累计费用</dt>
+          <dt>{tr('累计费用')}</dt>
           <dd className="mono">{d.runs.length ? `${fmtCost(cost)} · ${fmtDur(secs)}` : '—'}</dd>
-          <dt>创建</dt>
+          <dt>{tr('创建')}</dt>
           <dd>{fmtAgo(t.created_at)}</dd>
         </dl>
       </aside>
@@ -699,7 +700,7 @@ function PrdTab({ d, reload }: TabProps) {
   // 只动图片的修改直接存成一个新版本（来源记为 image）
   const saveImages = async (next: string, note: string) => {
     if (next === cur.content_md) return;
-    if (await ui.attempt(api.ticketSavePrd(t.id, next, note, 'image'), `${note}，已保存为新版本`)) {
+    if (await ui.attempt(api.ticketSavePrd(t.id, next, note, 'image'), tr('{0}，已保存为新版本', note))) {
       setShown(null);
       await reload();
     }
@@ -710,7 +711,7 @@ function PrdTab({ d, reload }: TabProps) {
     if (!files.length) return;
     if (target.replace) {
       const id = await ui.attempt(uploadImage(t.id, files[0]));
-      if (id) await saveImages(replaceImage(cur.content_md, target.replace, id, '需求方截图'), '替换了一张图片');
+      if (id) await saveImages(replaceImage(cur.content_md, target.replace, id, tr('需求方截图')), tr('替换了一张图片'));
       return;
     }
     const sel = selectionOf(area.current);
@@ -718,34 +719,34 @@ function PrdTab({ d, reload }: TabProps) {
     for (const f of files) {
       const id = await ui.attempt(uploadImage(t.id, f));
       if (!id) break;
-      added.push(imageMd('需求方截图', id, 'authoritative'));
+      added.push(imageMd(tr('需求方截图'), id, 'authoritative'));
     }
     setDraft((d) => insertAt(d ?? cur.content_md, sel, added));
   };
   const imageActions = useMemo<ImageActions>(
     () => ({
       setAuthority: (id, authority) =>
-        void saveImages(setAuthority(cur.content_md, id, authority), authority === 'authoritative' ? '把一张图设为权威' : '把一张图改为仅参考'),
+        void saveImages(setAuthority(cur.content_md, id, authority), authority === 'authoritative' ? tr('把一张图设为权威') : tr('把一张图改为仅参考')),
       replace: (id) => {
         pending.current = { replace: id };
         fileInput.current?.click();
       },
       remove: async (id) => {
-        if (await ui.confirm('从 PRD 里移除这张图？', '只是当前版本不再引用它；图片文件和旧版本都保留。', '移除'))
-          await saveImages(removeImage(cur.content_md, id), '移除了一张图片');
+        if (await ui.confirm(tr('从 PRD 里移除这张图？'), tr('只是当前版本不再引用它；图片文件和旧版本都保留。'), tr('移除')))
+          await saveImages(removeImage(cur.content_md, id), tr('移除了一张图片'));
       },
       describe: async (id) => {
         const a = (await ui.attempt(api.attachmentList(t.id)))?.find((x) => x.id === id);
         if (!a) return;
         const text = await ui.prompt(
-          '图片的文字描述',
-          '模型看不了图时（Provider 标为"只能处理文字"），发给 Agent 的是这段描述。',
-          '这张图画了什么：有哪些区域、字段、按钮和文案',
-          '保存',
+          tr('图片的文字描述'),
+          tr('模型看不了图时（Provider 标为"只能处理文字"），发给 Agent 的是这段描述。'),
+          tr('这张图画了什么：有哪些区域、字段、按钮和文案'),
+          tr('保存'),
           false,
           a.description ?? '',
         );
-        if (text !== null) await ui.attempt(api.attachmentDescribe(id, text), '已保存描述');
+        if (text !== null) await ui.attempt(api.attachmentDescribe(id, text), tr('已保存描述'));
       },
     }),
     [cur?.id, cur?.content_md, t.id],
@@ -756,16 +757,16 @@ function PrdTab({ d, reload }: TabProps) {
     return (
       <div className="page">
         <div className="card">
-          <Empty icon="file" title="这张工单还没有正文" />
+          <Empty icon="file" title={tr('这张工单还没有正文')} />
         </div>
       </div>
     );
 
   const save = async () => {
     if (draft === null) return;
-    const note = await ui.prompt('保存为新版本', `会生成 v${versions[0].version + 1}，旧版本保留不变。`, '这次改了什么（可选）', '保存');
+    const note = await ui.prompt(tr('保存为新版本'), tr('会生成 v{0}，旧版本保留不变。', versions[0].version + 1), tr('这次改了什么（可选）'), tr('保存'));
     if (note === null) return;
-    if (await ui.attempt(api.ticketSavePrd(t.id, draft, note || undefined), '已保存为新版本')) {
+    if (await ui.attempt(api.ticketSavePrd(t.id, draft, note || undefined), tr('已保存为新版本'))) {
       setDraft(null);
       setShown(null);
       await reload();
@@ -778,16 +779,16 @@ function PrdTab({ d, reload }: TabProps) {
         <div className="doc-bar">
           <span className="tag tide">
             v{cur.version}
-            {idx ? '' : ' · 当前'}
+            {idx ? '' : tr(' · 当前')}
           </span>
           <span className="dim">
-            {fmtAgo(cur.created_at)} · {cur.author === 'human' ? '你' : cur.author}
+            {fmtAgo(cur.created_at)} · {cur.author === 'human' ? tr('你') : cur.author}
             {cur.note ? ` · ${cur.note}` : ''}
           </span>
           {!editable && idx === 0 && (
             <span className="tag">
               <Icon name="lock" size={11} />
-              已锁定，只读
+              {tr('已锁定，只读')}
             </span>
           )}
           <span className="grow" />
@@ -801,13 +802,13 @@ function PrdTab({ d, reload }: TabProps) {
                 }}
               >
                 <Icon name="upload" size={13} />
-                添加图片
+                {tr('添加图片')}
               </button>
               <button className="btn sm" onClick={() => setDraft(null)}>
-                放弃修改
+                {tr('放弃修改')}
               </button>
               <button className="btn primary sm" disabled={draft === cur.content_md} onClick={() => void save()}>
-                保存为 v{versions[0].version + 1}
+                {tr('保存为 v')}{versions[0].version + 1}
               </button>
             </>
           ) : (
@@ -815,13 +816,13 @@ function PrdTab({ d, reload }: TabProps) {
               {idx === 0 && editable && (
                 <button className="btn sm" onClick={() => setDraft(cur.content_md)}>
                   <Icon name="edit" size={13} />
-                  编辑
+                  {tr('编辑')}
                 </button>
               )}
               {prev && (
                 <button className={`btn sm ${diffing ? 'on' : ''}`} onClick={() => setDiffing(!diffing)}>
                   <Icon name="code" size={13} />
-                  {diffing ? '关闭对比' : `与 v${prev.version} 对比`}
+                  {diffing ? tr('关闭对比') : tr('与 v{0} 对比', prev.version)}
                 </button>
               )}
             </>
@@ -841,14 +842,14 @@ function PrdTab({ d, reload }: TabProps) {
               pending.current = {};
               void onFiles(files);
             }}
-            aria-label="PRD 正文"
+            aria-label={tr('PRD 正文')}
           />
         ) : (
           <div className={`prose ${diffing ? 'diffing' : ''}`}>
             {cur.content_md.trim() ? (
               <Md src={cur.content_md} prev={diffing && prev ? prev.content_md : null} images={canEditImages ? imageActions : undefined} />
             ) : (
-              <p className="dim">正文是空的。</p>
+              <p className="dim">{tr('正文是空的。')}</p>
             )}
           </div>
         )}
@@ -867,7 +868,7 @@ function PrdTab({ d, reload }: TabProps) {
       </article>
       <aside>
         <div className="sec-title">
-          版本<small>点击查看</small>
+          {tr('版本')}<small>{tr('点击查看')}</small>
         </div>
         <ol className="vers">
           {versions.map((v) => (
@@ -882,7 +883,7 @@ function PrdTab({ d, reload }: TabProps) {
             >
               <b>v{v.version}</b>
               <div>
-                <span>{v.origin === 'edit' ? '编辑' : v.origin === 'ai_suggestion' ? 'AI 采纳' : v.origin === 'file' ? '文件导入' : '创建'}</span>
+                <span>{v.origin === 'edit' ? tr('编辑') : v.origin === 'ai_suggestion' ? tr('AI 采纳') : v.origin === 'file' ? tr('文件导入') : tr('创建')}</span>
                 <small>{fmtAgo(v.created_at)}</small>
                 {v.note && <small>{v.note}</small>}
               </div>
@@ -891,7 +892,7 @@ function PrdTab({ d, reload }: TabProps) {
         </ol>
         <div className="callout tide" style={{ marginTop: 14 }}>
           <Icon name="info" size={15} />
-          <div>每次保存都会生成一个不可变的新版本。定稿后 PRD 只读，改动需要「发起变更」。</div>
+          <div>{tr('每次保存都会生成一个不可变的新版本。定稿后 PRD 只读，改动需要「发起变更」。')}</div>
         </div>
       </aside>
     </div>
@@ -904,7 +905,7 @@ function RunsTab({ d }: { d: TicketDetail }) {
     return (
       <div className="page">
         <div className="card">
-          <Empty icon="runs" title="还没有运行记录" body="开始一个子任务后，每次 Agent 运行都会记录在这里。" />
+          <Empty icon="runs" title={tr('还没有运行记录')} body={tr('开始一个子任务后，每次 Agent 运行都会记录在这里。')} />
         </div>
       </div>
     );
@@ -916,11 +917,11 @@ function RunsTab({ d }: { d: TicketDetail }) {
     <div className="page">
       <div className="kpis">
         <div>
-          <span>运行次数</span>
+          <span>{tr('运行次数')}</span>
           <b>{d.runs.length}</b>
         </div>
         <div>
-          <span>总耗时</span>
+          <span>{tr('总耗时')}</span>
           <b>{fmtDur(tot.s)}</b>
         </div>
         <div>
@@ -928,7 +929,7 @@ function RunsTab({ d }: { d: TicketDetail }) {
           <b>{fmtTok(tot.t)}</b>
         </div>
         <div>
-          <span>费用</span>
+          <span>{tr('费用')}</span>
           <b>{fmtCost(tot.c)}</b>
         </div>
       </div>
@@ -936,14 +937,14 @@ function RunsTab({ d }: { d: TicketDetail }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th>运行</th>
-              <th>子任务</th>
+              <th>{tr('运行')}</th>
+              <th>{tr('子任务')}</th>
               <th>Agent</th>
               <th>Provider</th>
-              <th>状态</th>
-              <th className="num">耗时</th>
+              <th>{tr('状态')}</th>
+              <th className="num">{tr('耗时')}</th>
               <th className="num">Token</th>
-              <th className="num">费用</th>
+              <th className="num">{tr('费用')}</th>
             </tr>
           </thead>
           <tbody>
@@ -953,14 +954,14 @@ function RunsTab({ d }: { d: TicketDetail }) {
                 <tr key={r.id} onClick={() => go(`#/runs/${r.id}`)} style={{ cursor: 'pointer' }}>
                   <td className="mono">
                     <a className="lnk" href={`#/runs/${r.id}`} onClick={(e) => e.stopPropagation()}>
-                      第 {r.number} 次
+                      {tr('第')} {r.number} {tr('次')}
                     </a>
                   </td>
                   <td>{task ? `${TASK_KIND[task.kind]?.short ?? task.kind} · ${task.title}` : r.task_id ? '—' : (PURPOSE[r.purpose] ?? r.purpose)}</td>
                   <td>
                     <AgentTag agent={r.agent} />
                   </td>
-                  <td>{providers.find((p) => p.id === r.provider_id)?.name ?? '本机登录态'}</td>
+                  <td>{providers.find((p) => p.id === r.provider_id)?.name ?? tr('本机登录态')}</td>
                   <td>
                     <RunStatusTag status={r.status} />
                   </td>
