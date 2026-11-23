@@ -2,6 +2,7 @@
 pub mod aider;
 pub mod claude;
 pub mod codex;
+pub mod codex_app;
 pub mod gemini;
 pub mod mock;
 pub mod mock_process;
@@ -268,6 +269,18 @@ pub trait EventParser: Send {
     fn finish(&mut self) -> Vec<AgentEvent> {
         vec![]
     }
+    /// 解析后要写回 stdin 的行（JSON-RPC 协议的请求 / 响应）。
+    fn take_input(&mut self) -> Vec<String> {
+        vec![]
+    }
+    /// 运行中的追加指令要写进 stdin 的内容；`None` 时用 `AgentAdapter::steer_message`。
+    fn steer(&mut self, _text: &str) -> Option<String> {
+        None
+    }
+    /// 解析器能判断 Agent 是否已空闲（可以关 stdin）时给出；`None` 时由 runner 按结束事件推断。
+    fn idle(&self) -> Option<bool> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +297,10 @@ pub trait AgentAdapter: Send + Sync {
     fn default_binary(&self) -> &'static str;
     fn build_command(&self, spec: &RunSpec) -> Result<CommandSpec>;
     fn parser(&self) -> Box<dyn EventParser>;
+    /// 需要按这次运行的参数构造解析器的 Agent 覆盖它。
+    fn parser_for(&self, _spec: &RunSpec) -> Box<dyn EventParser> {
+        self.parser()
+    }
     /// 启动前在工作目录里要做的准备（写提示词文件等）；多数 Agent 不需要。
     /// 运行中追加一条指令时写进 stdin 的一行；`None` 表示这个 Agent 不支持运行中引导。
     fn steer_message(&self, _text: &str) -> Option<String> {
