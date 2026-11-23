@@ -351,13 +351,14 @@ fn plan_code_review(
         },
     };
     let same_author = author.as_ref().filter(|_| author_kind == Some(kind));
-    let provider = match crate::store::clean(opts.provider_id.clone()) {
-        Some(id) => Some(providers::get(conn, &id)?),
+    let requested_provider = crate::store::clean(opts.provider_id.clone());
+    let provider = match requested_provider.as_deref() {
+        Some(id) => Some(providers::get(conn, id)?),
         // 同一种 Agent 也要开新会话，但沿用写代码时的 Provider（包括本机登录）。
+        // 历史运行引用的 Provider 已被删掉时，改用本机登录，不换外部端点。
         None if same_author.is_some() => same_author
             .and_then(|r| r.provider_id.as_deref())
-            .map(|id| providers::get(conn, id))
-            .transpose()?,
+            .and_then(|id| providers::get(conn, id).ok()),
         None => providers::list(conn)?.into_iter().find(|p| {
             p.config().is_ok_and(|c| {
                 c.protocol != crate::provider::Protocol::Native && c.protocol.supports(kind)
@@ -372,7 +373,10 @@ fn plan_code_review(
         agent: kind.as_str().into(),
         provider_id: provider.as_ref().map(|p| p.id.clone()),
         model: same_author
-            .filter(|_| opts.provider_id.is_none())
+            .filter(|r| {
+                requested_provider.is_none()
+                    && r.provider_id.as_deref() == provider.as_ref().map(|p| p.id.as_str())
+            })
             .and_then(|r| r.model.clone())
             .or_else(|| provider.and_then(|p| p.default_model)),
         reasoning_effort: None,

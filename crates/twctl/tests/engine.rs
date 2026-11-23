@@ -10,7 +10,9 @@ use tidewatch_core::engine::{
 };
 use tidewatch_core::git;
 use tidewatch_core::secrets::MemoryStore;
-use tidewatch_core::store::{projects, reviews, runs, settings, stats, tasks, tickets, workflows};
+use tidewatch_core::store::{
+    projects, providers, reviews, runs, settings, stats, tasks, tickets, workflows,
+};
 
 struct Fixture {
     engine: Engine,
@@ -1971,6 +1973,23 @@ fn failed_checks_are_sent_back_to_the_agent_until_they_pass_or_attempts_run_out(
 #[test]
 fn cross_review_reads_the_diff_and_leaves_findings_without_touching_the_task() {
     let f = fixture(1, None);
+    let provider = {
+        let conn = lock(f.db());
+        let provider = providers::create(
+            &conn,
+            providers::ProviderInput {
+                name: "开发 Provider".into(),
+                protocol: "native".into(),
+                default_model: Some("mock-author".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut settings = settings::get(&conn).unwrap();
+        settings.default_provider_id = Some(provider.id.clone());
+        settings::save(&conn, &settings).unwrap();
+        provider
+    };
     let (ticket, task) = f.bug("交叉审查", "x [mock:steps=1] [mock:delay=30]", "medium");
     // 还没有改动：不能审查
     assert!(f
@@ -1980,6 +1999,8 @@ fn cross_review_reads_the_diff_and_leaves_findings_without_touching_the_task() {
     let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
     let author = f.wait_done(&r.id);
     assert_eq!(f.task(&task).status, "review");
+    assert_eq!(author.provider_id.as_deref(), Some(provider.id.as_str()));
+    providers::delete(&lock(f.db()), &provider.id).unwrap();
 
     let review = f
         .engine
@@ -1993,6 +2014,7 @@ fn cross_review_reads_the_diff_and_leaves_findings_without_touching_the_task() {
         .unwrap();
     assert!(review.resume_session_id.is_none());
     assert_eq!(review.agent, author.agent);
+    assert!(review.provider_id.is_none() && review.model.is_none());
     assert_eq!(
         (
             review.purpose.as_str(),
