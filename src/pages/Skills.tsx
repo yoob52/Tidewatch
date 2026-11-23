@@ -254,7 +254,19 @@ export function SkillsPage() {
             slice.map((s) => {
               const there = byName.get(s.skillId) ?? byName.get(s.name) ?? [];
               return (
-                <div key={s.id} className="sk-card" onClick={() => setPreview(s)}>
+                <div
+                  key={s.id}
+                  className="sk-card"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setPreview(s)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setPreview(s);
+                    }
+                  }}
+                >
                   <div className="row">
                     <span className="sk-glyph">{s.name.slice(0, 1).toUpperCase()}</span>
                     <div className="grow">

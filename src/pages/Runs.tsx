@@ -204,6 +204,15 @@ function Composer({ r, compact, onStarted }: { r: RunRow; compact?: boolean; onS
         }
         return;
       }
+      if (effective !== 'steer') {
+        const plan = await ui.attempt(api.taskPlan(r.task_id, { instruction: v }));
+        if (!plan) return;
+        if (
+          plan.permission === 'full_auto' &&
+          !(await ui.confirm(tr('以 full_auto 运行'), tr('Agent 将不经确认执行任意命令。建议只在可丢弃的 worktree 中使用。'), tr('我了解风险，开始'), true))
+        )
+          return;
+      }
       const res = await ui.attempt(api.runFollowup(r.id, v, effective));
       if (!res) return;
       setText('');
@@ -252,7 +261,7 @@ function Composer({ r, compact, onStarted }: { r: RunRow; compact?: boolean; onS
 }
 
 /** 一轮运行的头部、时间线、追加指令和状态条；四格模式下用紧凑版。 */
-function RunView({ runId, compact, picker, onOpen }: { runId: string; compact?: boolean; picker?: ReactNode; onOpen?: (id: string) => void }) {
+function RunView({ runId, compact, picker, onOpen, onSingle }: { runId: string; compact?: boolean; picker?: ReactNode; onOpen?: (id: string) => void; onSingle?: () => void }) {
   const { runs, providers, reload } = useData();
   const ui = useUi();
   const startTask = useStartTask();
@@ -373,7 +382,7 @@ function RunView({ runId, compact, picker, onOpen }: { runId: string; compact?: 
           )
         )}
         {compact ? (
-          <a className="btn ghost sm" href={`#/runs/${r.id}`} title={tr('在单栏中打开')} onClick={() => localStorage.setItem(LAYOUT_KEY, 'single')}>
+          <a className="btn ghost sm" href={`#/runs/${r.id}`} title={tr('在单栏中打开')} onClick={onSingle}>
             <Icon name="ext" size={13} />
           </a>
         ) : (
@@ -511,7 +520,7 @@ function LayoutSwitch({ layout, set }: { layout: Layout; set: (l: Layout) => voi
 }
 
 /** 四格并行：没手动选的窗格自动填进行中的运行，其次是最近的。 */
-function RunGrid({ focus, switcher }: { focus?: string; switcher: ReactNode }) {
+function RunGrid({ focus, switcher, onSingle }: { focus?: string; switcher: ReactNode; onSingle: () => void }) {
   const { runs } = useData();
   const [picked, setPicked] = useState(readPanes);
   const live = runs.filter((r) => runActive(r.status) || r.status === 'queued');
@@ -532,7 +541,7 @@ function RunGrid({ focus, switcher }: { focus?: string; switcher: ReactNode }) {
     setPicked(next);
   };
   const picker = (i: number) => (
-    <select className="g4-pick" value={picked[i] ?? ''} title={tr('选择这一格显示的运行')} onChange={(e) => pick(i, e.target.value || null)}>
+    <select className="g4-pick" value={picked[i] ? (panes[i] ?? '') : ''} title={tr('选择这一格显示的运行')} onChange={(e) => pick(i, e.target.value || null)}>
       <option value="">{tr('自动')}</option>
       {runs.map((r) => (
         <option key={r.id} value={r.id}>
@@ -556,7 +565,7 @@ function RunGrid({ focus, switcher }: { focus?: string; switcher: ReactNode }) {
         {panes.map((pid, i) => (
           <div className="g4-pane" key={i}>
             {pid ? (
-              <RunView key={pid} runId={pid} compact picker={picker(i)} onOpen={(id) => pick(i, id)} />
+              <RunView key={pid} runId={pid} compact picker={picker(i)} onOpen={(id) => pick(i, id)} onSingle={() => onSingle()} />
             ) : (
               <section className="rmain compact">
                 <header className="rhead">{picker(i)}</header>
@@ -579,7 +588,7 @@ export function RunsPage({ id }: { id?: string }) {
   };
   const now = useNow(runs.some((r) => runActive(r.status)));
   const switcher = <LayoutSwitch layout={layout} set={setLayout} />;
-  if (layout === 'grid') return <RunGrid focus={id} switcher={switcher} />;
+  if (layout === 'grid') return <RunGrid focus={id} switcher={switcher} onSingle={() => setLayout('single')} />;
 
   const runId = id ?? runs[0]?.id;
   if (!runId)
