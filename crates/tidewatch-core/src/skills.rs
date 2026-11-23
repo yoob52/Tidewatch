@@ -44,6 +44,8 @@ pub struct InstalledSkill {
     pub target: SkillTarget,
     pub dir: String,
     pub files: usize,
+    /// 从市场安装时记录的来源（`owner/repo/skill`），手动放入的 skill 为空。
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -166,6 +168,10 @@ pub fn list_installed_in(home: &Path) -> Vec<InstalledSkill> {
                 target,
                 dir: dir.to_string_lossy().into_owned(),
                 files: count_files(&dir),
+                origin: std::fs::read_to_string(dir.join(ORIGIN_FILE))
+                    .ok()
+                    .map(|o| o.trim().to_string())
+                    .filter(|o| !o.is_empty()),
             });
         }
     }

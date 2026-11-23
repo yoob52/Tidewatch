@@ -150,10 +150,14 @@ export function SkillsPage() {
   const [creating, setCreating] = useState(false);
 
   const mine = installed.data ?? [];
-  const byName = useMemo(() => {
-    const m = new Map<string, SkillTarget[]>();
-    for (const s of mine) m.set(s.name, [...(m.get(s.name) ?? []), s.target]);
-    return m;
+  const installedIn = useMemo(() => {
+    const byOrigin = new Map<string, SkillTarget[]>();
+    const byName = new Map<string, SkillTarget[]>();
+    for (const s of mine) {
+      const [m, k] = s.origin ? [byOrigin, s.origin] : [byName, s.name];
+      m.set(k, [...(m.get(k) ?? []), s.target]);
+    }
+    return (s: MarketSkill) => byOrigin.get(`${s.source}/${s.skillId}`) ?? byName.get(s.skillId) ?? byName.get(s.name) ?? [];
   }, [mine]);
   const shown = mine.filter((s) => !filter || `${s.name} ${s.description}`.toLowerCase().includes(filter.toLowerCase()));
   const results = market.data ?? [];
@@ -253,7 +257,7 @@ export function SkillsPage() {
             <Empty icon="search" title={tr('没有找到匹配的 skill')} body={tr('换个关键词试试。')} />
           ) : (
             slice.map((s) => {
-              const there = byName.get(s.skillId) ?? byName.get(s.name) ?? [];
+              const there = installedIn(s);
               return (
                 <div
                   key={s.id}
@@ -308,7 +312,7 @@ export function SkillsPage() {
           </footer>
         )}
       </section>
-      {preview && <PreviewModal skill={preview} installedIn={byName.get(preview.skillId) ?? []} onClose={() => setPreview(null)} onInstalled={() => void installed.reload()} />}
+      {preview && <PreviewModal skill={preview} installedIn={installedIn(preview)} onClose={() => setPreview(null)} onInstalled={() => void installed.reload()} />}
       {creating && <CreateModal onClose={() => setCreating(false)} onCreated={() => void installed.reload()} />}
     </div>
   );

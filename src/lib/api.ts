@@ -471,6 +471,7 @@ export interface InstalledSkill {
   target: SkillTarget;
   dir: string;
   files: number;
+  origin: string | null;
 }
 export interface MarketSkill {
   id: string;
