@@ -4,6 +4,7 @@ pub mod api;
 pub mod backup;
 pub mod db;
 pub mod engine;
+pub mod env_path;
 pub mod error;
 pub mod git;
 pub mod guard;

@@ -154,6 +154,7 @@ fn system_info(state: State) -> CmdResult<SystemInfo> {
 #[tauri::command]
 async fn detect_agents() -> CmdResult<Vec<Detection>> {
     tauri::async_runtime::spawn_blocking(|| {
+        tidewatch_core::env_path::refresh_path();
         AgentKind::REAL
             .into_iter()
             .chain([AgentKind::Mock])
@@ -1377,6 +1378,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            tidewatch_core::env_path::refresh_path();
             let data_dir = match std::env::var_os("TIDEWATCH_DATA_DIR") {
                 Some(p) => PathBuf::from(p),
                 None => app.path().app_data_dir()?,

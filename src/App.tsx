@@ -54,9 +54,14 @@ function Wave({ level }: { level: number }) {
 function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setTheme: (t: Theme) => void }) {
   const { tickets, runs, projects, providers, settings, stats } = useData();
   const [agents, setAgents] = useState<Detection[]>([]);
+  // 打开设置页和窗口重新获得焦点时都重新检测：用户可能刚装完 Agent
+  const onSettings = route.page === 'settings';
   useEffect(() => {
-    api.detectAgents().then(setAgents, () => setAgents([]));
-  }, []);
+    const detect = () => void api.detectAgents().then(setAgents, () => setAgents([]));
+    detect();
+    window.addEventListener('focus', detect);
+    return () => window.removeEventListener('focus', detect);
+  }, [onSettings]);
   // 开了「启动时检查更新」才联网；失败不打扰
   const ui = useUi();
   const checkUpdates = settings.check_updates;

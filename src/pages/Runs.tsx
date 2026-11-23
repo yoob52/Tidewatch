@@ -142,7 +142,7 @@ export function RunsPage({ id }: { id?: string }) {
   const runId = id ?? runs[0]?.id;
   // 列表只装最近的运行；链接指向更早的一轮时，用单独取回的那一轮，不拿别的运行顶替
   const current: RunRow | undefined =
-    runs.find((r) => r.id === runId) ?? (detail?.run.id === runId ? detail.run : undefined);
+    runs.find((r) => r.id === runId) ?? (runId && detail?.run.id === runId ? detail.run : undefined);
   const [raw, setRaw] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -204,7 +204,7 @@ export function RunsPage({ id }: { id?: string }) {
 
   const act = runs.filter((r) => runActive(r.status) || r.status === 'queued');
   const hist = runs.filter((r) => !act.includes(r));
-  const r = { ...current, ...(detail?.run.id === current.id ? { prompt: detail.run.prompt } : {}) };
+  const r = { ...current, ...(detail && detail.run.id === current.id ? { prompt: detail.run.prompt } : {}) };
   const active = runActive(r.status);
   const start = parseTs(r.started_at ?? r.queued_at);
 
@@ -269,6 +269,15 @@ export function RunsPage({ id }: { id?: string }) {
               <Icon name="stop" size={14} />
               {r.status === 'queued' ? '取消排队' : '停止'}
             </button>
+          ) : !r.task_id ? (
+            // 预审、拆分、智能创建这类工单级运行没有会话可续接，只能回工单重新发起
+            r.ticket_key &&
+            ['stopped', 'failed', 'orphaned'].includes(r.status) && (
+              <a className="btn" href={`#/ticket/${r.ticket_key}`}>
+                <Icon name="resume" size={14} />
+                回工单重新发起
+              </a>
+            )
           ) : (
             ['stopped', 'failed', 'orphaned'].includes(r.status) && (
               <button className="btn" onClick={() => void resume(false)}>
@@ -277,7 +286,7 @@ export function RunsPage({ id }: { id?: string }) {
               </button>
             )
           )}
-          {!active && r.status !== 'queued' && (
+          {r.task_id && !active && r.status !== 'queued' && (
             <button className="btn" onClick={() => void resume(true)}>
               <Icon name="msg" size={14} />
               追加指令

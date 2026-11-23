@@ -1268,7 +1268,9 @@ export function SettingsPage({
             <div className="srow" key={a.kind}>
               <div>
                 <b>{AGENTS[a.kind]?.name ?? a.kind}</b>
-                <p className="mono">{a.installed ? (a.path ?? '内置') : '未检测到'}</p>
+                <p className="mono">
+                  {a.installed ? (a.path ?? '内置') : AGENTS[a.kind]?.install ? `未检测到命令行版，安装：${AGENTS[a.kind].install}` : '未检测到'}
+                </p>
               </div>
               <div className="sctl">
                 <span className={`tag ${a.installed ? 'moss' : 'amber'}`}>

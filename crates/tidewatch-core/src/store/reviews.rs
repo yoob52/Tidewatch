@@ -42,10 +42,8 @@ pub struct Issue {
 /// 从 Agent 的最后一条消息里取出 JSON 对象：允许包在 ```json 代码块里，或前后带说明文字。
 pub fn extract_json(text: &str) -> Result<Value> {
     let text = text.trim();
-    if let Ok(v) = serde_json::from_str::<Value>(text) {
-        if v.is_object() {
-            return Ok(v);
-        }
+    if let Some(v) = parse_object(text) {
+        return Ok(v);
     }
     // 代码块：取最后一个能解析的
     let mut rest = text;
@@ -56,11 +54,9 @@ pub fn extract_json(text: &str) -> Result<Value> {
         let block = &after[..j];
         let body = block.split_once('\n').map(|(_, b)| b).unwrap_or(block);
         for candidate in [body, block] {
-            if let Ok(v) = serde_json::from_str::<Value>(candidate.trim()) {
-                if v.is_object() {
-                    found = Some(v);
-                    break;
-                }
+            if let Some(v) = parse_object(candidate.trim()) {
+                found = Some(v);
+                break;
             }
         }
         rest = &after[j + 3..];
@@ -71,16 +67,61 @@ pub fn extract_json(text: &str) -> Result<Value> {
     // 第一个 { 到最后一个 }
     if let (Some(i), Some(j)) = (text.find('{'), text.rfind('}')) {
         if i < j {
-            if let Ok(v) = serde_json::from_str::<Value>(&text[i..=j]) {
-                if v.is_object() {
-                    return Ok(v);
-                }
+            if let Some(v) = parse_object(&text[i..=j]) {
+                return Ok(v);
             }
         }
     }
     Err(Error::invalid(
         "Agent 的输出里没有找到约定格式的 JSON。可以重试，或换一个模型。",
     ))
+}
+
+/// 解析成 JSON 对象；失败时再试一次把字符串里没转义的引号补上转义。
+fn parse_object(s: &str) -> Option<Value> {
+    let parse = |t: &str| {
+        serde_json::from_str::<Value>(t)
+            .ok()
+            .filter(Value::is_object)
+    };
+    parse(s).or_else(|| parse(&escape_stray_quotes(s)))
+}
+
+/// 模型常在中文字符串里直接用半角引号（`可明确写"仅支持 number"。`）。
+/// 字符串里的 `"` 后面（跳过空白）不是 `,` `"` `:` `}` `]` 或结尾时，当作内容转义掉。
+fn escape_stray_quotes(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut in_str = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_str && c == '\\' {
+            out.push(c);
+            if let Some(&n) = chars.get(i + 1) {
+                out.push(n);
+            }
+            i += 2;
+            continue;
+        }
+        if c == '"' {
+            if !in_str {
+                in_str = true;
+            } else {
+                let next = chars[i + 1..].iter().find(|c| !c.is_whitespace());
+                // 紧挨着的 `""` 是引用短语收尾，中间隔了空白的是漏了逗号
+                let quoted_tail = chars.get(i + 1) == Some(&'"');
+                if !quoted_tail && matches!(next, None | Some(',' | '"' | ':' | '}' | ']')) {
+                    in_str = false;
+                } else {
+                    out.push('\\');
+                }
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 fn str_of(v: &Value, key: &str) -> String {
@@ -675,6 +716,21 @@ mod tests {
   "acceptance_criteria_draft": ["叠加后金额不为负", " "]
 }
 ```"#;
+
+    #[test]
+    fn repairs_unescaped_quotes_inside_strings() {
+        let raw = "```json
+{\"issues\": [{\"question\": \"可明确写\"仅支持 number\"。\", \"n\": 1}]}
+```";
+        let v = extract_json(raw).unwrap();
+        assert_eq!(v["issues"][0]["question"], "可明确写\"仅支持 number\"。");
+        assert_eq!(v["issues"][0]["n"], 1);
+        assert!(extract_json("没有 JSON").is_err());
+        let v = extract_json(r#"{"s": "写成"xxx"", "n": 1}"#).unwrap();
+        assert_eq!(v["s"], "写成\"xxx\"");
+        // 漏了逗号不能把两条合成一条
+        assert!(extract_json(r#"{"c": ["a" "b"]}"#).is_err());
+    }
 
     #[test]
     fn extracts_json_from_fenced_or_bare_output() {
