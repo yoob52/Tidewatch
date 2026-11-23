@@ -120,6 +120,8 @@ pub struct RunSpec {
     pub images: Vec<PathBuf>,
     /// 观澜自己的 MCP 服务（委派、提问）；不支持 MCP 的 Agent 忽略它。
     pub mcp: Option<McpServer>,
+    /// 让支持的 Agent 用流式输入启动，运行中可以接收追加指令（Q16 交互通道）。
+    pub interactive: bool,
 }
 
 /// 注入给 Agent 的 MCP 服务：地址进配置，令牌只放在环境变量里。
@@ -132,6 +134,12 @@ pub struct McpServer {
 }
 
 /// MCP 服务在各 Agent 配置里的名字。
+/// Claude Code `--input-format stream-json` 的一条用户消息（带换行）。
+pub fn stream_json_user_line(text: &str) -> String {
+    let v = serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":text}]}});
+    format!("{v}\n")
+}
+
 pub const MCP_SERVER_NAME: &str = "tidewatch";
 
 /// 可直接交给 `std::process::Command` 的命令描述。
@@ -141,8 +149,9 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub cwd: PathBuf,
-    /// 写入 stdin 后关闭。
+    /// 写入 stdin 后关闭；`interactive` 时它是第一条流式消息，stdin 保持打开以便追加指令。
     pub stdin: String,
+    pub interactive: bool,
 }
 
 impl CommandSpec {
@@ -276,6 +285,10 @@ pub trait AgentAdapter: Send + Sync {
     fn build_command(&self, spec: &RunSpec) -> Result<CommandSpec>;
     fn parser(&self) -> Box<dyn EventParser>;
     /// 启动前在工作目录里要做的准备（写提示词文件等）；多数 Agent 不需要。
+    /// 运行中追加一条指令时写进 stdin 的一行；`None` 表示这个 Agent 不支持运行中引导。
+    fn steer_message(&self, _text: &str) -> Option<String> {
+        None
+    }
     fn prepare(&self, _spec: &RunSpec) -> Result<()> {
         Ok(())
     }

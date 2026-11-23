@@ -457,6 +457,37 @@ export interface Run {
   diff_stat: FileStat[];
 }
 
+/** 追加指令的方式：运行中引导 / 打断重开 / 排到这轮之后。 */
+export type FollowupMode = 'steer' | 'restart' | 'queue';
+export interface FollowupResult {
+  outcome: 'steered' | 'queued' | 'restarting' | 'started';
+  run_id: string | null;
+}
+
+export type SkillTarget = 'claude_code' | 'codex' | 'shared';
+export interface InstalledSkill {
+  name: string;
+  description: string;
+  target: SkillTarget;
+  dir: string;
+  files: number;
+}
+export interface MarketSkill {
+  id: string;
+  source: string;
+  skillId: string;
+  name: string;
+  installs: number;
+}
+export interface SkillPreview {
+  name: string;
+  description: string;
+  source: string;
+  path: string;
+  content: string;
+  files: string[];
+}
+
 export interface RunRow extends Run {
   ticket_key: string | null;
   ticket_title: string | null;
@@ -898,6 +929,18 @@ export const api = {
   runList: (limit?: number) => invoke<RunRow[]>('run_list', { limit: limit ?? null }),
   runGet: (id: string, after?: number) => invoke<RunDetail>('run_get', { id, after: after ?? null }),
   runStop: (id: string) => invoke<void>('run_stop', { id }),
+  runFollowup: (id: string, text: string, mode: FollowupMode) =>
+    invoke<FollowupResult>('run_followup', { id, text, mode }),
+  runCanSteer: (id: string) => invoke<boolean>('run_can_steer', { id }),
+
+  skillsInstalled: () => invoke<InstalledSkill[]>('skills_installed'),
+  skillsMarket: (query: string) => invoke<MarketSkill[]>('skills_market', { query }),
+  skillsPreview: (source: string, skillId: string) => invoke<SkillPreview>('skills_preview', { source, skillId }),
+  skillsInstall: (source: string, skillId: string, targets: SkillTarget[]) =>
+    invoke<string[]>('skills_install', { source, skillId, targets }),
+  skillsRemove: (target: SkillTarget, name: string) => invoke<void>('skills_remove', { target, name }),
+  skillsCreate: (targets: SkillTarget[], name: string, description: string, body: string) =>
+    invoke<void>('skills_create', { targets, name, description, body }),
   readLog: (path: string) => invoke<string>('read_log', { path }),
 
   statsGet: () => invoke<Stats>('stats_get'),

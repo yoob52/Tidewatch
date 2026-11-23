@@ -69,6 +69,7 @@ impl AgentAdapter for CodexAdapter {
             env: spec.env.clone(),
             cwd: spec.cwd.clone(),
             stdin: spec.prompt.clone(),
+            interactive: false,
         })
     }
 

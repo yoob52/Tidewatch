@@ -101,6 +101,7 @@ impl AgentAdapter for AiderAdapter {
                 .collect(),
             cwd: spec.cwd.clone(),
             stdin: String::new(),
+            interactive: false,
         })
     }
 

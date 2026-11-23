@@ -69,14 +69,26 @@ impl AgentAdapter for ClaudeAdapter {
             }}});
             args.extend(["--mcp-config".into(), config.to_string()]);
         }
+        if spec.interactive {
+            args.extend(["--input-format".into(), "stream-json".into()]);
+        }
         args.extend(spec.extra_args.iter().cloned());
         Ok(CommandSpec {
             program: self.resolve_binary(spec)?,
             args,
             env: spec.env.clone(),
             cwd: spec.cwd.clone(),
-            stdin: spec.prompt.clone(),
+            stdin: if spec.interactive {
+                super::stream_json_user_line(&spec.prompt)
+            } else {
+                spec.prompt.clone()
+            },
+            interactive: spec.interactive,
         })
+    }
+
+    fn steer_message(&self, text: &str) -> Option<String> {
+        Some(super::stream_json_user_line(text))
     }
 
     fn parser(&self) -> Box<dyn EventParser> {

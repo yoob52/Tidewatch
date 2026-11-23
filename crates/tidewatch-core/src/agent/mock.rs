@@ -53,8 +53,17 @@ impl AgentAdapter for MockAdapter {
             args,
             env,
             cwd: spec.cwd.clone(),
-            stdin: spec.prompt.clone(),
+            stdin: if spec.interactive {
+                super::stream_json_user_line(&spec.prompt)
+            } else {
+                spec.prompt.clone()
+            },
+            interactive: spec.interactive,
         })
+    }
+
+    fn steer_message(&self, text: &str) -> Option<String> {
+        Some(super::stream_json_user_line(text))
     }
 
     fn parser(&self) -> Box<dyn EventParser> {

@@ -17,6 +17,7 @@ use tidewatch_core::git;
 use tidewatch_core::prompt;
 use tidewatch_core::provider;
 use tidewatch_core::secrets;
+use tidewatch_core::skills::{self, SkillTarget};
 use tidewatch_core::store::members::{self, Member};
 use tidewatch_core::store::questions::{self, Question};
 use tidewatch_core::store::workflows;
@@ -1201,6 +1202,69 @@ fn run_stop(state: State, id: String) -> CmdResult<()> {
     state.engine.stop_run(&id).map_err(err)
 }
 
+/// 运行中或刚结束的 Run 追加一条指令：引导 / 打断重开 / 排队。
+#[tauri::command]
+fn run_followup(
+    state: State,
+    id: String,
+    text: String,
+    mode: tidewatch_core::engine::FollowupMode,
+) -> CmdResult<tidewatch_core::engine::FollowupResult> {
+    state.engine.send_followup(&id, &text, mode).map_err(err)
+}
+
+#[tauri::command]
+fn run_can_steer(state: State, id: String) -> bool {
+    state.engine.can_steer(&id)
+}
+
+#[tauri::command]
+fn skills_installed() -> CmdResult<Vec<skills::InstalledSkill>> {
+    skills::list_installed().map_err(err)
+}
+
+#[tauri::command]
+async fn skills_market(query: String) -> CmdResult<Vec<skills::MarketSkill>> {
+    tauri::async_runtime::spawn_blocking(move || skills::market_search(&query).map_err(err))
+        .await
+        .map_err(err)?
+}
+
+#[tauri::command]
+async fn skills_preview(source: String, skill_id: String) -> CmdResult<skills::SkillPreview> {
+    tauri::async_runtime::spawn_blocking(move || skills::preview(&source, &skill_id).map_err(err))
+        .await
+        .map_err(err)?
+}
+
+#[tauri::command]
+async fn skills_install(
+    source: String,
+    skill_id: String,
+    targets: Vec<SkillTarget>,
+) -> CmdResult<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        skills::install(&source, &skill_id, &targets).map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+fn skills_remove(target: SkillTarget, name: String) -> CmdResult<()> {
+    skills::remove(target, &name).map_err(err)
+}
+
+#[tauri::command]
+fn skills_create(
+    targets: Vec<SkillTarget>,
+    name: String,
+    description: String,
+    body: String,
+) -> CmdResult<()> {
+    skills::create(&targets, &name, &description, &body).map_err(err)
+}
+
 /// 读取检查命令的输出日志；只允许读数据目录下 `logs/` 里的文件。
 #[tauri::command]
 fn read_log(state: State, path: String) -> CmdResult<String> {
@@ -1507,6 +1571,14 @@ pub fn run() {
             run_list,
             run_get,
             run_stop,
+            run_followup,
+            run_can_steer,
+            skills_installed,
+            skills_market,
+            skills_preview,
+            skills_install,
+            skills_remove,
+            skills_create,
             read_log,
             stats_get
         ])

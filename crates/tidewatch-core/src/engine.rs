@@ -212,6 +212,11 @@ struct Inner {
     cfg: EngineConfig,
     listener: Listener,
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// 运行中 Agent 的追加指令收件箱（只有支持流式输入的 Agent 才有）。
+    steers: Mutex<HashMap<String, Arc<crate::runner::SteerInbox>>>,
+    /// 排到这轮结束后、以续接会话方式开始下一轮的追加指令。
+    /// run_id → (排队的追加指令, 是否为打断重开)
+    followups: Mutex<HashMap<String, (Vec<String>, bool)>>,
     /// 合并会动项目主检出的索引和 HEAD，同一时间只做一个。
     merging: Mutex<()>,
     /// 本地接口开着时的地址和签发运行令牌用的密钥。
@@ -260,6 +265,8 @@ impl Engine {
             cfg,
             listener,
             cancels: Mutex::new(HashMap::new()),
+            steers: Mutex::new(HashMap::new()),
+            followups: Mutex::new(HashMap::new()),
             merging: Mutex::new(()),
             api: Mutex::new(None),
             wake: (Mutex::new(false), Condvar::new()),
@@ -1101,9 +1108,12 @@ pub use ticket_flow::{CodeReviewOptions, Finalized};
 mod api_flow;
 #[path = "engine_compare.rs"]
 mod compare_flow;
+#[path = "engine_followup.rs"]
+mod followup_flow;
 #[path = "engine_smart.rs"]
 mod smart_flow;
 pub use api_flow::{ApiEndpoint, DelegateInput, RUN_TOKEN_ENV};
+pub use followup_flow::{FollowupMode, FollowupResult};
 pub use smart_flow::{apply_analysis, SmartAnalysis};
 
 struct Finished {
@@ -1311,6 +1321,7 @@ impl Inner {
                 .name(format!("tw-run-{}", run.id))
                 .spawn(move || {
                     me.execute(&run, &cancel);
+                    me.start_followups(&run);
                     // 调用方结束了，它委派出去还没跑完的也不用再跑
                     me.stop_delegated(&run.id);
                     me.cancels.lock().unwrap().remove(&run.id);
@@ -1350,6 +1361,7 @@ impl Inner {
         };
         // 检查没过：还有自动修复的次数就不交给人，让 Agent 接着修
         let auto_fix = if fin.status == "succeeded"
+            && !self.has_followups(&run.id)
             && !fin.failed_checks.is_empty()
             && !cancel.load(Ordering::SeqCst)
         {
@@ -1488,6 +1500,7 @@ impl Inner {
             }
         }
         if (task_status == "review" || (auto_fix.is_some() && !fixing))
+            && !self.has_followups(&run.id)
             && settings::get(&lock(&self.db)).is_ok_and(|s| s.auto_cross_review)
         {
             if let Err(e) = self.start_code_review(&task_id, &Default::default()) {
@@ -1879,6 +1892,7 @@ impl Inner {
             },
             ..Default::default()
         };
+        spec.interactive = adapter(kind).steer_message("").is_some();
         if let Some(p) = &provider {
             let secret = match &p.secret_ref {
                 Some(name) => self.secrets.get(name)?,
@@ -1923,7 +1937,16 @@ impl Inner {
             timeout: (st.run_timeout_minutes > 0)
                 .then(|| Duration::from_secs(st.run_timeout_minutes as u64 * 60)),
             abort: Arc::new(AtomicBool::new(false)),
+            steer: spec.interactive.then(|| {
+                let inbox = Arc::new(crate::runner::SteerInbox::default());
+                self.steers
+                    .lock()
+                    .unwrap()
+                    .insert(run.id.clone(), inbox.clone());
+                inbox
+            }),
         };
+        let steer_inbox = opts.steer.clone();
         let abort = opts.abort.clone();
         // 护栏：预算、卡住、危险命令。停下时的原因留给收尾写进 Run
         let pricing = provider.as_ref().and_then(|p| p.pricing.clone());
@@ -2072,7 +2095,14 @@ impl Inner {
                 }
             }
             RunnerEvent::Stderr(line) => self.log(&run.id, "stderr", json!({ "text": line })),
+            RunnerEvent::Steered(text) => self.log(&run.id, "steer", json!({ "text": text })),
         });
+        if let Some(inbox) = steer_inbox {
+            self.steers.lock().unwrap().remove(&run.id);
+            for text in inbox.take_left() {
+                self.queue_followup(&run.id, &text, "queue");
+            }
+        }
         // 这一轮用的图片副本不再需要；原图在 attachments/ 里
         let _ = std::fs::remove_dir_all(st.workspace(&self.cfg.data_dir).join("tmp").join(&run.id));
         let outcome = match outcome {

@@ -83,6 +83,7 @@ impl AgentAdapter for OpenCodeAdapter {
             env,
             cwd: spec.cwd.clone(),
             stdin: spec.prompt.clone(),
+            interactive: false,
         })
     }
 
