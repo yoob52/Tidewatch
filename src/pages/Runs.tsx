@@ -1,3 +1,4 @@
+import { tr } from '../lib/i18n';
 // 运行面板：左列表（进行中置顶），右日志时间线，底部状态条
 import { useEffect, useRef, useState } from 'react';
 import { api, onEngine, type RunDetail, type RunEvent, type RunRow } from '../lib/api';
@@ -47,11 +48,11 @@ function LogItem({ e, start, raw }: { e: RunEvent; start: number | null; raw: bo
   if (raw) return tool(e.type, '', JSON.stringify(p, null, 2));
   switch (e.type) {
     case 'worktree':
-      return sys(`worktree ${str(p.path)} · 分支 ${str(p.branch)}`);
+      return sys(tr('worktree {0} · 分支 {1}', str(p.path), str(p.branch)));
     case 'spawned':
-      return tool('启动 Agent', `pid ${str(p.pid)}`, str(p.command));
+      return tool(tr('启动 Agent'), `pid ${str(p.pid)}`, str(p.command));
     case 'session_started':
-      return sys(`会话 ${str(p.session_id).slice(0, 8)} · 模型 ${str(p.model) || '默认'}`);
+      return sys(tr('会话 {0} · 模型 {1}', str(p.session_id).slice(0, 8), str(p.model) || tr('默认')));
     case 'text':
       return (
         <div className="logi msg">
@@ -62,18 +63,18 @@ function LogItem({ e, start, raw }: { e: RunEvent; start: number | null; raw: bo
         </div>
       );
     case 'thinking':
-      return tool('思考', '', str(p.text));
+      return tool(tr('思考'), '', str(p.text));
     case 'tool_call':
-      return tool(str(p.name) || '工具', str(p.input).slice(0, 120), JSON.stringify(p.input, null, 2), !!p.danger, p.danger ? `危险：${str(p.danger)}` : undefined);
+      return tool(str(p.name) || tr('工具'), str(p.input).slice(0, 120), JSON.stringify(p.input, null, 2), !!p.danger, p.danger ? tr('危险：{0}', str(p.danger)) : undefined);
     case 'guard':
       return sys(str(p.message), true);
     case 'tool_result':
-      return tool('工具结果', '', str(p.output), p.is_error === true, p.is_error === true ? '出错' : undefined);
+      return tool(tr('工具结果'), '', str(p.output), p.is_error === true, p.is_error === true ? tr('出错') : undefined);
     case 'command':
-      if (p.done !== true) return tool('运行', str(p.command), p.danger ? str(p.command) : '', !!p.danger, p.danger ? `危险：${str(p.danger)}` : undefined);
-      return tool('运行', str(p.command), str(p.output), p.exit_code !== 0 && p.exit_code != null, p.exit_code == null ? undefined : `退出码 ${str(p.exit_code)}`);
+      if (p.done !== true) return tool(tr('运行'), str(p.command), p.danger ? str(p.command) : '', !!p.danger, p.danger ? tr('危险：{0}', str(p.danger)) : undefined);
+      return tool(tr('运行'), str(p.command), str(p.output), p.exit_code !== 0 && p.exit_code != null, p.exit_code == null ? undefined : tr('退出码 {0}', str(p.exit_code)));
     case 'file_change':
-      return tool({ add: '新建', delete: '删除' }[str(p.kind)] ?? '修改', str(p.path), '');
+      return tool({ add: tr('新建'), delete: tr('删除') }[str(p.kind)] ?? tr('修改'), str(p.path), '');
     case 'usage':
       return null;
     case 'finished':
@@ -90,20 +91,20 @@ function LogItem({ e, start, raw }: { e: RunEvent; start: number | null; raw: bo
     case 'stderr':
       return tool('stderr', '', str(p.text), true);
     case 'commit':
-      return sys(`已提交 ${str(p.commit).slice(0, 8)}：${str(p.message)}`);
+      return sys(tr('已提交 {0}：{1}', str(p.commit).slice(0, 8), str(p.message)));
     case 'check_started':
-      return sys(`开始检查 ${str(p.name)}：${str(p.command)}`);
+      return sys(tr('开始检查 {0}：{1}', str(p.name), str(p.command)));
     case 'check_finished':
       return tool(
-        `检查 ${str(p.name)}`,
+        tr('检查 {0}', str(p.name)),
         str(p.command),
         str(p.tail),
         p.exit_code !== 0,
-        p.timed_out === true ? '超时' : `退出码 ${str(p.exit_code)}`,
+        p.timed_out === true ? tr('超时') : tr('退出码 {0}', str(p.exit_code)),
       );
     case 'status':
       return sys(
-        { finalizing: 'Agent 已结束，正在提交并运行检查', succeeded: '运行完成', failed: '运行失败', stopped: '已停止', orphaned: '观澜退出时这次运行被中断' }[
+        { finalizing: tr('Agent 已结束，正在提交并运行检查'), succeeded: tr('运行完成'), failed: tr('运行失败'), stopped: tr('已停止'), orphaned: tr('观澜退出时这次运行被中断') }[
           str(p.status)
         ] ?? str(p.status),
         p.status === 'failed',
@@ -120,9 +121,9 @@ function RunItem({ r, on, now }: { r: RunRow; on: boolean; now: number }) {
       <div className="row">
         <AgentTag agent={r.agent} glyphOnly />
         <span className="key">{r.ticket_key ?? '—'}</span>
-        <span className="tag line">第 {r.number} 次</span>
+        <span className="tag line">{tr('第')} {r.number} {tr('次')}</span>
         <span className="grow" />
-        <span className={`mono ${active ? 't-live' : 'dim'}`}>{r.status === 'queued' ? '排队' : fmtDur(runSeconds(r, now))}</span>
+        <span className={`mono ${active ? 't-live' : 'dim'}`}>{r.status === 'queued' ? tr('排队') : fmtDur(runSeconds(r, now))}</span>
       </div>
       <b className="ell">{runTitle(r)}</b>
       <div className="row sub">
@@ -194,9 +195,9 @@ export function RunsPage({ id }: { id?: string }) {
       <div className="page">
         <div className="card">
           {id ? (
-            <Empty icon="runs" title="正在读取这轮运行" body="如果一直没有出现，这轮运行可能已经随工单删除。" />
+            <Empty icon="runs" title={tr('正在读取这轮运行')} body={tr('如果一直没有出现，这轮运行可能已经随工单删除。')} />
           ) : (
-            <Empty icon="runs" title="还没有运行" body="在工单的「子任务」页开始一个子任务，运行会出现在这里。" />
+            <Empty icon="runs" title={tr('还没有运行')} body={tr('在工单的「子任务」页开始一个子任务，运行会出现在这里。')} />
           )}
         </div>
       </div>
@@ -209,14 +210,14 @@ export function RunsPage({ id }: { id?: string }) {
   const start = parseTs(r.started_at ?? r.queued_at);
 
   const stop = async () => {
-    if (r.status !== 'queued' && !(await ui.confirm('停止运行', '会结束 Agent 的整个进程树。已做的改动留在 worktree 里，之后可以恢复原会话继续。', '停止', true))) return;
-    if ((await ui.attempt(api.runStop(r.id), r.status === 'queued' ? '已移出队列' : '正在停止…')) !== undefined) void reload();
+    if (r.status !== 'queued' && !(await ui.confirm(tr('停止运行'), tr('会结束 Agent 的整个进程树。已做的改动留在 worktree 里，之后可以恢复原会话继续。'), tr('停止'), true))) return;
+    if ((await ui.attempt(api.runStop(r.id), r.status === 'queued' ? tr('已移出队列') : tr('正在停止…'))) !== undefined) void reload();
   };
   const resume = async (ask: boolean) => {
     if (!r.task_id) return;
     let instruction: string | undefined;
     if (ask) {
-      const v = await ui.prompt('追加指令', '以续接原会话 + 新指令的方式开始一次新的运行。', '例如：把即将过期的角标改成橙色', '发送', true);
+      const v = await ui.prompt(tr('追加指令'), tr('以续接原会话 + 新指令的方式开始一次新的运行。'), tr('例如：把即将过期的角标改成橙色'), tr('发送'), true);
       if (!v) return;
       instruction = v;
     }
@@ -229,14 +230,14 @@ export function RunsPage({ id }: { id?: string }) {
     <div className="page flush runs">
       <aside className="rlist">
         <div className="rl-h">
-          <span>进行中</span>
+          <span>{tr('进行中')}</span>
           <i>{act.length}</i>
         </div>
         {act.map((x) => (
           <RunItem key={x.id} r={x} on={x.id === r.id} now={now} />
         ))}
         <div className="rl-h">
-          <span>历史</span>
+          <span>{tr('历史')}</span>
           <i>{hist.length}</i>
         </div>
         {hist.map((x) => (
@@ -252,7 +253,7 @@ export function RunsPage({ id }: { id?: string }) {
                   {r.ticket_key}
                 </a>
               )}
-              <span className="tag line">第 {r.number} 次</span>
+              <span className="tag line">{tr('第')} {r.number} {tr('次')}</span>
               <RunStatusTag status={r.status} />
               {r.permission && (
                 <span className="tag line">
@@ -260,14 +261,14 @@ export function RunsPage({ id }: { id?: string }) {
                   {r.permission}
                 </span>
               )}
-              {r.resume_session_id && <span className="dim">续接会话 {r.resume_session_id.slice(0, 8)}</span>}
+              {r.resume_session_id && <span className="dim">{tr('续接会话')} {r.resume_session_id.slice(0, 8)}</span>}
             </div>
             <h2>{runTitle(r)}</h2>
           </div>
           {active || r.status === 'queued' ? (
             <button className={`btn ${active ? 'danger' : ''}`} disabled={r.status === 'stopping'} onClick={() => void stop()}>
               <Icon name="stop" size={14} />
-              {r.status === 'queued' ? '取消排队' : '停止'}
+              {r.status === 'queued' ? tr('取消排队') : tr('停止')}
             </button>
           ) : !r.task_id ? (
             // 预审、拆分、智能创建这类工单级运行没有会话可续接，只能回工单重新发起
@@ -275,26 +276,26 @@ export function RunsPage({ id }: { id?: string }) {
             ['stopped', 'failed', 'orphaned'].includes(r.status) && (
               <a className="btn" href={`#/ticket/${r.ticket_key}`}>
                 <Icon name="resume" size={14} />
-                回工单重新发起
+                {tr('回工单重新发起')}
               </a>
             )
           ) : (
             ['stopped', 'failed', 'orphaned'].includes(r.status) && (
               <button className="btn" onClick={() => void resume(false)}>
                 <Icon name="resume" size={14} />
-                恢复
+                {tr('恢复')}
               </button>
             )
           )}
           {r.task_id && !active && r.status !== 'queued' && (
             <button className="btn" onClick={() => void resume(true)}>
               <Icon name="msg" size={14} />
-              追加指令
+              {tr('追加指令')}
             </button>
           )}
           <button className={`btn ghost ${raw ? 'on' : ''}`} onClick={() => setRaw(!raw)}>
             <Icon name="code" size={14} />
-            {raw ? '时间线' : '原始事件'}
+            {raw ? tr('时间线') : tr('原始事件')}
           </button>
         </header>
         <div
@@ -321,7 +322,7 @@ export function RunsPage({ id }: { id?: string }) {
           {r.status === 'queued' && (
             <div className="logi msg">
               <time />
-              <div className="bubble">等待空闲的并发名额。</div>
+              <div className="bubble">{tr('等待空闲的并发名额。')}</div>
             </div>
           )}
           {detail?.events
@@ -342,7 +343,7 @@ export function RunsPage({ id }: { id?: string }) {
               <time />
               <div>
                 <Ripple />
-                <span>{r.status === 'finalizing' ? '提交并运行检查' : r.status === 'stopping' ? '正在停止' : 'Agent 工作中'}</span>
+                <span>{r.status === 'finalizing' ? tr('提交并运行检查') : r.status === 'stopping' ? tr('正在停止') : tr('Agent 工作中')}</span>
               </div>
             </div>
           )}
@@ -352,12 +353,12 @@ export function RunsPage({ id }: { id?: string }) {
             <AgentTag agent={r.agent} />
           </span>
           <span>
-            <i>模型</i>
-            {r.model ?? '默认'}
+            <i>{tr('模型')}</i>
+            {r.model ?? tr('默认')}
           </span>
           <span>
             <i>Provider</i>
-            {providers.find((p) => p.id === r.provider_id)?.name ?? '本机登录态'}
+            {providers.find((p) => p.id === r.provider_id)?.name ?? tr('本机登录态')}
           </span>
           <span title={r.agent_session_id ?? undefined}>
             <i>session</i>
@@ -365,25 +366,25 @@ export function RunsPage({ id }: { id?: string }) {
           </span>
           <span className="grow" />
           <span>
-            <i>耗时</i>
+            <i>{tr('耗时')}</i>
             <b>{fmtDur(runSeconds(r, now))}</b>
           </span>
           <span>
-            <i>输入</i>
+            <i>{tr('输入')}</i>
             <b>{fmtTok(r.input_tokens)}</b>
           </span>
           {r.cache_tokens > 0 && (
-            <span title="从缓存读取的输入，不计入「输入」">
-              <i>缓存读取</i>
+            <span title={tr('从缓存读取的输入，不计入「输入」')}>
+              <i>{tr('缓存读取')}</i>
               <b>{fmtTok(r.cache_tokens)}</b>
             </span>
           )}
           <span>
-            <i>输出</i>
+            <i>{tr('输出')}</i>
             <b>{fmtTok(r.output_tokens)}</b>
           </span>
-          <span title={r.cost_source === 'estimated' ? '按 Provider 价格估算' : r.cost_source === 'reported' ? 'Agent 自报' : undefined}>
-            <i>费用{r.cost_source === 'estimated' ? '（估）' : ''}</i>
+          <span title={r.cost_source === 'estimated' ? tr('按 Provider 价格估算') : r.cost_source === 'reported' ? tr('Agent 自报') : undefined}>
+            <i>{tr('费用')}{r.cost_source === 'estimated' ? tr('（估）') : ''}</i>
             <b>{fmtCost(r.cost_usd)}</b>
           </span>
         </footer>

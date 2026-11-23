@@ -1,3 +1,4 @@
+import { tr } from '../lib/i18n';
 import { useEffect, useState } from 'react';
 import { api, type TicketSummary } from '../lib/api';
 import { useData } from '../lib/data';
@@ -5,7 +6,7 @@ import { Icon } from '../lib/Icon';
 import { Empty, Prio, Ripple, STAGE_NAME, Seg, Stamp, fmtAgo, go, stageTone } from '../lib/ui';
 import { TaskChips } from './Board';
 
-const SOURCE: Record<string, string> = { manual: '手动', file: '文件导入' };
+const SOURCE: Record<string, string> = { manual: tr('手动'), file: tr('文件导入') };
 
 export function TicketsPage() {
   const { tickets } = useData();
@@ -48,11 +49,11 @@ export function TicketsPage() {
           value={filter}
           onChange={setFilter}
           options={[
-            ['all', '全部'],
-            ['mine', '等我处理'],
-            ['running', '运行中'],
-            ['done', '已完成'],
-            ['cancelled', '已取消'],
+            ['all', tr('全部')],
+            ['mine', tr('等我处理')],
+            ['running', tr('运行中')],
+            ['done', tr('已完成')],
+            ['cancelled', tr('已取消')],
           ]}
         />
         <label className="search" style={{ marginLeft: 8, cursor: 'text' }}>
@@ -60,24 +61,24 @@ export function TicketsPage() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索标题、正文或编号"
-            aria-label="搜索工单"
+            placeholder={tr('搜索标题、正文或编号')}
+            aria-label={tr('搜索工单')}
             style={{ border: 0, outline: 0, background: 'transparent', color: 'inherit', font: 'inherit', width: 220 }}
           />
         </label>
         <span className="grow" />
-        <span className="dim">{rows.length} 张工单</span>
+        <span className="dim">{rows.length} {tr('张工单')}</span>
       </div>
       <div className="card" style={{ overflow: 'hidden' }}>
         {rows.length === 0 ? (
           <Empty
             icon="list"
-            title={query.trim() ? '没有匹配的工单' : tickets.length ? '这个筛选下没有工单' : '还没有工单'}
-            body={tickets.length ? undefined : '把需求或 Bug 描述粘贴进来，就能创建第一张工单。'}
+            title={query.trim() ? tr('没有匹配的工单') : tickets.length ? tr('这个筛选下没有工单') : tr('还没有工单')}
+            body={tickets.length ? undefined : tr('把需求或 Bug 描述粘贴进来，就能创建第一张工单。')}
           >
             {!tickets.length && (
               <a className="btn primary" href="#/new">
-                新建工单
+                {tr('新建工单')}
               </a>
             )}
           </Empty>
@@ -85,13 +86,13 @@ export function TicketsPage() {
           <table className="tbl">
             <thead>
               <tr>
-                <th style={{ width: 74 }}>编号</th>
-                <th>标题</th>
-                <th>状态</th>
-                <th>优先级</th>
-                <th>子任务</th>
-                <th>来源</th>
-                <th style={{ textAlign: 'right' }}>更新</th>
+                <th style={{ width: 74 }}>{tr('编号')}</th>
+                <th>{tr('标题')}</th>
+                <th>{tr('状态')}</th>
+                <th>{tr('优先级')}</th>
+                <th>{tr('子任务')}</th>
+                <th>{tr('来源')}</th>
+                <th style={{ textAlign: 'right' }}>{tr('更新')}</th>
               </tr>
             </thead>
             <tbody>

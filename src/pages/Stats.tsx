@@ -1,3 +1,4 @@
+import { tr } from '../lib/i18n';
 import { useData } from '../lib/data';
 import { AgentTag, Empty, fmtCost, fmtDur, fmtTok } from '../lib/ui';
 
@@ -7,7 +8,7 @@ export function StatsPage() {
     return (
       <div className="page">
         <div className="card">
-          <Empty icon="chart" title="还没有数据" body="创建工单并运行子任务后，这里会统计费用、Token 和各 Agent 的表现。" />
+          <Empty icon="chart" title={tr('还没有数据')} body={tr('创建工单并运行子任务后，这里会统计费用、Token 和各 Agent 的表现。')} />
         </div>
       </div>
     );
@@ -29,53 +30,53 @@ export function StatsPage() {
     <div className="page">
       <div className="kpis big">
         <div>
-          <span>完成工单</span>
+          <span>{tr('完成工单')}</span>
           <b>{stats.tickets_done}</b>
-          <small>共 {stats.tickets_total} 张</small>
+          <small>{tr('共')} {stats.tickets_total} {tr('张')}</small>
         </div>
         <div>
           <span>
-            平均周期 <i>创建 → 完成</i>
+            {tr('平均周期')} <i>{tr('创建 → 完成')}</i>
           </span>
           <b>
             {stats.avg_cycle_hours == null ? '—' : stats.avg_cycle_hours < 48 ? stats.avg_cycle_hours.toFixed(1) : (stats.avg_cycle_hours / 24).toFixed(1)}
-            {stats.avg_cycle_hours != null && <em>{stats.avg_cycle_hours < 48 ? '小时' : '天'}</em>}
+            {stats.avg_cycle_hours != null && <em>{stats.avg_cycle_hours < 48 ? tr('小时') : tr('天')}</em>}
           </b>
         </div>
         <div>
-          <span>运行次数</span>
+          <span>{tr('运行次数')}</span>
           <b>{stats.runs_total}</b>
         </div>
         <div>
           <span>Token</span>
           <b>{fmtTok(stats.input_tokens + stats.cache_tokens + stats.output_tokens)}</b>
           <small>
-            输入 {fmtTok(stats.input_tokens)} · 缓存读取 {fmtTok(stats.cache_tokens)} · 输出 {fmtTok(stats.output_tokens)}
+            {tr('输入')} {fmtTok(stats.input_tokens)} {tr('· 缓存读取')} {fmtTok(stats.cache_tokens)} {tr('· 输出')} {fmtTok(stats.output_tokens)}
           </small>
         </div>
         <div>
-          <span>累计费用</span>
+          <span>{tr('累计费用')}</span>
           <b>{fmtCost(stats.cost_usd)}</b>
-          <small>Agent 自报，或按 Provider 价格估算</small>
+          <small>{tr('Agent 自报，或按 Provider 价格估算')}</small>
         </div>
       </div>
       <div className="sgrid">
         <div className="card span2">
           <div className="card-h">
-            <h3>Token 与费用趋势</h3>
+            <h3>{tr('Token 与费用趋势')}</h3>
             <span className="grow" />
             <span className="lgd">
               <i style={{ background: 'var(--tide-wash)', border: '1px solid var(--tide)' }} />
-              Token（峰值 {fmtTok(maxTok)}）
+              {tr('Token（峰值')} {fmtTok(maxTok)}{tr('）')}
             </span>
             <span className="lgd">
               <i style={{ background: 'var(--cinnabar)', height: 2 }} />
-              费用（峰值 {fmtCost(maxCost)}）
+              {tr('费用（峰值')} {fmtCost(maxCost)}{tr('）')}
             </span>
           </div>
           <div className="card-b">
             {days.length ? (
-              <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img" aria-label="最近 14 天的 Token 与费用">
+              <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img" aria-label={tr('最近 14 天的 Token 与费用')}>
                 {[0, 0.25, 0.5, 0.75, 1].map((v) => (
                   <line key={v} x1="30" x2={W - 20} y1={y(v)} y2={y(v)} className="grid" />
                 ))}
@@ -84,7 +85,7 @@ export function StatsPage() {
                 {days.map((d, i) => (
                   <circle key={d.day} cx={x(i)} cy={y(d.cost_usd / maxCost)} r="2.5" className="pt">
                     <title>
-                      {d.day}：{d.runs} 次运行 · {fmtTok(d.tokens)} · {fmtCost(d.cost_usd)}
+                      {d.day}{tr('：')}{d.runs} {tr('次运行 ·')} {fmtTok(d.tokens)} · {fmtCost(d.cost_usd)}
                     </title>
                   </circle>
                 ))}
@@ -97,18 +98,18 @@ export function StatsPage() {
                 )}
               </svg>
             ) : (
-              <p className="dim">还没有运行记录。</p>
+              <p className="dim">{tr('还没有运行记录。')}</p>
             )}
           </div>
         </div>
         <div className="card">
           <div className="card-h">
-            <h3>每周完成工单</h3>
+            <h3>{tr('每周完成工单')}</h3>
             <span className="grow" />
-            <span className="lgd">最近 {stats.weeks.length} 周</span>
+            <span className="lgd">{tr('最近')} {stats.weeks.length} {tr('周')}</span>
           </div>
           <div className="card-b">
-            <svg viewBox="0 0 320 150" className="chart" role="img" aria-label="最近几周每周完成的工单数">
+            <svg viewBox="0 0 320 150" className="chart" role="img" aria-label={tr('最近几周每周完成的工单数')}>
               <line x1="10" x2="310" y1="122" y2="122" className="grid" />
               {stats.weeks.map((w, i) => {
                 const bw = 300 / stats.weeks.length;
@@ -117,7 +118,7 @@ export function StatsPage() {
                   <g key={w.week}>
                     <rect x={10 + i * bw + bw * 0.2} y={122 - h} width={bw * 0.6} height={h} className="bar">
                       <title>
-                        {w.week} 起的一周：完成 {w.done} 张
+                        {w.week} {tr('起的一周：完成')} {w.done} {tr('张')}
                       </title>
                     </rect>
                     {w.done > 0 && (
@@ -136,24 +137,24 @@ export function StatsPage() {
         </div>
         <div className="card">
           <div className="card-h">
-            <h3>返工与自动化</h3>
+            <h3>{tr('返工与自动化')}</h3>
           </div>
           <table className="tbl">
             <tbody>
               <tr>
-                <td>打回返工</td>
-                <td className="num">{stats.rework_runs} 次</td>
+                <td>{tr('打回返工')}</td>
+                <td className="num">{stats.rework_runs} {tr('次')}</td>
               </tr>
               <tr>
-                <td>检查没过后自动修复</td>
+                <td>{tr('检查没过后自动修复')}</td>
                 <td className="num">
-                  {stats.auto_fix_runs} 次{stats.auto_fix_runs > 0 && `，${stats.auto_fix_succeeded} 次修好`}
+                  {stats.auto_fix_runs} {tr('次')}{stats.auto_fix_runs > 0 && tr('，{0} 次修好', stats.auto_fix_succeeded)}
                 </td>
               </tr>
               <tr>
-                <td>AI 交叉审查</td>
+                <td>{tr('AI 交叉审查')}</td>
                 <td className="num">
-                  {stats.code_reviews} 次{stats.code_reviews > 0 && `，报出 ${stats.code_review_findings} 个问题`}
+                  {stats.code_reviews} {tr('次')}{stats.code_reviews > 0 && tr('，报出 {0} 个问题', stats.code_review_findings)}
                 </td>
               </tr>
             </tbody>
@@ -161,19 +162,19 @@ export function StatsPage() {
         </div>
         <div className="card span2">
           <div className="card-h">
-            <h3>各 Agent 表现</h3>
+            <h3>{tr('各 Agent 表现')}</h3>
           </div>
           <table className="tbl">
             <thead>
               <tr>
                 <th>Agent</th>
-                <th className="num">运行次数</th>
-                <th style={{ width: '26%' }}>成功率</th>
-                <th className="num">失败</th>
-                <th className="num">停止</th>
-                <th className="num">平均耗时</th>
+                <th className="num">{tr('运行次数')}</th>
+                <th style={{ width: '26%' }}>{tr('成功率')}</th>
+                <th className="num">{tr('失败')}</th>
+                <th className="num">{tr('停止')}</th>
+                <th className="num">{tr('平均耗时')}</th>
                 <th className="num">Token</th>
-                <th className="num">费用</th>
+                <th className="num">{tr('费用')}</th>
               </tr>
             </thead>
             <tbody>
@@ -209,20 +210,20 @@ export function StatsPage() {
         </div>
         <div className="card span2">
           <div className="card-h">
-            <h3>按 Provider</h3>
+            <h3>{tr('按 Provider')}</h3>
           </div>
           <table className="tbl">
             <thead>
               <tr>
                 <th>Provider</th>
-                <th className="num">运行次数</th>
-                <th className="num">费用</th>
+                <th className="num">{tr('运行次数')}</th>
+                <th className="num">{tr('费用')}</th>
               </tr>
             </thead>
             <tbody>
               {stats.providers.map(([id, runs, cost]) => (
                 <tr key={id ?? 'native'}>
-                  <td>{id ? (providers.find((p) => p.id === id)?.name ?? '已删除的 Provider') : '本机登录态'}</td>
+                  <td>{id ? (providers.find((p) => p.id === id)?.name ?? tr('已删除的 Provider')) : tr('本机登录态')}</td>
                   <td className="num">{runs}</td>
                   <td className="num">{fmtCost(cost)}</td>
                 </tr>
