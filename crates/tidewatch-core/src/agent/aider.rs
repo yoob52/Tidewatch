@@ -15,6 +15,13 @@ const ONE_SHOT_NOTE: &str = "（本次是非交互运行：没有人能回答问
 pub const SESSION_ID: &str = "aider-chat-history";
 const EXCLUDE_PATTERN: &str = ".aider*";
 
+fn prompt_file(spec: &RunSpec) -> PathBuf {
+    spec.isolated_session_dir
+        .as_ref()
+        .map(|dir| dir.join(PROMPT_FILE))
+        .unwrap_or_else(|| spec.cwd.join(PROMPT_FILE))
+}
+
 impl AgentAdapter for AiderAdapter {
     fn kind(&self) -> AgentKind {
         AgentKind::Aider
@@ -40,8 +47,11 @@ impl AgentAdapter for AiderAdapter {
                 std::fs::write(&exclude, format!("{current}{sep}{EXCLUDE_PATTERN}\n"))?;
             }
         }
+        if let Some(dir) = &spec.isolated_session_dir {
+            std::fs::create_dir_all(dir)?;
+        }
         std::fs::write(
-            spec.cwd.join(PROMPT_FILE),
+            prompt_file(spec),
             format!("{ONE_SHOT_NOTE}\n\n{}", spec.prompt),
         )?;
         Ok(())
@@ -82,12 +92,27 @@ impl AgentAdapter for AiderAdapter {
         // 没有会话 id：续接靠 worktree 里的聊天记录文件
         if spec.resume_session.is_some() {
             args.push("--restore-chat-history".into());
+        } else {
+            args.push("--no-restore-chat-history".into());
+        }
+        if let Some(dir) = &spec.isolated_session_dir {
+            for (flag, file) in [
+                ("--chat-history-file", "chat.md"),
+                ("--input-history-file", "input.txt"),
+            ] {
+                args.extend([flag.into(), dir.join(file).display().to_string()]);
+            }
         }
         for f in &spec.images {
             args.extend(["--read".into(), f.display().to_string()]);
         }
         args.extend(spec.extra_args.iter().cloned());
-        args.extend(["--message-file".into(), PROMPT_FILE.into()]);
+        let prompt = if spec.isolated_session_dir.is_some() {
+            prompt_file(spec).display().to_string()
+        } else {
+            PROMPT_FILE.into()
+        };
+        args.extend(["--message-file".into(), prompt]);
         Ok(CommandSpec {
             program: self.resolve_binary(spec)?,
             args,

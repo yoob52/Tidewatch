@@ -5,6 +5,7 @@ import { api, type TicketDetail, type TicketStatus, type TimelineEvent } from '.
 import { useData } from '../lib/data';
 import { FLOW } from '../lib/flow';
 import { useConfirmTicketRun } from '../lib/start';
+import { useChooseDevelopment, useChooseTicketRun } from '../lib/runOptions';
 import { Icon } from '../lib/Icon';
 import {
   imageFiles,
@@ -24,6 +25,7 @@ import {
   Empty,
   KindStamp,
   Md,
+  Modal,
   PURPOSE,
   Prio,
   RunStatusTag,
@@ -73,9 +75,12 @@ function Rail({ status, skipped }: { status: TicketStatus; skipped: TicketStatus
 export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string }) {
   const ui = useUi();
   const confirmRun = useConfirmTicketRun();
+  const chooseRun = useChooseTicketRun();
+  const chooseDevelopment = useChooseDevelopment();
   const data = useData();
   const { data: d, error, reload } = useLoad(() => api.ticketGet(ticketKey), [ticketKey]);
   const [finalizing, setFinalizing] = useState(false);
+  const [binding, setBinding] = useState(false);
 
   if (error)
     return (
@@ -92,6 +97,7 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
   if (!d) return <div className="page dim">{tr('读取中…')}</div>;
 
   const t = d.ticket;
+  const canBind = !t.finalized_version_id && ['draft', 'human_review'].includes(t.status);
   const live = d.tasks.filter((k) => k.status !== 'cancelled');
   const toAccept = live.filter((k) => k.status === 'review').length;
   const openIssues = d.issues.filter((i) => i.resolution === 'open' || i.resolution === 'pending_confirm');
@@ -128,8 +134,19 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
       const busy = d.runs.some((r) => r.task_id && (runActive(r.status) || r.status === 'queued'));
       const stop = busy && (await ui.confirm(tr('有子任务正在运行'), tr('要现在停掉它们吗？不停的话它们会按旧需求跑完，之后再按影响分析返工。'), tr('停掉正在运行的')));
       job = api.changeRequest(t.id, reason, stop);
+    } else if (to === 'ai_review') {
+      if (!t.projects.length && canBind) {
+        setBinding(true);
+        return;
+      }
+      const options = await chooseRun(t.id, 'review', tr('提交预审'));
+      if (!options || !(await confirmRun())) return;
+      job = api.reviewStart(t.id, options);
+    } else if (t.status === 'finalized' && to === 'developing') {
+      const options = await chooseDevelopment(t.id);
+      if (!options) return;
+      job = api.developmentStart(t.id, options);
     } else {
-      if (to === 'ai_review' && !(await confirmRun())) return;
       job = api.ticketTransition(t.id, to);
     }
     if (await ui.attempt(job, tr('{0} → {1}（{2}）', t.key, STAGE_NAME[to], label))) {
@@ -164,6 +181,9 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
             <h2>{t.title}</h2>
           </div>
           <div className="row">
+            {canBind && !t.projects.length && (
+              <button className="btn" onClick={() => setBinding(true)}>{tr('绑定项目')}</button>
+            )}
             {t.status === 'cancelled' && t.cancelled_from && (
               <button className="btn" onClick={() => void move(t.cancelled_from!, tr('恢复'))}>
                 <Icon name="undo" size={14} />
@@ -197,6 +217,9 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
           skipped={d.timeline.some((e) => e.type === 'status' && e.payload.from === 'draft' && e.payload.to === 'developing') ? ['ai_review', 'human_review', 'finalized'] : []}
         />
       </div>
+      {binding && (
+        <ProjectBindings key={t.id} d={d} reload={reload} onClose={() => setBinding(false)} />
+      )}
       {finalizing && (
         <FinalizeDialog d={d} blockers={blockers} onClose={() => setFinalizing(false)}
           onDone={async () => {
@@ -217,7 +240,7 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
         {current === 'prd' ? (
           <PrdTab d={d} reload={reload} />
         ) : current === 'review' ? (
-          <ReviewTab d={d} reload={reload} />
+          <ReviewTab d={d} reload={reload} onBind={canBind ? () => setBinding(true) : undefined} />
         ) : current === 'tasks' ? (
           <TasksTab d={d} reload={reload} />
         ) : current === 'accept' ? (
@@ -225,7 +248,7 @@ export function TicketPage({ ticketKey, tab }: { ticketKey: string; tab?: string
         ) : current === 'runs' ? (
           <RunsTab d={d} />
         ) : (
-          <OverviewTab d={d} />
+          <OverviewTab d={d} onBind={canBind ? () => setBinding(true) : undefined} />
         )}
       </div>
     </div>
@@ -461,7 +484,47 @@ function Questions({ d }: { d: TicketDetail }) {
   );
 }
 
-function OverviewTab({ d }: { d: TicketDetail }) {
+function ProjectBindings({ d, reload, onClose }: TabProps & { onClose: () => void }) {
+  const ui = useUi();
+  const data = useData();
+  const [picked, setPicked] = useState(() => d.ticket.projects.map((p) => p.project_id));
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    const bindings = picked.map((project_id) => d.ticket.projects.find((p) => p.project_id === project_id) ?? ({
+      project_id,
+      role: data.projects.find((p) => p.id === project_id)?.kind === 'frontend' ? 'frontend' : 'backend',
+      subdir: null,
+    }));
+    if (await ui.attempt(api.ticketBindProjects(d.ticket.id, bindings), tr('项目绑定已保存'))) {
+      await Promise.all([reload(), data.reload()]);
+      onClose();
+    } else {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={tr('绑定项目')} hint={tr('可多选')} onClose={onClose} footer={
+      <>
+        <button className="btn" onClick={onClose}>{tr('取消')}</button>
+        <button className="btn primary" disabled={busy || !data.projects.length} onClick={() => void save()}>{tr('保存')}</button>
+      </>
+    }>
+      {data.projects.length ? (
+        <div className="pick">
+          {data.projects.map((p) => (
+            <button key={p.id} className={picked.includes(p.id) ? 'on' : ''} aria-pressed={picked.includes(p.id)}
+              onClick={() => setPicked((prev) => prev.includes(p.id) ? prev.filter((id) => id !== p.id) : [...prev, p.id])}>
+              <Icon name="folder" size={13} />{p.name}
+            </button>
+          ))}
+        </div>
+      ) : <p className="dim">{tr('还没有注册项目。')}<a className="lnk" href="#/projects" onClick={onClose}>{tr('去注册 →')}</a></p>}
+    </Modal>
+  );
+}
+
+function OverviewTab({ d, onBind }: { d: TicketDetail; onBind?: () => void }) {
   const ui = useUi();
   const { projects, providers, settings } = useData();
   const t = d.ticket;
@@ -648,6 +711,7 @@ function OverviewTab({ d }: { d: TicketDetail }) {
             ) : (
               <span className="dim">{tr('未绑定')}</span>
             )}
+            {onBind && <button className="btn sm" onClick={onBind}>{tr('编辑项目绑定')}</button>}
           </dd>
           <dt>{tr('当前 PRD')}</dt>
           <dd>

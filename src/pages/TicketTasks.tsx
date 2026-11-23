@@ -17,6 +17,7 @@ import {
 } from '../lib/api';
 import { useData } from '../lib/data';
 import { useConfirmTicketRun, useStartTask } from '../lib/start';
+import { useChooseDevelopment, useChooseTicketRun } from '../lib/runOptions';
 import { Icon } from '../lib/Icon';
 import {
   AGENTS,
@@ -293,6 +294,7 @@ function DraftList({ drafts, setDrafts, choices }: { drafts: TaskDraft[]; setDra
 function ProposalPanel({ d, p, refresh }: { d: TabProps['d']; p: Proposal; refresh: () => Promise<unknown> }) {
   const ui = useUi();
   const confirmRun = useConfirmTicketRun();
+  const chooseRun = useChooseTicketRun();
   const { projects } = useData();
   const t = d.ticket;
   const bound = projects.filter((x) => t.projects.some((b) => b.project_id === x.id));
@@ -322,7 +324,8 @@ function ProposalPanel({ d, p, refresh }: { d: TabProps['d']; p: Proposal; refre
     if (res !== undefined) await refresh();
   };
   const regenerate = async () => {
-    if (await confirmRun()) await act(api.proposalRegenerate(t.id), tr('已重新提交，AI 正在生成{0}', what));
+    const options = await chooseRun(t.id, p.kind, tr('重新生成'));
+    if (options && await confirmRun()) await act(api.proposalRegenerate(t.id, options), tr('已重新提交，AI 正在生成{0}', what));
   };
   const discard = async () => {
     const body =
@@ -654,6 +657,8 @@ export function TasksTab({ d, reload }: TabProps) {
   const { projects, providers } = useData();
   const ui = useUi();
   const confirmRun = useConfirmTicketRun();
+  const chooseRun = useChooseTicketRun();
+  const chooseDevelopment = useChooseDevelopment();
   const data = useData();
   const start = useStartTask(reload);
   const [adding, setAdding] = useState(false);
@@ -666,7 +671,7 @@ export function TasksTab({ d, reload }: TabProps) {
   const live = d.tasks.filter((k) => k.status !== 'cancelled');
   const waitingStart = live.filter((k) => ['pending', 'changes_requested'].includes(k.status));
   // full_auto 每次开始都要单独确认，"开始开发"不会带上它们
-  const needConfirm = waitingStart.filter((k) => k.permission_profile === 'full_auto').length;
+  const needConfirm = waitingStart.filter((k) => (k.permission_profile ?? data.settings.default_permission) === 'full_auto').length;
   const startable = waitingStart.length - needConfirm;
 
   const act = async (p: Promise<unknown>, ok: string) => {
@@ -714,7 +719,9 @@ export function TasksTab({ d, reload }: TabProps) {
             <button
               className="btn primary sm"
               onClick={async () => {
-                const runs = await ui.attempt(api.developmentStart(t.id));
+                const options = await chooseDevelopment(t.id);
+                if (!options) return;
+                const runs = await ui.attempt(api.developmentStart(t.id, options));
                 if (runs) {
                   const confirmHint = needConfirm ? tr('；{0} 个 full_auto 子任务需要逐个点「开始」确认', needConfirm) : '';
                   ui.toast(
@@ -744,7 +751,8 @@ export function TasksTab({ d, reload }: TabProps) {
                 <button
                   className="btn"
                   onClick={async () => {
-                    if ((await confirmRun()) && (await ui.attempt(api.proposalRegenerate(t.id), tr('AI 正在拆分子任务')))) await refresh();
+                    const options = await chooseRun(t.id, 'split', tr('让 AI 拆分'));
+                    if (options && (await confirmRun()) && (await ui.attempt(api.proposalRegenerate(t.id, options), tr('AI 正在拆分子任务')))) await refresh();
                   }}
                 >
                   <Icon name="spark" size={13} />
@@ -1107,8 +1115,8 @@ export function AcceptTab({ d, reload }: TabProps) {
   // AI 交叉审查：最新的一次；之后又跑过开发就算过期
   const cr = d.code_reviews.find((c) => c.task_id === task.id);
   const crStale = !!cr && cr.status === 'done' && !!last?.end_commit && !!cr.head_commit && cr.head_commit !== last.end_commit;
-  const crossReview = async () => {
-    if (await ui.attempt(api.codeReviewStart(task.id), tr('已发起交叉审查，结果出来后显示在这里'))) await refresh();
+  const crossReview = async (agent?: string) => {
+    if (await ui.attempt(api.codeReviewStart(task.id, agent), tr('已发起交叉审查，结果出来后显示在这里'))) await refresh();
   };
   const findingsNote = (list: CodeFinding[]) =>
     list
@@ -1396,8 +1404,14 @@ export function AcceptTab({ d, reload }: TabProps) {
               <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                 <button className="btn sm" onClick={() => void crossReview()}>
                   <Icon name="spark" size={13} />
-                  {cr ? tr('重新审查') : tr('让另一个 Agent 审查')}
+                  {tr('让另一个 Agent 审查')}
                 </button>
+                {last && (
+                  <button className="btn sm" onClick={() => void crossReview(last.agent)}>
+                    <Icon name="spark" size={13} />
+                    {tr('用 {0} 的新会话审查', AGENTS[last.agent]?.name ?? last.agent)}
+                  </button>
+                )}
                 {cr?.status === 'done' && cr.findings.length > 0 && (
                   <button className="btn sm" onClick={() => void reject(findingsNote(cr.findings))}>
                     <Icon name="undo" size={13} />

@@ -461,6 +461,7 @@ interface UiApi {
   attempt: <T>(p: Promise<T>, okMsg?: string) => Promise<T | undefined>;
   confirm: (title: string, body: ReactNode, ok: string, danger?: boolean) => Promise<boolean>;
   prompt: (title: string, body: ReactNode, placeholder: string, ok?: string, required?: boolean, initial?: string) => Promise<string | null>;
+  choose: <T>(render: (finish: (value: T | null) => void) => ReactNode) => Promise<T | null>;
 }
 
 const UiContext = createContext<UiApi | null>(null);
@@ -482,6 +483,7 @@ export function UiProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [text, setText] = useState('');
+  const [choice, setChoice] = useState<ReactNode>(null);
   const seq = useRef(0);
 
   const toast = useCallback((msg: string) => {
@@ -510,6 +512,11 @@ export function UiProvider({ children }: { children: ReactNode }) {
           setText(initial);
           setDialog({ title, body, ok, prompt: { placeholder, required }, resolve });
         }),
+      choose: (render) =>
+        new Promise((resolve) => setChoice(render((value) => {
+          setChoice(null);
+          resolve(value);
+        }))),
     }),
     [toast],
   );
@@ -531,6 +538,7 @@ export function UiProvider({ children }: { children: ReactNode }) {
   return (
     <UiContext.Provider value={api}>
       {children}
+      {choice}
       <div id="overlay" onMouseDown={(e) => e.target === e.currentTarget && close(null)}>
         {dialog && (
           <div className="pop" style={{ width: dialog.prompt ? 480 : 440 }} role="dialog" aria-modal="true" aria-label={dialog.title}>

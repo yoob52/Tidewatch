@@ -12,7 +12,7 @@ svg{display:block;flex:none}
 
 /* 工作台外壳：标题栏 / 活动栏 / 资源栏 / 主区 / 状态栏 */
 .app{display:grid;grid-template-columns:46px 248px minmax(0,1fr);grid-template-rows:40px minmax(0,1fr) 24px;height:100vh}
-.app.narrow{grid-template-columns:46px 0 minmax(0,1fr)}
+.app.narrow{grid-template-columns:46px minmax(0,1fr)}
 .app.narrow .explorer{display:none}
 
 /* 标题栏 */

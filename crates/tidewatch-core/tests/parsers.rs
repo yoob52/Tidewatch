@@ -210,6 +210,25 @@ fn codex_real_unauthorized() {
 }
 
 #[test]
+fn reasoning_effort_reaches_claude_and_codex_commands() {
+    let spec = RunSpec {
+        reasoning_effort: Some("high".into()),
+        ..Default::default()
+    };
+    for (kind, flag, value) in [
+        (AgentKind::ClaudeCode, "--effort", "high"),
+        (AgentKind::Codex, "-c", "model_reasoning_effort=high"),
+    ] {
+        let spec = RunSpec {
+            binary: Some("/bin/agent".into()),
+            ..spec.clone()
+        };
+        let command = adapter(kind).build_command(&spec).unwrap();
+        assert!(command.args.windows(2).any(|args| args == [flag, value]));
+    }
+}
+
+#[test]
 fn command_lines() {
     let spec = |resume: Option<&str>, permission| RunSpec {
         prompt: "改一下".into(),
@@ -437,6 +456,38 @@ fn aider_real_bad_key_exits_zero_but_fails() {
 }
 
 #[test]
+fn aider_isolated_session_does_not_use_development_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let review = temp.path().join("review");
+    let spec = RunSpec {
+        cwd: temp.path().to_path_buf(),
+        binary: Some("/bin/aider".into()),
+        isolated_session_dir: Some(review.clone()),
+        ..Default::default()
+    };
+    let aider = adapter(AgentKind::Aider);
+    aider.prepare(&spec).unwrap();
+    let command = aider.build_command(&spec).unwrap();
+    for (flag, file) in [
+        ("--chat-history-file", "chat.md"),
+        ("--input-history-file", "input.txt"),
+        ("--message-file", ".aider.tidewatch-prompt.md"),
+    ] {
+        let path = review.join(file);
+        assert!(command
+            .args
+            .windows(2)
+            .any(|args| args[0] == flag && args[1] == path.display().to_string()));
+    }
+    assert!(command
+        .args
+        .iter()
+        .any(|arg| arg == "--no-restore-chat-history"));
+    assert!(review.join(".aider.tidewatch-prompt.md").is_file());
+    assert!(!temp.path().join(".aider.tidewatch-prompt.md").exists());
+}
+
+#[test]
 fn new_agent_command_lines() {
     let dir = tempfile::tempdir().unwrap();
     let spec = |resume: Option<&str>, permission| RunSpec {
@@ -477,6 +528,7 @@ fn new_agent_command_lines() {
         serde_json::from_str(&env_of(&c, "OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
     assert_eq!(cfg["permission"]["edit"], "deny");
     assert_eq!(cfg["permission"]["bash"], "deny");
+    assert!(cfg.get("provider").is_none());
     let mut s = spec(None, PermissionMode::FullAuto);
     s.env = vec![(
         "OPENCODE_CONFIG_CONTENT".into(),
@@ -488,6 +540,10 @@ fn new_agent_command_lines() {
         serde_json::from_str(&env_of(&c, "OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
     assert_eq!(cfg["permission"]["edit"], "allow");
     assert_eq!(cfg["provider"]["tidewatch"]["npm"], "@ai-sdk/openai");
+    assert_eq!(
+        cfg["provider"]["tidewatch"]["models"]["m1"],
+        serde_json::json!({})
+    );
     assert_eq!(c.env.len(), 1);
 
     // Gemini CLI

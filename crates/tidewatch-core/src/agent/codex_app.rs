@@ -49,6 +49,7 @@ fn text_input(text: &str) -> Value {
 
 pub struct CodexAppParser {
     prompt: Vec<Value>,
+    reasoning_effort: Option<String>,
     thread: Option<String>,
     turn: Option<String>,
     next_id: u64,
@@ -74,6 +75,7 @@ impl CodexAppParser {
         }
         CodexAppParser {
             prompt,
+            reasoning_effort: spec.reasoning_effort.clone(),
             thread: None,
             turn: None,
             next_id: THREAD_REQ + 1,
@@ -98,11 +100,11 @@ impl CodexAppParser {
 
     fn start_turn(&mut self, input: Vec<Value>, steer: &str) {
         let thread = self.thread.clone().unwrap_or_default();
-        self.request(
-            "turn/start",
-            json!({ "threadId": thread, "input": input }),
-            steer,
-        );
+        let mut params = json!({ "threadId": thread, "input": input });
+        if let Some(effort) = &self.reasoning_effort {
+            params["effort"] = json!(effort);
+        }
+        self.request("turn/start", params, steer);
     }
 
     fn send_steer(&mut self, text: &str) {
@@ -433,7 +435,9 @@ mod tests {
 
     #[test]
     fn steers_active_turn_and_starts_new_turn_after() {
-        let mut p = CodexAppParser::new(&spec());
+        let mut spec = spec();
+        spec.reasoning_effort = Some("high".into());
+        let mut p = CodexAppParser::new(&spec);
         assert_eq!(p.idle(), Some(false));
         // 会话建好前的追加指令先攒着
         assert_eq!(p.steer("early").as_deref(), Some(""));
@@ -444,6 +448,7 @@ mod tests {
         let reqs = sent(&mut p);
         assert_eq!(reqs[0]["method"], "turn/start");
         assert_eq!(reqs[0]["params"]["input"][0]["text"], "do it");
+        assert_eq!(reqs[0]["params"]["effort"], "high");
         p.parse_line(r#"{"id":2,"result":{"turn":{"id":"t1","status":"inProgress"}}}"#);
         let reqs = sent(&mut p);
         assert_eq!(reqs[0]["method"], "turn/steer");

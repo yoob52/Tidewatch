@@ -2,20 +2,24 @@ import { tr } from './i18n';
 import { api, type Run } from './api';
 import { useData } from './data';
 import { useUi } from './ui';
+import { useChooseRun } from './runOptions';
 
 /** 开始 / 恢复一个子任务，所有入口共用。full_auto 每次都要二次确认。 */
 export function useStartTask(reload?: () => Promise<unknown>) {
   const ui = useUi();
   const data = useData();
+  const choose = useChooseRun();
   return async (task: { id: string }, instruction?: string): Promise<Run | undefined> => {
     const plan = await ui.attempt(api.taskPlan(task.id, { instruction }));
     if (!plan) return undefined;
+    const options = await choose(plan, tr('配置子任务运行'));
+    if (!options) return undefined;
     if (
       plan.permission === 'full_auto' &&
       !(await ui.confirm(tr('以 full_auto 运行'), tr('Agent 将不经确认执行任意命令。建议只在可丢弃的 worktree 中使用。'), tr('我了解风险，开始'), true))
     )
       return undefined;
-    const run = await ui.attempt(api.taskStart(task.id, { instruction, command_id: crypto.randomUUID() }));
+    const run = await ui.attempt(api.taskStart(task.id, { instruction, runtime: options.runtime, command_id: crypto.randomUUID() }));
     if (run) {
       ui.toast(plan.resume ? tr('已入队，将续接会话 {0}', plan.resume[1].slice(0, 8)) : tr('已入队，有空闲并发时自动开始'));
       await Promise.all([reload?.(), data.reload()]);

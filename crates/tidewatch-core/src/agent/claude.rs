@@ -20,6 +20,9 @@ impl AgentAdapter for ClaudeAdapter {
         if let Some(m) = &spec.model {
             args.extend(["--model".into(), m.clone()]);
         }
+        if let Some(effort) = &spec.reasoning_effort {
+            args.extend(["--effort".into(), effort.clone()]);
+        }
         let mode = match spec.permission {
             PermissionMode::ReadOnly => "plan",
             PermissionMode::WorkspaceWrite => "acceptEdits",

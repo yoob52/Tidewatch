@@ -230,6 +230,8 @@ impl Engine {
                 provider_id: provider.as_ref().map(|p| p.id.clone()),
                 model: crate::store::clean(input.model.clone())
                     .or(provider.and_then(|p| p.default_model)),
+                reasoning_effort: None,
+                resume: None,
                 permission: "read_only",
             };
             let prompt = format!(

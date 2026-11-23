@@ -5,11 +5,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tidewatch_core::db::{self, lock, Db};
 use tidewatch_core::engine::{
-    Engine, EngineConfig, EngineEvent, InlineComment, RejectInput, StartOptions,
+    CodeReviewOptions, Engine, EngineConfig, EngineEvent, InlineComment, RejectInput, RunOverrides,
+    StartOptions, TicketRunOptions,
 };
 use tidewatch_core::git;
 use tidewatch_core::secrets::MemoryStore;
-use tidewatch_core::store::{projects, reviews, runs, settings, stats, tasks, tickets, workflows};
+use tidewatch_core::store::{
+    projects, providers, reviews, runs, settings, stats, tasks, tickets, workflows,
+};
 
 struct Fixture {
     engine: Engine,
@@ -821,6 +824,8 @@ fn unfinished_runs_become_orphans_on_restart() {
             agent: "mock",
             provider_id: None,
             model: None,
+            reasoning_effort: None,
+            ticket_project_dir: None,
             permission: "workspace_write",
             resume_session_id: None,
             prompt: "x",
@@ -951,11 +956,27 @@ fn mixed_prd_from_draft_through_review_split_api_doc_and_rework_to_done() {
 
     // 再预审一次：处理过的问题不再提
     let again = f.engine.start_review(&ticket).unwrap();
-    f.wait_done(&again.id);
+    assert!(again.resume_session_id.is_none());
+    let again = f.wait_done(&again.id);
     assert_eq!(reviews::issues(&lock(f.db()), &ticket).unwrap().len(), 2);
 
     // 定稿并拆分：锁定版本，拆分建议出来之前不能开始开发
-    let fin = f.engine.finalize(&ticket, true).unwrap();
+    let config = f.engine.ticket_run_config(&ticket, "split").unwrap();
+    assert_eq!(config.reusable_run.unwrap().id, again.id);
+    let fin = f
+        .engine
+        .finalize_with(
+            &ticket,
+            true,
+            TicketRunOptions {
+                resume_run_id: Some(again.id.clone()),
+                runtime: RunOverrides {
+                    model: Some("mock-split".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
     assert_eq!(fin.ticket.status, "finalized");
     assert_eq!(
         fin.ticket.finalized_version_id,
@@ -963,6 +984,13 @@ fn mixed_prd_from_draft_through_review_split_api_doc_and_rework_to_done() {
     );
     let split_run = fin.run.unwrap();
     assert_eq!(split_run.purpose, "split");
+    assert_eq!(
+        split_run.resume_session_id.as_deref(),
+        Some(again.agent_session_id.as_deref().unwrap())
+    );
+    assert_eq!(split_run.model.as_deref(), Some("mock-split"));
+    assert!(split_run.prompt.starts_with("## 续接同一张工单的会话"));
+    assert!(tickets::bind_projects(&mut lock(f.db()), &ticket, &[]).is_err());
     assert!(f.engine.start_development(&ticket).is_err());
     assert_eq!(f.wait_done(&split_run.id).status, "succeeded");
     let proposal = reviews::latest_proposal(&lock(f.db()), &ticket, "split")
@@ -991,9 +1019,26 @@ fn mixed_prd_from_draft_through_review_split_api_doc_and_rework_to_done() {
     assert_ne!(created[0].project_id, created[1].project_id);
 
     // 开始开发：只有后端入队；后端写出接口文档后前端自动开始，这时后端还在跑
-    let started = f.engine.start_development(&ticket).unwrap();
+    let plan = f.engine.development_plan(&ticket).unwrap();
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].id, be);
+    let started = f
+        .engine
+        .start_development_with(
+            &ticket,
+            [(
+                be.clone(),
+                RunOverrides {
+                    model: Some("mock-dispatch".into()),
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        )
+        .unwrap();
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].task_id.as_deref(), Some(be.as_str()));
+    assert_eq!(started[0].model.as_deref(), Some("mock-dispatch"));
     assert_eq!(f.ticket_status(&ticket), "developing");
     f.wait_for("前端被接口文档解锁", || {
         f.task(&fe).status != "blocked"
@@ -1450,6 +1495,83 @@ fn full_auto_tasks_are_never_started_without_the_user() {
 }
 
 #[test]
+fn draft_can_bind_projects_and_review_reuse_is_scoped_to_ticket_and_directory() {
+    let f = fixture(1, None);
+    let ticket = tickets::create(
+        &mut lock(f.db()),
+        tickets::TicketInput {
+            title: "创建时没有绑定项目".into(),
+            kind: "feature_mixed".into(),
+            content_md: "需求正文".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(f.engine.start_review(&ticket.id).is_err());
+    let bind = |project_id: &str| {
+        tickets::bind_projects(
+            &mut lock(f.db()),
+            &ticket.id,
+            &[tickets::TicketProject {
+                project_id: project_id.into(),
+                role: "backend".into(),
+                subdir: None,
+            }],
+        )
+        .unwrap()
+    };
+    assert_eq!(bind(&f.project_id).projects[0].project_id, f.project_id);
+    let review = f.engine.start_review(&ticket.id).unwrap();
+    let done = f.wait_done(&review.id);
+    assert_eq!(done.status, "succeeded");
+    let resume = TicketRunOptions {
+        resume_run_id: Some(review.id.clone()),
+        ..Default::default()
+    };
+    let (other, _) = f.mixed("另一张工单", "其它需求");
+    assert!(f
+        .engine
+        .start_review_with(&other, false, resume.clone())
+        .is_err());
+    let config = f.engine.ticket_run_config(&ticket.id, "review").unwrap();
+    assert_eq!(config.reusable_run.unwrap().id, review.id);
+    let resumed = f
+        .engine
+        .start_review_with(&ticket.id, false, resume.clone())
+        .unwrap();
+    assert_eq!(
+        resumed.resume_session_id.as_deref(),
+        Some(done.agent_session_id.as_deref().unwrap())
+    );
+    assert_eq!(f.wait_done(&resumed.id).status, "succeeded");
+
+    let other_dir = f.repo.with_file_name("different-repo");
+    init_repo(&other_dir);
+    let other_project = projects::create(
+        &lock(f.db()),
+        projects::ProjectInput {
+            name: "重新绑定的项目".into(),
+            kind: "backend".into(),
+            local_path: other_dir.display().to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    bind(&other_project.id);
+    assert!(f
+        .engine
+        .ticket_run_config(&ticket.id, "review")
+        .unwrap()
+        .reusable_run
+        .is_none());
+    assert!(f
+        .engine
+        .start_review_with(&ticket.id, false, resume)
+        .is_err());
+    assert_eq!(f.ticket_status(&ticket.id), "human_review");
+}
+
+#[test]
 fn failed_review_keeps_the_error_and_can_be_retried() {
     let f = fixture(1, None);
     let (ticket, _) = f.mixed("会失败的预审", "正文 [mock:fail]");
@@ -1851,6 +1973,23 @@ fn failed_checks_are_sent_back_to_the_agent_until_they_pass_or_attempts_run_out(
 #[test]
 fn cross_review_reads_the_diff_and_leaves_findings_without_touching_the_task() {
     let f = fixture(1, None);
+    let provider = {
+        let conn = lock(f.db());
+        let provider = providers::create(
+            &conn,
+            providers::ProviderInput {
+                name: "开发 Provider".into(),
+                protocol: "native".into(),
+                default_model: Some("mock-author".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut settings = settings::get(&conn).unwrap();
+        settings.default_provider_id = Some(provider.id.clone());
+        settings::save(&conn, &settings).unwrap();
+        provider
+    };
     let (ticket, task) = f.bug("交叉审查", "x [mock:steps=1] [mock:delay=30]", "medium");
     // 还没有改动：不能审查
     assert!(f
@@ -1858,13 +1997,24 @@ fn cross_review_reads_the_diff_and_leaves_findings_without_touching_the_task() {
         .start_code_review(&task, Default::default())
         .is_err());
     let r = f.engine.start_task(&task, StartOptions::default()).unwrap();
-    f.wait_done(&r.id);
+    let author = f.wait_done(&r.id);
     assert_eq!(f.task(&task).status, "review");
+    assert_eq!(author.provider_id.as_deref(), Some(provider.id.as_str()));
+    providers::delete(&lock(f.db()), &provider.id).unwrap();
 
     let review = f
         .engine
-        .start_code_review(&task, Default::default())
+        .start_code_review(
+            &task,
+            CodeReviewOptions {
+                agent: Some(author.agent.clone()),
+                ..Default::default()
+            },
+        )
         .unwrap();
+    assert!(review.resume_session_id.is_none());
+    assert_eq!(review.agent, author.agent);
+    assert!(review.provider_id.is_none() && review.model.is_none());
     assert_eq!(
         (
             review.purpose.as_str(),
@@ -1881,6 +2031,7 @@ fn cross_review_reads_the_diff_and_leaves_findings_without_touching_the_task() {
         .is_err());
     let done = f.wait_done(&review.id);
     assert_eq!(done.status, "succeeded", "{:?}", done.error);
+    assert!(done.agent_session_id.is_some() && done.agent_session_id != author.agent_session_id);
     let all = f.engine.code_reviews(&task).unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].status, "done");

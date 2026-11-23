@@ -47,6 +47,9 @@ impl AgentAdapter for CodexAdapter {
         }
         push_config(spec, sandbox, &mut args);
         args.extend(spec.extra_args.iter().cloned());
+        if let Some(effort) = &spec.reasoning_effort {
+            args.extend(["-c".into(), format!("model_reasoning_effort={effort}")]);
+        }
         if let Some(id) = &spec.resume_session {
             args.push(id.clone());
         }
