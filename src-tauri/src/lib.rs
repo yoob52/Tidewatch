@@ -1241,10 +1241,11 @@ async fn skills_preview(source: String, skill_id: String) -> CmdResult<skills::S
 async fn skills_install(
     source: String,
     skill_id: String,
+    commit: Option<String>,
     targets: Vec<SkillTarget>,
 ) -> CmdResult<Vec<String>> {
     tauri::async_runtime::spawn_blocking(move || {
-        skills::install(&source, &skill_id, &targets).map_err(err)
+        skills::install(&source, &skill_id, commit.as_deref(), &targets).map_err(err)
     })
     .await
     .map_err(err)?

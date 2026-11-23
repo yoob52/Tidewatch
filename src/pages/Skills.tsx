@@ -34,8 +34,9 @@ function PreviewModal({ skill, installedIn, onClose, onInstalled }: { skill: Mar
   const [busy, setBusy] = useState(false);
   const { data: preview, error } = useLoad<SkillPreview>(() => api.skillsPreview(skill.source, skill.skillId), [skill.id], () => false);
   const install = async () => {
+    if (!preview) return;
     setBusy(true);
-    const dirs = await ui.attempt(api.skillsInstall(skill.source, skill.skillId, targets));
+    const dirs = await ui.attempt(api.skillsInstall(skill.source, skill.skillId, preview.commit, targets));
     setBusy(false);
     if (dirs) {
       ui.toast(tr('已安装到 {0} 个位置', dirs.length));
@@ -80,7 +81,7 @@ function PreviewModal({ skill, installedIn, onClose, onInstalled }: { skill: Mar
             <TargetPicker value={targets} onChange={setTargets} />
           </Field>
           <div className="sk-files mono dim">
-            {tr('{0} 个文件', preview.files.length)} · {preview.path || '/'}
+            {tr('{0} 个文件', preview.files.length)} · {preview.path || '/'} · <span title={preview.commit}>@{preview.commit.slice(0, 7)}</span>
           </div>
           <div className="sk-md">
             <Md src={preview.content.replace(/^---[\s\S]*?\n---\n?/, '')} />
