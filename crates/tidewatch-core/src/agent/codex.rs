@@ -33,7 +33,7 @@ impl AgentAdapter for CodexAdapter {
             args.extend(["-m".into(), m.clone()]);
         }
         args.extend(["-c".into(), format!("sandbox_mode={sandbox}")]);
-        if cfg!(windows) {
+        if cfg!(windows) && !user_sets_windows_sandbox(spec) {
             // 不指定时 Codex 用旧版受限令牌沙箱，在很多 Windows 上任何命令都被 policy 拒绝、工作区也写不了
             args.extend(["-c".into(), "windows.sandbox=unelevated".into()]);
         }
@@ -74,6 +74,60 @@ impl AgentAdapter for CodexAdapter {
 
     fn parser(&self) -> Box<dyn EventParser> {
         Box::new(CodexParser::default())
+    }
+}
+
+/// 用户在 Codex 的 config.toml 里自己选过 Windows 沙箱实现时，不用命令行覆盖它。
+fn user_sets_windows_sandbox(spec: &RunSpec) -> bool {
+    let home = spec
+        .env
+        .iter()
+        .find(|(k, _)| k == "CODEX_HOME")
+        .map(|(_, v)| std::path::PathBuf::from(v))
+        .or_else(|| std::env::var_os("CODEX_HOME").map(Into::into))
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").map(|h| std::path::PathBuf::from(h).join(".codex"))
+        });
+    home.and_then(|h| std::fs::read_to_string(h.join("config.toml")).ok())
+        .is_some_and(|t| sets_windows_sandbox(&t))
+}
+
+fn sets_windows_sandbox(toml: &str) -> bool {
+    let mut table = String::new();
+    toml.lines().map(str::trim).any(|l| {
+        if let Some(h) = l.strip_prefix('[') {
+            table = h.trim_end_matches(']').trim().to_string();
+            return false;
+        }
+        let Some((key, _)) = l.split_once('=') else {
+            return false;
+        };
+        let key = key.trim();
+        (table.is_empty() && key == "windows.sandbox") || (table == "windows" && key == "sandbox")
+    })
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::sets_windows_sandbox;
+
+    #[test]
+    fn finds_user_windows_sandbox() {
+        assert!(sets_windows_sandbox(
+            "model = \"x\"
+[windows]
+sandbox = \"elevated\"
+"
+        ));
+        assert!(sets_windows_sandbox("windows.sandbox=\"elevated\""));
+        assert!(!sets_windows_sandbox(
+            "[tools]
+sandbox = 1
+[windows]
+# sandbox = \"elevated\"
+"
+        ));
+        assert!(!sets_windows_sandbox(""));
     }
 }
 
