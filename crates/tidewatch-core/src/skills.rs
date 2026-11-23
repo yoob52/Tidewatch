@@ -2,6 +2,7 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 pub const SEARCH_URL: &str = "https://skills.sh/api/search";
@@ -414,11 +415,37 @@ fn cdn_url(owner: &str, repo: &str, commit: &str, path: &str) -> String {
     )
 }
 
+/// 上次 GitHub raw 失败而 jsDelivr 成功的时间（unix 秒）；之后一段时间直接走 jsDelivr，
+/// 免得每个文件都等一次 raw 超时。
+static RAW_FAILED_AT: AtomicU64 = AtomicU64::new(0);
+const RAW_SKIP_SECS: u64 = 600;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// 下载仓库里某个提交的文件：先 GitHub raw，失败再走 jsDelivr。
 fn fetch_file(owner: &str, repo: &str, commit: &str, path: &str) -> Result<Vec<u8>> {
-    get_bytes(&raw_url(owner, repo, commit, path), "*/*", MAX_FILE_BYTES).or_else(|e| {
-        get_bytes(&cdn_url(owner, repo, commit, path), "*/*", MAX_FILE_BYTES).map_err(|_| e)
-    })
+    let cdn = || get_bytes(&cdn_url(owner, repo, commit, path), "*/*", MAX_FILE_BYTES);
+    let failed_at = RAW_FAILED_AT.load(Ordering::Relaxed);
+    if failed_at != 0 && now_secs().saturating_sub(failed_at) < RAW_SKIP_SECS {
+        if let Ok(b) = cdn() {
+            return Ok(b);
+        }
+    }
+    match get_bytes(&raw_url(owner, repo, commit, path), "*/*", MAX_FILE_BYTES) {
+        Ok(b) => {
+            RAW_FAILED_AT.store(0, Ordering::Relaxed);
+            Ok(b)
+        }
+        Err(e) => {
+            let b = cdn().map_err(|_| e)?;
+            RAW_FAILED_AT.store(now_secs(), Ordering::Relaxed);
+            Ok(b)
+        }
+    }
 }
 
 pub fn valid_commit(c: &str) -> bool {
