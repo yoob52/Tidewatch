@@ -70,6 +70,13 @@ impl Engine {
         let restart = mode == FollowupMode::Restart && run.status != "stopping";
         // 已在停止中还发来的指令：停下后照样续接，不当作被停止作废
         let resume_after_stop = restart || run.status == "stopping";
+        if run.status == "stopping" {
+            // 停止前排队的指令随停止作废，只续接停止后发来的
+            let mut map = self.inner.followups.lock().unwrap();
+            if map.get(run_id).is_some_and(|(_, r)| !r) {
+                map.remove(run_id);
+            }
+        }
         self.inner.queue_followup(
             run_id,
             text,
