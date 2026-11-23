@@ -1,4 +1,4 @@
-import { tr } from './i18n';
+import { lang, setLang, tr, typedOnPage, type Lang } from './i18n';
 // 共享常量与小组件；类名沿用 prototype-v2 的样式表。
 import {
   createContext,
@@ -464,6 +464,13 @@ interface UiApi {
 }
 
 const UiContext = createContext<UiApi | null>(null);
+
+/** 切换界面语言；这一页上有没保存的输入时先确认，因为切换要重新加载。 */
+export async function switchLang(ui: UiApi, next: Lang) {
+  if (next === lang) return;
+  if (typedOnPage() && !(await ui.confirm(tr('切换语言会重新加载页面'), tr('这一页上还没保存的输入会丢失。'), tr('仍然切换')))) return;
+  setLang(next);
+}
 
 export function useUi(): UiApi {
   const ui = useContext(UiContext);

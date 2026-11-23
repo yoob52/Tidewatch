@@ -15,6 +15,24 @@ function initial(): Lang {
 export const lang: Lang = initial();
 document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
 
+// 这一页上有没有敲过字：切换语言要重新加载，先问一句，免得没保存的输入丢掉。
+let typed = false;
+document.addEventListener(
+  'input',
+  (e) => {
+    const el = e.target;
+    if ((el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) && el.closest('.main')) typed = true;
+  },
+  true,
+);
+window.addEventListener('hashchange', () => {
+  typed = false;
+});
+
+export function typedOnPage(): boolean {
+  return typed;
+}
+
 export function setLang(next: Lang) {
   if (next === lang) return;
   localStorage.setItem(KEY, next);

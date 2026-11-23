@@ -1,4 +1,4 @@
-import { lang, setLang, tr, type Lang } from '../lib/i18n';
+import { lang, tr, type Lang } from '../lib/i18n';
 // 设置：工作区与并发、默认执行配置、自动化、Prompt 模板、通知与外观、本机环境
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
@@ -6,7 +6,7 @@ import { api, type UpdateProgress, type ApiStatus, type BackupFile, type Detecti
 import { installUpdate as runInstall, setUpdateInfo, useUpdate } from '../lib/update';
 import { useData } from '../lib/data';
 import { Icon } from '../lib/Icon';
-import { AGENTS, Field, Modal, PERMISSIONS, Seg, Switch, TYPES, useUi } from '../lib/ui';
+import { AGENTS, Field, Modal, PERMISSIONS, Seg, Switch, TYPES, switchLang, useUi } from '../lib/ui';
 
 const SECTIONS = [tr('工作区与并发'), tr('默认执行配置'), tr('自动化'), tr('Prompt 模板'), tr('通知与外观'), tr('备份与导出'), tr('接口与成员'), tr('外部同步'), tr('工作流'), tr('本机环境')];
 
@@ -1144,7 +1144,7 @@ export function SettingsPage({
             <div className="sctl">
               <Seg<Lang>
                 value={lang}
-                onChange={setLang}
+                onChange={(v) => void switchLang(ui, v)}
                 options={[
                   ['zh', '中文'],
                   ['en', 'English'],

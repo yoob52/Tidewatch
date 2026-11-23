@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Icon } from './lib/Icon';
 import type { IconName } from './lib/icons';
 import { api, type Detection, type SystemInfo, type TicketSummary } from './lib/api';
-import { lang, setLang, tr } from './lib/i18n';
+import { lang, tr } from './lib/i18n';
 import { DataProvider, useData } from './lib/data';
-import { STAGE_NAME, UiProvider, fmtAgo, fmtCost, fmtDur, go, runActive, runSeconds, runTitle, useNow, useUi } from './lib/ui';
+import { STAGE_NAME, UiProvider, fmtAgo, fmtCost, fmtDur, go, runActive, runSeconds, runTitle, switchLang, useNow, useUi } from './lib/ui';
 import { BoardPage } from './pages/Board';
 import { TicketsPage } from './pages/Tickets';
 import { NewTicketPage } from './pages/NewTicket';
@@ -250,7 +250,7 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
             <Icon name="plus" size={14} />
             {tr('新建工单')}
           </a>
-          <button className="langbtn" onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')} title={tr('切换语言 / Switch language')}>
+          <button className="langbtn" onClick={() => void switchLang(ui, lang === 'zh' ? 'en' : 'zh')} title={tr('切换语言 / Switch language')}>
             {lang === 'zh' ? 'EN' : '中文'}
           </button>
           <button className="iconbtn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={tr('切换亮色 / 暗色')}>

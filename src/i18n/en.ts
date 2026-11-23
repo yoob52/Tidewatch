@@ -1150,4 +1150,7 @@ export const EN: Record<string, string> = {
   '更新': 'Updated',
   '语言': 'Language',
   '界面语言；切换后页面会重新加载。Agent 的提示词和运行日志不受影响。': 'Interface language; the page reloads after switching. Agent prompts and run logs are not affected.',
+  '切换语言会重新加载页面': 'Switching language reloads the page',
+  '这一页上还没保存的输入会丢失。': 'Anything you typed on this page and have not saved will be lost.',
+  '仍然切换': 'Switch anyway',
 };
