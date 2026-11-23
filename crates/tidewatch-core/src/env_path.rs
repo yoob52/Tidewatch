@@ -62,11 +62,7 @@ fn expand(s: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
 /// 把 `extra` 里不在 `current` 中的目录（不区分大小写、忽略末尾斜杠）依次追加；没有新目录时返回 None。
 #[cfg_attr(not(windows), allow(dead_code))]
 fn merge(current: &str, extra: &[Option<String>]) -> Option<String> {
-    let key = |p: &str| {
-        p.trim()
-            .trim_end_matches(['/', std::path::MAIN_SEPARATOR])
-            .to_lowercase()
-    };
+    let key = |p: &str| p.trim().trim_end_matches(['/', '\\']).to_lowercase();
     let mut seen: Vec<String> = current
         .split(';')
         .map(key)
