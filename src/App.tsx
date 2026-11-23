@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Icon } from './lib/Icon';
 import type { IconName } from './lib/icons';
 import { api, type Detection, type SystemInfo, type TicketSummary } from './lib/api';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { lang, tr } from './lib/i18n';
 import { DataProvider, useData } from './lib/data';
 import { STAGE_NAME, UiProvider, fmtAgo, fmtCost, fmtDur, go, runActive, runSeconds, runTitle, switchLang, useNow, useUi } from './lib/ui';
@@ -250,7 +251,7 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
 
   return (
     <div className={`app ${narrow ? 'narrow' : ''}`}>
-      <header className="titlebar">
+      <header className="titlebar" data-tauri-drag-region>
         <a className="brand" href="#/board">
           <span className="mark">
             <Icon name="wave" size={18} />
@@ -274,6 +275,7 @@ function Shell({ route, theme, setTheme }: { route: Route; theme: Theme; setThem
           <button className="iconbtn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={tr('切换亮色 / 暗色')}>
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
+          <WinControls />
         </div>
       </header>
 
@@ -475,5 +477,29 @@ export function App() {
         <Shell route={route} theme={theme} setTheme={setTheme} />
       </DataProvider>
     </UiProvider>
+  );
+}
+
+function WinControls() {
+  const win = useMemo(getCurrentWindow, []);
+  const [max, setMax] = useState(false);
+  useEffect(() => {
+    const sync = () => void win.isMaximized().then(setMax).catch(() => {});
+    sync();
+    const off = win.onResized(sync);
+    return () => void off.then((f) => f());
+  }, [win]);
+  return (
+    <div className="winctl">
+      <button onClick={() => void win.minimize()} title={tr('最小化')}>
+        <Icon name="min" size={14} />
+      </button>
+      <button onClick={() => void win.toggleMaximize()} title={max ? tr('还原') : tr('最大化')}>
+        <Icon name={max ? 'restore' : 'max'} size={14} />
+      </button>
+      <button className="close" onClick={() => void win.close()} title={tr('关闭')}>
+        <Icon name="x" size={14} />
+      </button>
+    </div>
   );
 }
