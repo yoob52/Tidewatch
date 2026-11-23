@@ -129,7 +129,7 @@ export function NewTicketPage() {
       ui.toast('开始修复前请先绑定一个项目');
       return;
     }
-    if (to === 'ai_review' && !(await confirmRun())) return;
+    if ((to === 'ai_review' || to === 'developing') && !(await confirmRun())) return;
     if (to === 'ai_review' && picked.length === 0) {
       ui.toast('提交预审前请先绑定一个项目：AI 要在项目目录里只读地查看代码');
       return;
