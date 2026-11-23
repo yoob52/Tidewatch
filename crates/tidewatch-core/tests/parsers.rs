@@ -496,6 +496,7 @@ fn new_agent_command_lines() {
         serde_json::from_str(&env_of(&c, "OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
     assert_eq!(cfg["permission"]["edit"], "deny");
     assert_eq!(cfg["permission"]["bash"], "deny");
+    assert!(cfg.get("provider").is_none());
     let mut s = spec(None, PermissionMode::FullAuto);
     s.env = vec![(
         "OPENCODE_CONFIG_CONTENT".into(),
@@ -507,6 +508,10 @@ fn new_agent_command_lines() {
         serde_json::from_str(&env_of(&c, "OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
     assert_eq!(cfg["permission"]["edit"], "allow");
     assert_eq!(cfg["provider"]["tidewatch"]["npm"], "@ai-sdk/openai");
+    assert_eq!(
+        cfg["provider"]["tidewatch"]["models"]["m1"],
+        serde_json::json!({})
+    );
     assert_eq!(c.env.len(), 1);
 
     // Gemini CLI

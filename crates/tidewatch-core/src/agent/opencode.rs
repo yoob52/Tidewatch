@@ -26,11 +26,25 @@ impl AgentAdapter for OpenCodeAdapter {
     fn build_command(&self, spec: &RunSpec) -> Result<CommandSpec> {
         let mut args: Vec<String> = vec!["run".into(), "--format".into(), "json".into()];
         let injected = spec.env.iter().find(|(k, _)| k == CONFIG_ENV);
+        let mut config = injected
+            .and_then(|(_, v)| serde_json::from_str::<Value>(v).ok())
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
         if let Some(m) = &spec.model {
             let prefix = format!("{PROVIDER_ID}/");
-            let m = match injected {
-                Some(_) if !m.starts_with(&prefix) => format!("{prefix}{m}"),
-                _ => m.clone(),
+            let m = if let Some(provider) = config
+                .get_mut("provider")
+                .and_then(|providers| providers.get_mut(PROVIDER_ID))
+                .and_then(Value::as_object_mut)
+            {
+                let id = m.strip_prefix(&prefix).unwrap_or(m);
+                let models = provider.entry("models").or_insert_with(|| json!({}));
+                if let Some(models) = models.as_object_mut() {
+                    models.entry(id).or_insert_with(|| json!({}));
+                }
+                format!("{prefix}{id}")
+            } else {
+                m.clone()
             };
             args.extend(["-m".into(), m]);
         }
@@ -46,10 +60,6 @@ impl AgentAdapter for OpenCodeAdapter {
         args.extend(spec.extra_args.iter().cloned());
 
         // 权限写进内联配置：只读时不给改文件和跑命令的工具
-        let mut config = injected
-            .and_then(|(_, v)| serde_json::from_str::<Value>(v).ok())
-            .filter(Value::is_object)
-            .unwrap_or_else(|| json!({}));
         let rule = if spec.permission == PermissionMode::ReadOnly {
             "deny"
         } else {
