@@ -152,12 +152,8 @@ export function SkillsPage() {
   const mine = installed.data ?? [];
   const installedIn = useMemo(() => {
     const byOrigin = new Map<string, SkillTarget[]>();
-    const byName = new Map<string, SkillTarget[]>();
-    for (const s of mine) {
-      const [m, k] = s.origin ? [byOrigin, s.origin] : [byName, s.name];
-      m.set(k, [...(m.get(k) ?? []), s.target]);
-    }
-    return (s: MarketSkill) => byOrigin.get(`${s.source}/${s.skillId}`) ?? byName.get(s.skillId) ?? byName.get(s.name) ?? [];
+    for (const s of mine) if (s.origin) byOrigin.set(s.origin, [...(byOrigin.get(s.origin) ?? []), s.target]);
+    return (s: MarketSkill) => byOrigin.get(`${s.source}/${s.skillId}`) ?? [];
   }, [mine]);
   const shown = mine.filter((s) => !filter || `${s.name} ${s.description}`.toLowerCase().includes(filter.toLowerCase()));
   const results = market.data ?? [];
