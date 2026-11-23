@@ -836,7 +836,7 @@ export const api = {
   /** 联网读 GitHub 上最新发布的版本号。 */
   updateCheck: () => invoke<UpdateInfo>('update_check'),
   /** 下载、校验签名并安装，然后重启；成功时不会返回。 */
-  updateInstall: () => invoke<void>('update_install'),
+  updateInstall: (expectedVersion: string) => invoke<void>('update_install', { expectedVersion }),
   /** 用系统浏览器打开一个 https 地址。 */
   openUrl: (url: string) => invoke<void>('open_url', { url }),
   backupList: () => invoke<BackupFile[]>('backup_list'),
