@@ -489,16 +489,23 @@ fn list_files(owner: &str, repo: &str, commit: &str) -> Result<Vec<String>> {
         "application/vnd.github+json",
     )
     .and_then(|t| parse_github_tree(&t));
-    match gh {
-        Ok(files) => Ok(files),
-        Err(e) => get_text(
+    let Err(e) = gh else { return gh };
+    let jsdelivr = |rev: &str| {
+        get_text(
             &format!(
-                "https://data.jsdelivr.com/v1/packages/gh/{owner}/{repo}@{commit}?structure=flat"
+                "https://data.jsdelivr.com/v1/packages/gh/{owner}/{repo}@{rev}?structure=flat"
             ),
             "application/json",
         )
         .and_then(|t| parse_jsdelivr_files(&t))
-        .map_err(|_| e),
+    };
+    // 大仓库按提交号列文件会超过 jsDelivr 的 50 MB 限制，@HEAD 不受限；提交仍是当前 HEAD 时才用它。
+    if let Ok(files) = jsdelivr(commit) {
+        return Ok(files);
+    }
+    match resolve_head(owner, repo) {
+        Ok(head) if head == commit => jsdelivr("HEAD").map_err(|_| e),
+        _ => Err(e),
     }
 }
 
