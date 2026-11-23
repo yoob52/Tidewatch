@@ -52,12 +52,13 @@ export const TYPES: Record<TicketType, { ch: string; cls: string; name: string }
 
 export const PRIO: Record<Priority, string> = { urgent: '紧急', high: '高', medium: '中', low: '低' };
 
-export const AGENTS: Record<string, { name: string; g: string; short: string }> = {
-  claude_code: { name: 'Claude Code', g: 'cc', short: 'CC' },
-  codex: { name: 'Codex', g: 'cx', short: 'CX' },
-  opencode: { name: 'OpenCode', g: 'oc', short: 'OC' },
-  gemini: { name: 'Gemini CLI', g: 'gm', short: 'GM' },
-  aider: { name: 'Aider', g: 'ad', short: 'AD' },
+/** `install`：命令行版的安装命令。观澜调用的是 CLI，桌面版 App（如 Codex Desktop）不会把命令放进 PATH。 */
+export const AGENTS: Record<string, { name: string; g: string; short: string; install?: string }> = {
+  claude_code: { name: 'Claude Code', g: 'cc', short: 'CC', install: 'npm i -g @anthropic-ai/claude-code' },
+  codex: { name: 'Codex', g: 'cx', short: 'CX', install: 'npm i -g @openai/codex' },
+  opencode: { name: 'OpenCode', g: 'oc', short: 'OC', install: 'npm i -g opencode-ai' },
+  gemini: { name: 'Gemini CLI', g: 'gm', short: 'GM', install: 'npm i -g @google/gemini-cli' },
+  aider: { name: 'Aider', g: 'ad', short: 'AD', install: 'pip install aider-chat' },
   mock: { name: '演示 Agent', g: 'ds', short: '演' },
 };
 
