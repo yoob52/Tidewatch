@@ -82,7 +82,7 @@ fn user_sets_windows_sandbox(spec: &RunSpec) -> bool {
     let home = spec
         .env
         .iter()
-        .find(|(k, _)| k == "CODEX_HOME")
+        .find(|(k, _)| k.eq_ignore_ascii_case("CODEX_HOME"))
         .map(|(_, v)| std::path::PathBuf::from(v))
         .or_else(|| std::env::var_os("CODEX_HOME").map(Into::into))
         .or_else(|| {
@@ -96,7 +96,7 @@ fn sets_windows_sandbox(toml: &str) -> bool {
     let mut table = String::new();
     toml.lines().map(str::trim).any(|l| {
         if let Some(h) = l.strip_prefix('[') {
-            table = h.trim_end_matches(']').trim().to_string();
+            table = h.split(']').next().unwrap_or("").trim().to_string();
             return false;
         }
         let Some((key, _)) = l.split_once('=') else {
@@ -128,6 +128,10 @@ sandbox = 1
 "
         ));
         assert!(!sets_windows_sandbox(""));
+        assert!(sets_windows_sandbox(
+            "[windows] # 本机
+sandbox = \"elevated\""
+        ));
     }
 }
 
