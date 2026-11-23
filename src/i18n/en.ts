@@ -1182,7 +1182,6 @@ export const EN: Record<string, string> = {
   '四格并行': 'Four panes',
   '四格': 'Grid',
   '选择这一格显示的运行': 'Choose the run shown in this pane',
-  '自动': 'Auto',
   '并行运行': 'Parallel runs',
   '每一格可以单独选择一轮运行，并直接给它追加指令。': 'Each pane can show its own run and take follow-up instructions.',
   '空闲窗格': 'Empty pane',
