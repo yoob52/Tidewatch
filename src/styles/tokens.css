@@ -1,37 +1,38 @@
-/* 观澜 · 设计变量：宣纸底、墨色字、黛青为主色、朱砂只用在「需要你」的地方 */
+/* 观澜 · 设计变量：深色工作台。近黑的青灰底、冷白字、潮青为主色；朱红只用在「需要你」和出错的地方 */
 :root{
-  --font-serif:"Noto Serif CJK SC","Source Han Serif SC","Noto Serif SC","Songti SC","STZhongsong","SimSun",serif;
-  --font-sans:"Noto Sans CJK SC","Source Han Sans SC","Noto Sans SC","PingFang SC","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
-  --font-mono:"JetBrains Mono","Cascadia Code","Consolas","Noto Sans Mono CJK SC",monospace;
+  --font-sans:"Inter","Segoe UI Variable Text","Segoe UI","Noto Sans CJK SC","Source Han Sans SC","Noto Sans SC","PingFang SC","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  /* 标题不再用宋体：工作台里标题和正文同族，只靠字重区分 */
+  --font-serif:var(--font-sans);
+  --font-mono:"JetBrains Mono","Cascadia Code","Cascadia Mono","Consolas","Noto Sans Mono CJK SC",monospace;
   --r:5px; --r-lg:8px;
 }
 [data-theme="light"]{
-  --paper:#F3F0E8; --side:#ECE8DD; --surface:#FAF8F3; --raised:#FFFFFF; --wash:#EEEADF; --sunk:#F0EDE4;
-  --ink:#1D1C1A; --ink-2:#56534C; --ink-3:#8C887E; --ink-4:#B5B0A4;
-  --line:#E0DBCE; --line-2:#CEC7B7;
-  --tide:#1F5C66; --tide-ink:#17474F; --tide-wash:#DDE9E7;
-  --cinnabar:#BE4630; --cinnabar-wash:#F6E3DC;
-  --amber:#A8741A; --amber-wash:#F4E9CF;
-  --moss:#4C7A4A; --moss-wash:#E0EBDC;
-  --indigo:#35568C; --rouge:#9A4F74;
-  --add-bg:#E3EFDF; --add-gutter:#CFE3C9; --del-bg:#F8E4DD; --del-gutter:#F0CFC4;
-  --term-bg:#22262A; --term-ink:#D9D5C9;
-  --shadow:0 1px 0 rgba(40,34,20,.04),0 8px 24px -12px rgba(40,34,20,.18);
-  --shadow-pop:0 24px 60px -20px rgba(30,26,16,.35),0 2px 8px rgba(30,26,16,.08);
+  --paper:#F3F5F5; --side:#EAEEEE; --surface:#FAFBFB; --raised:#FFFFFF; --wash:#E7ECEC; --sunk:#EEF1F1;
+  --ink:#151A1C; --ink-2:#4A5559; --ink-3:#7B878B; --ink-4:#AAB4B7;
+  --line:#DCE2E3; --line-2:#C4CCCE;
+  --tide:#0E7F6B; --tide-ink:#0A6555; --tide-wash:#D8EEE9;
+  --cinnabar:#C2452F; --cinnabar-wash:#F8E2DC;
+  --amber:#9A6B12; --amber-wash:#F5EACD;
+  --moss:#3F7D4C; --moss-wash:#DDEDDF;
+  --indigo:#3560A8; --rouge:#9A4F74;
+  --add-bg:#E1F0E2; --add-gutter:#CBE4CE; --del-bg:#F9E3DD; --del-gutter:#F1CDC4;
+  --term-bg:#12181B; --term-ink:#D5DDDF;
+  --shadow:0 1px 0 rgba(16,28,30,.04),0 8px 24px -12px rgba(16,28,30,.18);
+  --shadow-pop:0 24px 60px -20px rgba(10,20,22,.35),0 2px 8px rgba(10,20,22,.08);
   color-scheme:light;
 }
 [data-theme="dark"]{
-  --paper:#131618; --side:#101315; --surface:#181C1F; --raised:#1E2327; --wash:#242A2E; --sunk:#15191B;
-  --ink:#E9E5DA; --ink-2:#ACA79B; --ink-3:#767268; --ink-4:#4D4B45;
-  --line:#272D31; --line-2:#363D42;
-  --tide:#74B7BA; --tide-ink:#9DD0D2; --tide-wash:#1B3134;
-  --cinnabar:#E27158; --cinnabar-wash:#3A211B;
-  --amber:#D6A546; --amber-wash:#33290F;
-  --moss:#86B682; --moss-wash:#1D2C1C;
-  --indigo:#86A4DB; --rouge:#D08FB0;
-  --add-bg:#1A2B1C; --add-gutter:#23402A; --del-bg:#32201C; --del-gutter:#4A2A23;
-  --term-bg:#0D0F10; --term-ink:#CFCBBF;
-  --shadow:0 1px 0 rgba(0,0,0,.2),0 8px 24px -12px rgba(0,0,0,.6);
-  --shadow-pop:0 24px 60px -20px rgba(0,0,0,.8),0 2px 8px rgba(0,0,0,.4);
+  --paper:#0E1315; --side:#0B0F11; --surface:#12181B; --raised:#182024; --wash:#1D272B; --sunk:#0C1113;
+  --ink:#E4EBED; --ink-2:#A3AFB4; --ink-3:#6F7C81; --ink-4:#414C50;
+  --line:#1E272B; --line-2:#2C383D;
+  --tide:#4FC9AE; --tide-ink:#7BDCC6; --tide-wash:#10332E;
+  --cinnabar:#F0705A; --cinnabar-wash:#3A1F1B;
+  --amber:#E0B050; --amber-wash:#33290F;
+  --moss:#7CC98A; --moss-wash:#18301F;
+  --indigo:#7FA8F0; --rouge:#D795BD;
+  --add-bg:#12291D; --add-gutter:#1B3D2A; --del-bg:#33191A; --del-gutter:#4D2424;
+  --term-bg:#090C0D; --term-ink:#C9D3D6;
+  --shadow:0 1px 0 rgba(0,0,0,.25),0 8px 24px -12px rgba(0,0,0,.7);
+  --shadow-pop:0 24px 60px -20px rgba(0,0,0,.85),0 2px 8px rgba(0,0,0,.45);
   color-scheme:dark;
 }

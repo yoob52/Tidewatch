@@ -1,3 +1,4 @@
+import { tr } from '../lib/i18n';
 // 新建工单：左边放原文，右边是预填的属性
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useRef, useState } from 'react';
@@ -10,7 +11,7 @@ import { AGENTS, Field, Md, PRIO, Prio, STAGE_NAME, Seg, Stamp, TYPES, go, useUi
 
 type Mode = 'paste' | 'file' | 'form';
 
-const KIND_NAME: Record<string, string> = { backend: '后端', frontend: '前端', fullstack: '全栈', other: '其它' };
+const KIND_NAME: Record<string, string> = { backend: tr('后端'), frontend: tr('前端'), fullstack: tr('全栈'), other: tr('其它') };
 
 export function NewTicketPage() {
   const { projects, reload } = useData();
@@ -82,7 +83,7 @@ export function NewTicketPage() {
   const pickFile = async () => {
     const path = await open({
       multiple: false,
-      filters: [{ name: '需求文档', extensions: ['md', 'markdown', 'txt', 'docx', 'pdf'] }],
+      filters: [{ name: tr('需求文档'), extensions: ['md', 'markdown', 'txt', 'docx', 'pdf'] }],
     });
     if (typeof path !== 'string') return;
     setImporting(true);
@@ -102,7 +103,7 @@ export function NewTicketPage() {
     for (const f of files) {
       const id = await ui.attempt(uploadImage(null, f));
       if (!id) break;
-      added.push(imageMd('需求方截图', id, 'authoritative'));
+      added.push(imageMd(tr('需求方截图'), id, 'authoritative'));
     }
     setRaw((cur) => insertAt(cur, sel, added));
   };
@@ -122,16 +123,16 @@ export function NewTicketPage() {
 
   const save = async (to: TicketStatus) => {
     if (!title.trim()) {
-      ui.toast(mode === 'form' ? '请先填写标题' : '请先粘贴或导入需求内容，再点「识别」');
+      ui.toast(mode === 'form' ? tr('请先填写标题') : tr('请先粘贴或导入需求内容，再点「识别」'));
       return;
     }
     if (to === 'developing' && picked.length === 0) {
-      ui.toast('开始修复前请先绑定一个项目');
+      ui.toast(tr('开始修复前请先绑定一个项目'));
       return;
     }
     if ((to === 'ai_review' || to === 'developing') && !(await confirmRun())) return;
     if (to === 'ai_review' && picked.length === 0) {
-      ui.toast('提交预审前请先绑定一个项目：AI 要在项目目录里只读地查看代码');
+      ui.toast(tr('提交预审前请先绑定一个项目：AI 要在项目目录里只读地查看代码'));
       return;
     }
     setSaving(true);
@@ -159,9 +160,9 @@ export function NewTicketPage() {
         // 工单已经建好；预审提交不了（比如 Agent 没配好）就留在草稿，不让用户重复创建
         try {
           await api.reviewStart(t.id);
-          note = 'AI 预审已入队';
+          note = tr('AI 预审已入队');
         } catch (e) {
-          ui.toast(`已创建 ${t.key}（草稿），但没能提交预审：${String(e)}`);
+          ui.toast(tr('已创建 {0}（草稿），但没能提交预审：{1}', t.key, String(e)));
           await reload();
           go(`#/ticket/${t.key}/review`);
           return;
@@ -185,9 +186,9 @@ export function NewTicketPage() {
           depends_on: [],
         });
         await api.taskStart(task.id);
-        note = '已开始修复';
+        note = tr('已开始修复');
       }
-      ui.toast(`已创建 ${t.key}「${t.title}」· ${note}`);
+      ui.toast(tr('已创建 {0}「{1}」· {2}', t.key, t.title, note));
       await reload();
       go(to === 'developing' ? `#/ticket/${t.key}/tasks` : `#/ticket/${t.key}`);
     } catch (e) {
@@ -206,9 +207,9 @@ export function NewTicketPage() {
           value={mode}
           onChange={setMode}
           options={[
-            ['paste', <><Icon name="paste" size={14} />粘贴</>],
-            ['file', <><Icon name="upload" size={14} />导入文件</>],
-            ['form', <><Icon name="form" size={14} />表单</>],
+            ['paste', <><Icon name="paste" size={14} />{tr('粘贴')}</>],
+            ['file', <><Icon name="upload" size={14} />{tr('导入文件')}</>],
+            ['form', <><Icon name="form" size={14} />{tr('表单')}</>],
           ]}
         />
         <div className="new-body">
@@ -220,24 +221,24 @@ export function NewTicketPage() {
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
                 onPaste={onPaste}
-                placeholder={'把聊天记录、PRD 或 Bug 描述整段粘贴到这里…截图也可以直接粘贴。'}
-                aria-label="需求原文"
+                placeholder={tr('把聊天记录、PRD 或 Bug 描述整段粘贴到这里…截图也可以直接粘贴。')}
+                aria-label={tr('需求原文')}
               />
               <div className="row" style={{ marginTop: 10 }}>
                 <button className="btn sm" disabled={!raw.trim()} onClick={() => void recognize(raw)}>
                   <Icon name="spark" size={13} />
-                  识别标题和类型
+                  {tr('识别标题和类型')}
                 </button>
                 <button className="btn sm" disabled={!raw.trim() || analyzing} onClick={() => void analyze()}>
                   <Icon name="spark" size={13} />
-                  {analyzing ? 'AI 正在分析…' : 'AI 分析'}
+                  {analyzing ? tr('AI 正在分析…') : tr('AI 分析')}
                 </button>
                 <button className="btn sm" onClick={() => fileInput.current?.click()}>
                   <Icon name="upload" size={13} />
-                  添加图片
+                  {tr('添加图片')}
                 </button>
                 <span className="dim">
-                  支持 Markdown；你贴的截图默认是权威图{imageCount ? ` · 已有 ${imageCount} 张图片` : ''}
+                  {tr('支持 Markdown；你贴的截图默认是权威图')}{imageCount ? tr(' · 已有 {0} 张图片', imageCount) : ''}
                 </span>
               </div>
             </>
@@ -246,10 +247,10 @@ export function NewTicketPage() {
             <>
               <div className="drop">
                 <Icon name="upload" size={26} />
-                <b>选择一个需求文档</b>
-                <span>.md · .txt · .docx · .pdf，转为 Markdown 并保留图片附件</span>
+                <b>{tr('选择一个需求文档')}</b>
+                <span>{tr('.md · .txt · .docx · .pdf，转为 Markdown 并保留图片附件')}</span>
                 <button className="btn sm" disabled={importing} onClick={() => void pickFile()}>
-                  {importing ? '正在转换…' : '选择文件'}
+                  {importing ? tr('正在转换…') : tr('选择文件')}
                 </button>
               </div>
               {fileName && (
@@ -259,12 +260,12 @@ export function NewTicketPage() {
                     <b>{fileName}</b>
                     <span className="dim">
                       {' '}
-                      · {raw.length} 字{imageCount ? ` · ${imageCount} 张图片（仅参考）` : ''}
+                      · {raw.length} {tr('字')}{imageCount ? tr(' · {0} 张图片（仅参考）', imageCount) : ''}
                     </span>
                   </span>
                   <span className="tag moss">
                     <Icon name="check" size={11} />
-                    已转换
+                    {tr('已转换')}
                   </span>
                 </div>
               )}
@@ -284,10 +285,10 @@ export function NewTicketPage() {
           )}
           {mode === 'form' && (
             <div className="form-grid" style={{ gridTemplateColumns: '1fr' }}>
-              <Field label="标题">
-                <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="一句话说明要做什么" />
+              <Field label={tr('标题')}>
+                <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={tr('一句话说明要做什么')} />
               </Field>
-              <Field label="需求正文" hint="Markdown">
+              <Field label={tr('需求正文')} hint="Markdown">
                 <textarea
                   ref={area}
                   className="textarea"
@@ -295,7 +296,7 @@ export function NewTicketPage() {
                   value={raw}
                   onChange={(e) => setRaw(e.target.value)}
                   onPaste={onPaste}
-                  placeholder={'## 背景与目标\n\n## 功能需求\n\n## 验收标准'}
+                  placeholder={tr('## 背景与目标\n\n## 功能需求\n\n## 验收标准')}
                 />
               </Field>
             </div>
@@ -306,13 +307,13 @@ export function NewTicketPage() {
       <aside className="new-r">
         <div className="sec-title">
           <Icon name="spark" size={15} />
-          {mode === 'form' ? '工单属性' : '识别结果'}
-          {mode !== 'form' && recognized && <small>已根据原文预填，确认或修改后再创建</small>}
+          {mode === 'form' ? tr('工单属性') : tr('识别结果')}
+          {mode !== 'form' && recognized && <small>{tr('已根据原文预填，确认或修改后再创建')}</small>}
         </div>
         {mode !== 'form' && recognized && reasons.length > 0 && (
           <details className="rec-why">
             <summary>
-              识别依据（{reasons.length} 项，{analyzedBy ? `由 ${analyzedBy} 分析` : '本机规则，没有调用 AI'}）
+              {tr('识别依据（')}{reasons.length} {tr('项，')}{analyzedBy ? tr('由 {0} 分析', analyzedBy) : tr('本机规则，没有调用 AI')}{tr('）')}
             </summary>
             <ul>
               {reasons.map((r) => (
@@ -321,9 +322,9 @@ export function NewTicketPage() {
             </ul>
             {type === 'bug' && bugInfo && (
               <ul>
-                {bugInfo.steps && <li>复现步骤：{bugInfo.steps}</li>}
-                {bugInfo.expected && <li>期望：{bugInfo.expected}</li>}
-                {bugInfo.actual && <li>实际：{bugInfo.actual}</li>}
+                {bugInfo.steps && <li>{tr('复现步骤：')}{bugInfo.steps}</li>}
+                {bugInfo.expected && <li>{tr('期望：')}{bugInfo.expected}</li>}
+                {bugInfo.actual && <li>{tr('实际：')}{bugInfo.actual}</li>}
               </ul>
             )}
           </details>
@@ -332,23 +333,23 @@ export function NewTicketPage() {
           <div className="rec-ai">
             {analyzing ? (
               <>
-                <span className="dim">AI 正在分析正文，通常不到一分钟；结果只用来预填，不会自动建单。</span>
+                <span className="dim">{tr('AI 正在分析正文，通常不到一分钟；结果只用来预填，不会自动建单。')}</span>
                 <button className="btn sm" onClick={() => void api.ticketAnalyzeCancel()}>
-                  取消
+                  {tr('取消')}
                 </button>
               </>
             ) : (
               <>
                 <span className="dim">
                   {aiError
-                    ? `${aiError} 下面仍是${analyzedBy ? '上一次分析' : '本机规则'}的结果。`
+                    ? tr('{0} 下面仍是{1}的结果。', aiError, analyzedBy ? tr('上一次分析') : tr('本机规则'))
                     : analyzedBy
-                      ? 'AI 的建议已填到下面，请确认或修改后再创建。'
-                      : '想让 AI 帮忙判断类型、项目、优先级和 Bug 三要素？会把正文发给默认 Agent。'}
+                      ? tr('AI 的建议已填到下面，请确认或修改后再创建。')
+                      : tr('想让 AI 帮忙判断类型、项目、优先级和 Bug 三要素？会把正文发给默认 Agent。')}
                 </span>
                 <button className="btn sm" disabled={!raw.trim()} onClick={() => void analyze()}>
                   <Icon name="spark" size={13} />
-                  {analyzedBy || aiError ? '重新分析' : 'AI 分析'}
+                  {analyzedBy || aiError ? tr('重新分析') : tr('AI 分析')}
                 </button>
               </>
             )}
@@ -358,11 +359,11 @@ export function NewTicketPage() {
           {showProps ? (
             <>
               {mode !== 'form' && (
-                <Field label="标题">
+                <Field label={tr('标题')}>
                   <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
                 </Field>
               )}
-              <Field label="类型">
+              <Field label={tr('类型')}>
                 <div className="pick">
                   {(Object.keys(TYPES) as TicketType[]).map((k) => (
                     <button key={k} className={k === type ? 'on' : ''} onClick={() => setType(k)}>
@@ -372,7 +373,7 @@ export function NewTicketPage() {
                   ))}
                 </div>
               </Field>
-              <Field label="优先级">
+              <Field label={tr('优先级')}>
                 <div className="pick">
                   {(Object.keys(PRIO) as Priority[]).map((k) => (
                     <button key={k} className={k === priority ? 'on' : ''} onClick={() => setPriority(k)}>
@@ -381,7 +382,7 @@ export function NewTicketPage() {
                   ))}
                 </div>
               </Field>
-              <Field label="绑定项目" hint="可多选">
+              <Field label={tr('绑定项目')} hint={tr('可多选')}>
                 {projects.length ? (
                   <div className="pick">
                     {projects.map((p) => (
@@ -398,15 +399,15 @@ export function NewTicketPage() {
                   </div>
                 ) : (
                   <p className="dim">
-                    还没有注册项目。<a className="lnk" href="#/projects">去注册 →</a>
+                    {tr('还没有注册项目。')}<a className="lnk" href="#/projects">{tr('去注册 →')}</a>
                   </p>
                 )}
               </Field>
               <div className="form-grid">
-                <Field label="标签" hint="逗号或空格分隔">
-                  <input className="input" value={labels} onChange={(e) => setLabels(e.target.value)} placeholder="例如：支付 导出" />
+                <Field label={tr('标签')} hint={tr('逗号或空格分隔')}>
+                  <input className="input" value={labels} onChange={(e) => setLabels(e.target.value)} placeholder={tr('例如：支付 导出')} />
                 </Field>
-                <Field label="截止日期" hint="可选">
+                <Field label={tr('截止日期')} hint={tr('可选')}>
                   <input className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
                 </Field>
               </div>
@@ -414,31 +415,31 @@ export function NewTicketPage() {
           ) : (
             <div className="rec-empty">
               <Icon name="spark" size={22} />
-              <b>粘贴或导入后，点「识别」预填</b>
-              <span>标题、类型和提到的项目；所有预填都可以改。</span>
+              <b>{tr('粘贴或导入后，点「识别」预填')}</b>
+              <span>{tr('标题、类型和提到的项目；所有预填都可以改。')}</span>
             </div>
           )}
         </div>
       </aside>
       <footer className="new-f">
         <span className="dim">
-          {showProps && type === 'bug' ? 'Bug 走快速通道：跳过预审与人工审核，直接进入开发' : '需求工单要经过预审与人工审核后才能开发'}
+          {showProps && type === 'bug' ? tr('Bug 走快速通道：跳过预审与人工审核，直接进入开发') : tr('需求工单要经过预审与人工审核后才能开发')}
         </span>
         <span className="grow" />
         <a className="btn ghost" href="#/board">
-          取消
+          {tr('取消')}
         </a>
         <button className="btn" disabled={saving} onClick={() => void save('draft')}>
-          保存为草稿
+          {tr('保存为草稿')}
         </button>
         {showProps && type === 'bug' ? (
           <button className="btn primary" disabled={saving} onClick={() => void save('developing')}>
             <Icon name="zap" size={14} />
-            保存并开始修复
+            {tr('保存并开始修复')}
           </button>
         ) : (
           <button className="btn" disabled={saving} onClick={() => void save('ai_review')}>
-            保存并提交预审
+            {tr('保存并提交预审')}
           </button>
         )}
       </footer>

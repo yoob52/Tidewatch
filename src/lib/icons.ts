@@ -45,6 +45,8 @@ code:'<path d="M5.4 4.4L1.8 8l3.6 3.6M10.6 4.4L14.2 8l-3.6 3.6M9 3l-2 10"/>',
 user:'<circle cx="8" cy="5.4" r="2.6"/><path d="M2.8 13.8c.6-2.6 2.6-4 5.2-4s4.6 1.4 5.2 4"/>',
 link:'<path d="M6.8 9.2a2.8 2.8 0 0 0 4 0l2-2a2.8 2.8 0 0 0-4-4l-.8.8M9.2 6.8a2.8 2.8 0 0 0-4 0l-2 2a2.8 2.8 0 0 0 4 0l.8-.8"/>',
 min:'<path d="M3.5 8h9"/>',max:'<rect x="3.5" y="3.5" width="9" height="9"/>',
+panel:'<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M6 2.8v10.4"/>',
+wave:'<path d="M1.5 5c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4 0"/><path d="M1.5 8.5c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4 0"/><path d="M1.5 12c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4 0" opacity=".55"/>',
 drag:'<circle cx="6" cy="4" r=".8"/><circle cx="10" cy="4" r=".8"/><circle cx="6" cy="8" r=".8"/><circle cx="10" cy="8" r=".8"/><circle cx="6" cy="12" r=".8"/><circle cx="10" cy="12" r=".8"/>',
 } as const;
 
